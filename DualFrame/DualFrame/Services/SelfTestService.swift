@@ -18,6 +18,11 @@ import Photos
 /// completely independent of `RecordingService`'s real writer — deleted immediately
 /// after, it never touches anything the real recording pipeline uses.
 actor SelfTestService {
+    /// Task 031 requirement 4: bumped whenever the set of checks changes, so a tester
+    /// comparing two Self Test runs (e.g. before/after an app update) can tell whether
+    /// they ran the same checks.
+    static let version = "1.1"
+
     func run(libraryService: InternalVideoLibraryService, externalStorageViewModel: ExternalStorageViewModel) async -> [SelfTestItem] {
         var items: [SelfTestItem] = []
 

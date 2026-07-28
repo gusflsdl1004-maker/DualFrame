@@ -17,15 +17,31 @@ struct SelfTestView: View {
 
     @State private var items: [SelfTestItem] = []
     @State private var isRunning = false
+    /// Task 031 requirement 4.
+    @State private var lastRunAt: Date?
+    @State private var showFailedOnly = false
+
+    private var displayedItems: [SelfTestItem] {
+        showFailedOnly ? items.filter { $0.status != .pass } : items
+    }
 
     var body: some View {
         NavigationStack {
             List {
+                Section {
+                    LabeledContent("Self Test Version", value: SelfTestService.version)
+                    LabeledContent("Last Run", value: lastRunAt?.formatted(date: .abbreviated, time: .standard) ?? "--")
+                    Toggle("Show Failed/Warning Only", isOn: $showFailedOnly)
+                }
+
                 if items.isEmpty {
                     Text(isRunning ? "Running…" : "No results yet")
                         .foregroundStyle(.secondary)
+                } else if displayedItems.isEmpty {
+                    Text("No failures or warnings — everything passed.")
+                        .foregroundStyle(.secondary)
                 } else {
-                    ForEach(items) { item in
+                    ForEach(displayedItems) { item in
                         HStack(alignment: .top) {
                             VStack(alignment: .leading, spacing: 2) {
                                 Text(item.title)
@@ -65,6 +81,7 @@ struct SelfTestView: View {
         isRunning = true
         let service = SelfTestService()
         items = await service.run(libraryService: libraryService, externalStorageViewModel: externalStorageViewModel)
+        lastRunAt = Date()
         isRunning = false
     }
 

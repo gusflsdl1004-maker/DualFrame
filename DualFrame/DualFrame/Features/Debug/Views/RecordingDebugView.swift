@@ -5,6 +5,7 @@
 
 #if DEBUG
 import SwiftUI
+import UniformTypeIdentifiers
 
 /// Diagnostics & Developer Panel (Task 026) — a debug-only diagnostics screen showing
 /// live internal recording state, so a physical device can be checked at a glance
@@ -70,6 +71,57 @@ struct RecordingDebugView: View {
                     LabeledContent("Last Failure Reason", value: lastStartupFailureReasonText)
                 }
 
+                // Task 031 requirement 3: everything needed to diagnose a "Writing the
+                // recording failed" occurrence gathered on one screen, so a tester
+                // never has to scroll between separate sections to correlate them.
+                // Purely additive display — reuses the exact same already-fetched
+                // state as the sections above, no new service calls.
+                Section {
+                    LabeledContent("Failure Reason", value: lastStartupFailureReasonText)
+                    LabeledContent("Recording State", value: recordingViewModel.displayStatusText)
+                    LabeledContent("Session ID", value: recordingViewModel.currentSessionID?.uuidString ?? "--")
+                    if timelineEvents.isEmpty {
+                        Text("No events yet")
+                            .foregroundStyle(.secondary)
+                    } else {
+                        ForEach(timelineEvents.suffix(5).reversed()) { event in
+                            VStack(alignment: .leading, spacing: 2) {
+                                HStack {
+                                    Text(event.timestamp.formatted(date: .omitted, time: .standard))
+                                        .font(.caption2.monospacedDigit())
+                                        .foregroundStyle(.secondary)
+                                    Text(event.stage)
+                                        .font(.caption2.bold())
+                                }
+                                if let detail = event.detail {
+                                    Text(detail)
+                                        .font(.caption2)
+                                        .foregroundStyle(.secondary)
+                                }
+                            }
+                        }
+                    }
+                } header: {
+                    Text("Failure Detail")
+                } footer: {
+                    Text("Last 5 startup events shown here for quick correlation — see Startup Timeline below for the full last-30 history.")
+                }
+
+                // Task 031 requirement 2: the same fields now shown alongside the
+                // Startup Timeline, so a tester reviewing the timeline doesn't have to
+                // scroll back up to Session/Writers/Recovery to see current state.
+                Section("Diagnostics Snapshot") {
+                    LabeledContent("Recording State", value: recordingViewModel.displayStatusText)
+                    LabeledContent("Session ID", value: recordingViewModel.currentSessionID?.uuidString ?? "--")
+                    LabeledContent("Long Writer Status", value: recordingViewModel.longFormStatusText ?? "--")
+                    LabeledContent("Short Writer Status", value: recordingViewModel.shortFormStatusText ?? "--")
+                    LabeledContent(
+                        "Checkpoint Time",
+                        value: lastCheckpointSavedAt?.formatted(date: .omitted, time: .standard) ?? "--"
+                    )
+                    LabeledContent("Recording Mode", value: recordingModeViewModel.settings.mode.title)
+                }
+
                 Section("Startup Timeline (last 30)") {
                     if timelineEvents.isEmpty {
                         Text("No events yet")
@@ -108,6 +160,20 @@ struct RecordingDebugView: View {
                 }
             }
             .navigationTitle("Debug Verification")
+            .toolbar {
+                // Task 031 requirement 5: Debug-only JSON export of the current
+                // diagnostics snapshot — read-only, no new recording logic. The
+                // Transferable's data is generated lazily when the share sheet
+                // actually needs it, not on every view refresh.
+                ToolbarItem(placement: .primaryAction) {
+                    ShareLink(
+                        item: DiagnosticsExportDocument(payload: currentDiagnosticsExportPayload),
+                        preview: SharePreview("DualFrame Diagnostics")
+                    ) {
+                        Image(systemName: "square.and.arrow.up")
+                    }
+                }
+            }
         }
         .task {
             while !Task.isCancelled {
@@ -168,6 +234,61 @@ struct RecordingDebugView: View {
     /// write to.
     private func refreshTimeline() async {
         timelineEvents = await dualRecordingCoordinator.recordingService.diagnosticsLogService.recentEvents()
+    }
+
+    /// Task 031 requirement 5: builds the exportable diagnostics snapshot from
+    /// state already displayed on this screen — no new data is read or computed
+    /// beyond what's already fetched by the refresh loop above.
+    private var currentDiagnosticsExportPayload: DiagnosticsExportPayload {
+        DiagnosticsExportPayload(
+            exportedAt: Date(),
+            sessionID: recordingViewModel.currentSessionID?.uuidString ?? "--",
+            recordingMode: recordingModeViewModel.settings.mode.title,
+            recordingState: recordingViewModel.displayStatusText,
+            longWriterStatus: recordingViewModel.longFormStatusText ?? "--",
+            shortWriterStatus: recordingViewModel.shortFormStatusText ?? "--",
+            checkpointTime: lastCheckpointSavedAt?.formatted(date: .omitted, time: .standard) ?? "--",
+            lastFailureReason: lastStartupFailureReasonText,
+            timeline: timelineEvents.map {
+                DiagnosticsExportPayload.TimelineEventExport(timestamp: $0.timestamp, stage: $0.stage, detail: $0.detail)
+            }
+        )
+    }
+}
+
+/// Task 031 requirement 5: the JSON shape shared out of the debug panel. Purely a
+/// snapshot for a developer/tester to attach to a bug report — never read back by
+/// the app itself.
+nonisolated private struct DiagnosticsExportPayload: Codable {
+    nonisolated struct TimelineEventExport: Codable {
+        let timestamp: Date
+        let stage: String
+        let detail: String?
+    }
+
+    let exportedAt: Date
+    let sessionID: String
+    let recordingMode: String
+    let recordingState: String
+    let longWriterStatus: String
+    let shortWriterStatus: String
+    let checkpointTime: String
+    let lastFailureReason: String
+    let timeline: [TimelineEventExport]
+}
+
+/// Wraps `DiagnosticsExportPayload` as `Transferable` so `ShareLink` can generate the
+/// actual JSON `Data` lazily, only when the user taps Share — not on every view refresh.
+nonisolated private struct DiagnosticsExportDocument: Transferable {
+    let payload: DiagnosticsExportPayload
+
+    static var transferRepresentation: some TransferRepresentation {
+        DataRepresentation(exportedContentType: .json) { document in
+            let encoder = JSONEncoder()
+            encoder.dateEncodingStrategy = .iso8601
+            encoder.outputFormatting = .prettyPrinted
+            return (try? encoder.encode(document.payload)) ?? Data()
+        }
     }
 }
 #endif

@@ -35,6 +35,8 @@ struct CameraPreviewView: View {
     @State private var isDebugViewPresented = false
     /// Task 030: Automated Self Test entry point — debug builds only.
     @State private var isSelfTestPresented = false
+    /// Task 031: Real Device Verification checklist entry point — debug builds only.
+    @State private var isVerificationChecklistPresented = false
     #endif
 
     init() {
@@ -133,6 +135,9 @@ struct CameraPreviewView: View {
         }
         .sheet(isPresented: $isSelfTestPresented) {
             SelfTestView(libraryService: libraryService, externalStorageViewModel: externalStorageViewModel)
+        }
+        .sheet(isPresented: $isVerificationChecklistPresented) {
+            RealDeviceVerificationChecklistView()
         }
         #endif
     }
@@ -236,6 +241,15 @@ struct CameraPreviewView: View {
                     isSelfTestPresented = true
                 } label: {
                     Image(systemName: "checkmark.shield")
+                        .padding(10)
+                        .background(.black.opacity(0.5), in: Circle())
+                        .foregroundStyle(.white)
+                }
+
+                Button {
+                    isVerificationChecklistPresented = true
+                } label: {
+                    Image(systemName: "checklist")
                         .padding(10)
                         .background(.black.opacity(0.5), in: Circle())
                         .foregroundStyle(.white)
