@@ -24,6 +24,9 @@ struct CameraPreviewView: View {
     @State private var qualityFallbackOccurred = false
     @State private var activeFPS: RecordingFPS?
     @State private var fpsFallbackOccurred = false
+    /// Task 027: the camera actually in use — reflects `CameraService.currentPosition`,
+    /// refreshed after every successful `switchCamera(to:)`.
+    @State private var cameraPosition: CameraPosition = .back
     #if DEBUG
     /// Task 026: Real Device Verification Mode entry point — debug builds only, per
     /// this file's `#if DEBUG` guard around every reference to it.
@@ -76,6 +79,7 @@ struct CameraPreviewView: View {
             qualityFallbackOccurred = await cameraService.qualityFallbackOccurred
             activeFPS = await cameraService.activeFPS
             fpsFallbackOccurred = await cameraService.fpsFallbackOccurred
+            cameraPosition = await cameraService.currentPosition
             interruptionMonitor.startObserving(
                 session: cameraService.session,
                 onInterruptionBegan: { source in
@@ -120,6 +124,26 @@ struct CameraPreviewView: View {
         permissionViewModel.microphoneStatus == .granted
     }
 
+    /// Task 027 requirement 3: a no-op while recording (the button is also disabled,
+    /// this is the view-layer half of the defense-in-depth — `CameraService` itself
+    /// refuses the switch too). Re-reads `activeQuality`/`activeFPS`/`fpsFallbackOccurred`
+    /// afterward since a different camera can resolve them differently.
+    private func toggleCameraPosition() async {
+        guard !recordingViewModel.isRecording else { return }
+        let nextPosition: CameraPosition = cameraPosition == .back ? .front : .back
+        do {
+            try await cameraService.switchCamera(to: nextPosition)
+            cameraPosition = await cameraService.currentPosition
+            activeQuality = await cameraService.activeQuality
+            qualityFallbackOccurred = await cameraService.qualityFallbackOccurred
+            activeFPS = await cameraService.activeFPS
+            fpsFallbackOccurred = await cameraService.fpsFallbackOccurred
+        } catch {
+            // Switching failed (e.g. no front camera on this device) — stay on the
+            // current camera rather than leaving the UI in an inconsistent state.
+        }
+    }
+
     private var statusBar: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack {
@@ -158,6 +182,19 @@ struct CameraPreviewView: View {
                         .background(.black.opacity(0.5), in: Circle())
                         .foregroundStyle(.white)
                 }
+
+                // Task 027 requirement 3: disabled while recording — switching camera
+                // mid-recording is never allowed, both here and defensively inside
+                // `CameraService.switchCamera(to:)` itself.
+                Button {
+                    Task { await toggleCameraPosition() }
+                } label: {
+                    Image(systemName: "arrow.triangle.2.circlepath.camera")
+                        .padding(10)
+                        .background(.black.opacity(0.5), in: Circle())
+                        .foregroundStyle(.white)
+                }
+                .disabled(recordingViewModel.isRecording)
 
                 #if DEBUG
                 Button {

@@ -10,6 +10,10 @@ enum CameraServiceError: Error {
     case cannotAddInput
     case cannotAddOutput
     case cannotConfigureFrameRate
+    /// Task 027 requirement 3: switching cameras while a recording is in progress is
+    /// never allowed — the UI already disables the toggle button while recording, and
+    /// this is the defense-in-depth check inside `CameraService` itself.
+    case cannotSwitchWhileRecording
 }
 
 /// Owns the capture session: camera/microphone inputs for a live preview, plus the
@@ -44,12 +48,28 @@ actor CameraService {
     private let recordingService: RecordingService
     private let qualitySettingsService: RecordingQualitySettingsService
     private let fpsSettingsService: RecordingFPSSettingsService
+    private let positionSettingsService: CameraPositionSettingsService
     /// Task 022: the only source of orientation/mirroring decisions — this type never
     /// computes either itself (requirement 2).
     private let orientationManager: OrientationManager
 
     private var videoDevice: AVCaptureDevice?
     private var isConfigured = false
+
+    /// The camera currently active, derived from `videoDevice` rather than tracked
+    /// separately — there is exactly one source of truth for which device is in use.
+    var currentPosition: CameraPosition {
+        videoDevice?.position == .front ? .front : .back
+    }
+
+    /// `CameraPosition` stays free of AVFoundation (matches `RecordingQuality`'s
+    /// pattern) — this is the one place that maps it to `AVCaptureDevice.Position`.
+    private func avCapturePosition(for position: CameraPosition) -> AVCaptureDevice.Position {
+        switch position {
+        case .back: .back
+        case .front: .front
+        }
+    }
 
     /// `orientationManager` has no default value on purpose — it's `@MainActor`
     /// (see the project's `SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor` history of
@@ -60,12 +80,14 @@ actor CameraService {
         recordingService: RecordingService,
         orientationManager: OrientationManager,
         qualitySettingsService: RecordingQualitySettingsService = RecordingQualitySettingsService(),
-        fpsSettingsService: RecordingFPSSettingsService = RecordingFPSSettingsService()
+        fpsSettingsService: RecordingFPSSettingsService = RecordingFPSSettingsService(),
+        positionSettingsService: CameraPositionSettingsService = CameraPositionSettingsService()
     ) {
         self.recordingService = recordingService
         self.orientationManager = orientationManager
         self.qualitySettingsService = qualitySettingsService
         self.fpsSettingsService = fpsSettingsService
+        self.positionSettingsService = positionSettingsService
         outputForwarder = SampleBufferOutputForwarder(
             recordingService: recordingService,
             performanceMonitor: recordingService.performanceMonitor
@@ -106,7 +128,10 @@ actor CameraService {
         session.beginConfiguration()
         defer { session.commitConfiguration() }
 
-        guard let device = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .back) else {
+        // Task 027 requirement 1: no longer hardcoded — reads the user's persisted
+        // choice (default `.back`, per `CameraPositionSettings.default`).
+        let requestedPosition = positionSettingsService.load().selectedPosition
+        guard let device = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: avCapturePosition(for: requestedPosition)) else {
             throw CameraServiceError.deviceUnavailable
         }
         videoDevice = device
@@ -115,12 +140,6 @@ actor CameraService {
             throw CameraServiceError.cannotAddInput
         }
         session.addInput(videoDeviceInput)
-
-        let requestedQuality = qualitySettingsService.load().selectedQuality
-        let resolved = resolveSessionPreset(for: requestedQuality)
-        session.sessionPreset = resolved.preset
-        activeQuality = resolved.resolvedQuality
-        qualityFallbackOccurred = resolved.fallbackOccurred
 
         if let audioDevice = AVCaptureDevice.default(for: .audio),
            let audioDeviceInput = try? AVCaptureDeviceInput(device: audioDevice),
@@ -134,21 +153,71 @@ actor CameraService {
         }
         session.addOutput(videoOutput)
 
-        // Requirement 3: the *recorded* connection must never mirror, regardless of
-        // AVFoundation's automatic-mirroring defaults for a front camera. This only
-        // affects the data output feeding `RecordingService` — it doesn't touch the
-        // preview layer's own connection (no UI change, per this task's scope).
-        if let recordingConnection = videoOutput.connection(with: .video) {
-            recordingConnection.automaticallyAdjustsVideoMirroring = false
-            recordingConnection.isVideoMirrored = await orientationManager.shouldMirrorRecording(for: device.position)
-        }
-
         audioOutput.setSampleBufferDelegate(outputForwarder, queue: sampleBufferQueue)
         if session.canAddOutput(audioOutput) {
             session.addOutput(audioOutput)
         }
 
+        await applyDeviceSpecificSettings(device: device)
         isConfigured = true
+    }
+
+    /// Task 027: resolves quality/mirroring for whichever `device` is currently
+    /// active. Shared by `configure()` (first setup) and `switchCamera(to:)` (a later
+    /// camera change), so the two never duplicate this logic.
+    private func applyDeviceSpecificSettings(device: AVCaptureDevice) async {
+        let requestedQuality = qualitySettingsService.load().selectedQuality
+        let resolved = resolveSessionPreset(for: requestedQuality)
+        session.sessionPreset = resolved.preset
+        activeQuality = resolved.resolvedQuality
+        qualityFallbackOccurred = resolved.fallbackOccurred
+
+        // Requirement 3/4 (Task 022, now actually exercised for a front camera too):
+        // the *recorded* connection must never mirror, regardless of AVFoundation's
+        // automatic-mirroring defaults. This only affects the data output feeding
+        // `RecordingService` — it doesn't touch the preview layer's own connection (no
+        // UI change beyond the toggle button itself).
+        if let recordingConnection = videoOutput.connection(with: .video) {
+            recordingConnection.automaticallyAdjustsVideoMirroring = false
+            recordingConnection.isVideoMirrored = await orientationManager.shouldMirrorRecording(for: device.position)
+        }
+    }
+
+    /// Task 027 requirement 3: switches the active camera. Only ever safe to call
+    /// while nothing is recording — `RecordingService`'s writer(s) are never touched
+    /// here (requirement 6: no writer recreation), since this can only run when no
+    /// writer exists in the first place.
+    func switchCamera(to position: CameraPosition) async throws {
+        guard await recordingService.state != .recording else {
+            throw CameraServiceError.cannotSwitchWhileRecording
+        }
+        guard currentPosition != position else { return }
+
+        guard let newDevice = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: avCapturePosition(for: position)) else {
+            throw CameraServiceError.deviceUnavailable
+        }
+        let newInput = try AVCaptureDeviceInput(device: newDevice)
+
+        guard let currentInput = session.inputs
+            .compactMap({ $0 as? AVCaptureDeviceInput })
+            .first(where: { $0.device.hasMediaType(.video) }) else {
+            throw CameraServiceError.deviceUnavailable
+        }
+
+        session.beginConfiguration()
+        session.removeInput(currentInput)
+        guard session.canAddInput(newInput) else {
+            session.addInput(currentInput)
+            session.commitConfiguration()
+            throw CameraServiceError.cannotAddInput
+        }
+        session.addInput(newInput)
+        session.commitConfiguration()
+
+        videoDevice = newDevice
+        await applyDeviceSpecificSettings(device: newDevice)
+        try configureFrameRate()
+        positionSettingsService.save(CameraPositionSettings(selectedPosition: position))
     }
 
     /// Tries `quality`'s preset first, then degrades toward lower resolutions until
