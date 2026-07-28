@@ -6,12 +6,13 @@
 import Combine
 import Foundation
 
-/// Exposes recording state to the camera screen. Owns no capture/writing logic itself —
-/// that lives in `RecordingService`.
+/// Exposes recording state to the camera screen and drives the start/stop flow.
+/// Owns no capture/writing logic itself — that lives in `RecordingService`.
 @MainActor
 final class RecordingViewModel: ObservableObject {
     @Published private(set) var state: RecordingState = .idle
     @Published private(set) var duration: TimeInterval = 0
+    @Published private(set) var lastRecordingURL: URL?
 
     var statusText: String {
         switch state {
@@ -24,18 +25,36 @@ final class RecordingViewModel: ObservableObject {
         }
     }
 
+    var formattedDuration: String {
+        let totalSeconds = Int(duration)
+        return String(format: "%02d:%02d", totalSeconds / 60, totalSeconds % 60)
+    }
+
+    var isRecording: Bool { state == .recording }
+
     private let service: RecordingService
     private var durationTask: Task<Void, Never>?
 
-    init(service: RecordingService = RecordingService()) {
+    init(service: RecordingService) {
         self.service = service
     }
 
-    func prepareRecording() async {
-        state = await service.prepareRecording()
+    /// Toggles between starting and stopping — the single button the camera screen exposes.
+    func toggleRecording() {
+        Task {
+            if isRecording {
+                await stopRecording()
+            } else {
+                await startRecording()
+            }
+        }
     }
 
     func startRecording() async {
+        if state != .preparing {
+            state = await service.prepareRecording()
+        }
+        guard state == .preparing else { return }
         state = await service.startRecording()
         if state == .recording {
             startDurationTimer()
@@ -43,8 +62,12 @@ final class RecordingViewModel: ObservableObject {
     }
 
     func stopRecording() async {
+        guard state == .recording else { return }
         state = await service.stopRecording()
         stopDurationTimer()
+        if state == .finished {
+            lastRecordingURL = await service.outputFileURL()
+        }
     }
 
     private func startDurationTimer() {

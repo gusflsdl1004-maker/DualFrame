@@ -6,12 +6,18 @@
 import SwiftUI
 
 /// Shows the live rear-camera preview, or `CameraPermissionDeniedView` when access is denied.
-/// No recording, photo capture, or saving happens here — preview only.
-/// Displays the current recording status; there is no recording button yet.
+/// Lets the user start/stop recording and shows recording status and elapsed time.
+/// No gallery saving happens here.
 struct CameraPreviewView: View {
     @StateObject private var permissionViewModel = CameraPermissionViewModel()
-    @StateObject private var recordingViewModel = RecordingViewModel()
-    @State private var cameraService = CameraService()
+    @StateObject private var recordingViewModel: RecordingViewModel
+    @State private var cameraService: CameraService
+
+    init() {
+        let recordingService = RecordingService()
+        _recordingViewModel = StateObject(wrappedValue: RecordingViewModel(service: recordingService))
+        _cameraService = State(wrappedValue: CameraService(recordingService: recordingService))
+    }
 
     var body: some View {
         Group {
@@ -29,16 +35,45 @@ struct CameraPreviewView: View {
                             .foregroundStyle(.white)
                             .padding(.top, 8)
                     }
+                    .overlay(alignment: .bottom) {
+                        recordingControls
+                    }
             }
         }
         .task {
             await permissionViewModel.requestPermissionsIfNeeded()
-            guard permissionViewModel.cameraStatus == .granted else { return }
+            guard permissionViewModel.cameraStatus == .granted,
+                  permissionViewModel.microphoneStatus == .granted else { return }
             try? await cameraService.start()
         }
         .onDisappear {
-            Task { await cameraService.stop() }
+            Task {
+                if recordingViewModel.isRecording {
+                    await recordingViewModel.stopRecording()
+                }
+                await cameraService.stop()
+            }
         }
+    }
+
+    private var recordingControls: some View {
+        VStack(spacing: 8) {
+            Text(recordingViewModel.formattedDuration)
+                .font(.title3.monospacedDigit())
+                .foregroundStyle(.white)
+
+            Button {
+                recordingViewModel.toggleRecording()
+            } label: {
+                Text(recordingViewModel.isRecording ? "Stop Recording" : "Start Recording")
+                    .font(.headline)
+                    .padding(.horizontal, 24)
+                    .padding(.vertical, 14)
+                    .background(recordingViewModel.isRecording ? Color.red : Color.white, in: Capsule())
+                    .foregroundStyle(recordingViewModel.isRecording ? .white : .black)
+            }
+        }
+        .padding(.bottom, 32)
     }
 }
 
