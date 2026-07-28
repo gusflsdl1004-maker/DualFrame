@@ -51,6 +51,22 @@ actor VideoRecordMetadataService {
         try? fileManager.removeItem(at: url)
     }
 
+    /// Extension point (Task 025 requirement 5) — not implemented. A future repair
+    /// pass would:
+    /// 1. Enumerate every file in `metadataDirectory()`.
+    /// 2. Cross-reference each `videoRecordID` against
+    ///    `InternalVideoLibraryService.loadAllRecords()`'s actual ids.
+    /// 3. Delete any sidecar whose `videoRecordID` no longer matches a real file
+    ///    (orphaned metadata — e.g. left behind by a video removed outside the app,
+    ///    such as via Finder/AirDrop, which `delete(_:)` never gets a chance to clean
+    ///    up), and flag or drop any file that fails to decode as `VideoRecordMetadata`
+    ///    at all (corruption).
+    /// TODO: implement the above. Calling this today does nothing — it exists only so
+    /// the extension point is discoverable and doesn't need inventing later.
+    func repair() async {
+        // TODO(Task 025 extension point): metadata repair not yet implemented.
+    }
+
     private func metadataDirectory() throws -> URL {
         let appSupport = try fileManager.url(
             for: .applicationSupportDirectory,

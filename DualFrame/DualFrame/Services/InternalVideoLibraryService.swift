@@ -21,12 +21,21 @@ actor InternalVideoLibraryService {
     private let fileManager = FileManager.default
     private let metadataService: VideoRecordMetadataService
 
-    /// Task 024: the current recording session, if one is active. Every
-    /// `importRecording(...)` call tags its resulting `VideoRecord` with this session's
-    /// `sessionID` — this is how `RecordingService` (which this task must not modify)
-    /// ends up producing sessionID-tagged files without ever knowing sessions exist:
-    /// its existing, unchanged `importRecording` call just runs while this is set.
-    private var pendingSession: RecordingSessionMetadata?
+    /// Task 025: every recording session currently active, keyed by `sessionID`. Was a
+    /// single `RecordingSessionMetadata?` in Task 024 — restructured into a dictionary
+    /// as a foundation for future Resume/Background Recording work, where more than one
+    /// session could plausibly be pending at once (e.g. a backgrounded recording still
+    /// finishing its import while a new one starts). Every `importRecording(...)` call
+    /// tags its resulting `VideoRecord` with a pending session's `sessionID` — this is
+    /// how `RecordingService` (which this task must not modify) ends up producing
+    /// sessionID-tagged files without ever knowing sessions exist: its existing,
+    /// unchanged `importRecording` call just runs while an entry is present here.
+    ///
+    /// Today the app only ever runs one recording at a time (see
+    /// `RecordingViewModel`), so this dictionary holds at most one entry in practice —
+    /// `currentSessionForImport()` reflects that reality honestly rather than
+    /// pretending to disambiguate between sessions it has no way to distinguish yet.
+    private var pendingSessions: [UUID: RecordingSessionMetadata] = [:]
 
     private static let filenameFormatter: DateFormatter = {
         let formatter = DateFormatter()
@@ -40,17 +49,30 @@ actor InternalVideoLibraryService {
         self.metadataService = metadataService
     }
 
-    /// Task 024 requirement 2: called by `RecordingViewModel.startRecording()` right
-    /// before a recording begins. Every `importRecording` call until `endSession()` is
-    /// tagged with `metadata.sessionID`.
+    /// Task 024 requirement 2, Task 025 requirement 1: called by
+    /// `RecordingViewModel.startRecording()` right before a recording begins. Adds
+    /// `metadata` to `pendingSessions`; every `importRecording` call until
+    /// `endSession(_:)` removes it is tagged with `metadata.sessionID`.
     func beginSession(_ metadata: RecordingSessionMetadata) {
-        pendingSession = metadata
+        pendingSessions[metadata.sessionID] = metadata
     }
 
-    /// Called once the session's `RecordingGroup` has been built, so no later,
-    /// unrelated import could ever be mistagged with a stale session.
-    func endSession() {
-        pendingSession = nil
+    /// Removes one session from `pendingSessions` by id. Task 025 requirement 2:
+    /// `RecordingViewModel` calls this on *every* exit path from a recording attempt —
+    /// not just a clean finish — so a failed `prepareRecording()`, a failed
+    /// `startRecording()`, or the user cancelling before recording truly begins can
+    /// never leave a stale entry here. See `RecordingViewModel.endCurrentSession()`.
+    func endSession(_ sessionID: UUID) {
+        pendingSessions.removeValue(forKey: sessionID)
+    }
+
+    /// The session `importRecording` should tag a just-imported file with. Task 025
+    /// requirement 1: looks up `pendingSessions` rather than a single ambient value —
+    /// today there is always at most one entry (this app never runs two recordings at
+    /// once), so this is equivalent in behavior to Task 024's single-value version, but
+    /// the lookup itself no longer assumes that will always be true.
+    private func currentSessionForImport() -> RecordingSessionMetadata? {
+        pendingSessions.values.first
     }
 
     /// Moves a validated recording out of the temporary directory and into the
@@ -76,7 +98,18 @@ actor InternalVideoLibraryService {
 
         var sessionID: UUID?
         var outputProfile: OutputProfile?
-        if let session = pendingSession {
+        if let session = currentSessionForImport() {
+            // TODO(Extension point, Task 025 requirement 3): this resolution-based
+            // match is still an inference, not an identifier — `RecordingService`
+            // knows exactly which `OutputProfile` it's writing for at the moment it
+            // calls `libraryService.importRecording(...)`, but its call site must not
+            // be modified by this task. A future task could add an
+            // `outputProfile: OutputProfile? = nil` parameter to `importRecording`
+            // (default keeps every existing call site — including RecordingService's —
+            // source-compatible) and have `RecordingService` pass its own profile
+            // directly; this method would then prefer that parameter over
+            // `matchProfile` whenever it's non-nil, and the resolution-based inference
+            // below could eventually be deleted entirely once nothing needs it.
             let profile = Self.matchProfile(resolution: validation.resolution, among: Self.expectedProfiles(for: session))
             sessionID = session.sessionID
             outputProfile = profile
@@ -119,6 +152,22 @@ actor InternalVideoLibraryService {
         return records
     }
 
+    /// Deletion order (Task 025 requirement 4, documented explicitly since two more
+    /// layers of metadata now hang off one `VideoRecord`):
+    /// 1. **Video file** — removed first, and only this step can throw. If it fails,
+    ///    nothing else runs, so metadata is never deleted out from under a video that's
+    ///    still actually there.
+    /// 2. **`VideoRecordMetadata` sidecar** (this method) — best-effort, via
+    ///    `VideoRecordMetadataService.delete`, which already swallows its own errors
+    ///    and never throws. If it fails (e.g. the sidecar file was already gone), the
+    ///    video deletion above is **not** undone — a missing sidecar just means the
+    ///    next `loadAllRecords()` sees `sessionID`/`outputProfile` as `nil` for nothing,
+    ///    since the video itself is gone too. This can never crash the app.
+    /// 3. **`RecordingGroup`** — one layer up, in
+    ///    `VideoLibraryViewModel.delete(_ group:)`, which deletes every member's
+    ///    `VideoRecord` (steps 1-2, per member) and only then removes the group's own
+    ///    JSON via `RecordingGroupService.delete(id:)`. Not this method's concern —
+    ///    documented here so the full chain is traceable from one place.
     func delete(_ record: VideoRecord) async throws {
         guard fileManager.fileExists(atPath: record.localURL.path) else {
             throw InternalVideoLibraryError.recordNotFound

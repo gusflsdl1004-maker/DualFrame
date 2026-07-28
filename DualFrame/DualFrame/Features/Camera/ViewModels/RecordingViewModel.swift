@@ -23,6 +23,9 @@ final class RecordingViewModel: ObservableObject {
     /// at least once — `nil` hides the corresponding UI row entirely (requirement 8).
     @Published private(set) var longFormStatusText: String?
     @Published private(set) var shortFormStatusText: String?
+    /// Task 026: exposed for the debug-only verification view — non-nil for exactly
+    /// the lifetime of `currentSessionMetadata` below.
+    @Published private(set) var currentSessionID: UUID?
 
     var statusText: String {
         switch state {
@@ -147,10 +150,18 @@ final class RecordingViewModel: ObservableObject {
                 selectedFPS: await service.activeFPS
             )
             currentSessionMetadata = metadata
+            currentSessionID = metadata.sessionID
             await libraryService.beginSession(metadata)
 
             state = await service.prepareRecording()
             lowStorageWarning = await service.performanceMonitor.lowStorageWarning
+
+            if state != .preparing {
+                // Task 025 requirement 2: `prepareRecording()` failed (e.g. writer
+                // creation failed) — this session never reached `.recording`, so it
+                // must not linger in `InternalVideoLibraryService.pendingSessions`.
+                await endCurrentSession()
+            }
         }
         guard state == .preparing else {
             errorMessage = await service.lastError?.message
@@ -162,11 +173,24 @@ final class RecordingViewModel: ObservableObject {
             interruptionOccurredThisSession = false
             await refreshDualStatuses()
             startDurationTimer()
+        } else {
+            // Task 025 requirement 2: guards the (currently theoretical, since
+            // `prepareRecording()` already succeeded) case where
+            // `service.startRecording()` itself doesn't transition to `.recording`.
+            await endCurrentSession()
         }
     }
 
     func stopRecording(expectsAudioTrack: Bool) async {
-        guard state == .recording else { return }
+        guard state == .recording else {
+            // Task 025 requirement 2: covers the user cancelling before the recording
+            // ever reached `.recording` (e.g. tapping Stop while still `.preparing`) —
+            // `startRecording()` already registered the session, so this view model is
+            // responsible for cleaning it up if recording never truly began. A no-op
+            // when nothing is pending (e.g. `state == .idle`).
+            await endCurrentSession()
+            return
+        }
         let startTime = await service.recordingStartTime ?? Date()
 
         state = await service.stopRecording(expectsAudioTrack: expectsAudioTrack)
@@ -177,8 +201,7 @@ final class RecordingViewModel: ObservableObject {
         let endTime = Date()
         await recordDiagnostics(startTime: startTime, endTime: endTime)
         await recordGroup(startTime: startTime, endTime: endTime)
-        await libraryService.endSession()
-        currentSessionMetadata = nil
+        await endCurrentSession()
 
         if state == .finished {
             lastRecordingURL = await service.outputFileURL()
@@ -255,6 +278,18 @@ final class RecordingViewModel: ObservableObject {
             recoveryStatus: recoveryStatus
         )
         await diagnosticsService.save(diagnostics)
+    }
+
+    /// Task 025 requirement 2: the single place that removes the current session from
+    /// `InternalVideoLibraryService.pendingSessions`, called from every exit path a
+    /// recording attempt can take — clean finish, `prepareRecording()` failure,
+    /// `startRecording()` failure, and cancellation before `.recording` was reached.
+    /// A no-op if no session is pending, so it's always safe to call defensively.
+    private func endCurrentSession() async {
+        guard let session = currentSessionMetadata else { return }
+        await libraryService.endSession(session.sessionID)
+        currentSessionMetadata = nil
+        currentSessionID = nil
     }
 
     /// Builds and saves a `RecordingGroup` for the session that just ended, referencing
