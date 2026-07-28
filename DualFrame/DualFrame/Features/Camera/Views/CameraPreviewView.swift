@@ -39,6 +39,8 @@ struct CameraPreviewView: View {
     @State private var isVerificationChecklistPresented = false
     /// Task 032: App Health Dashboard entry point — debug builds only.
     @State private var isHealthDashboardPresented = false
+    /// Task 035: Crash Report & Log Export entry point — debug builds only.
+    @State private var isCrashReportExportPresented = false
     #endif
 
     init() {
@@ -146,6 +148,20 @@ struct CameraPreviewView: View {
                 permissionViewModel: permissionViewModel,
                 recordingViewModel: recordingViewModel,
                 recordingModeViewModel: recordingModeViewModel,
+                externalStorageViewModel: externalStorageViewModel,
+                libraryService: libraryService,
+                dualRecordingCoordinator: dualRecordingCoordinator,
+                cameraPosition: cameraPosition,
+                activeQuality: activeQuality,
+                activeFPS: activeFPS
+            )
+        }
+        .sheet(isPresented: $isCrashReportExportPresented) {
+            CrashReportExportView(
+                recordingViewModel: recordingViewModel,
+                recordingModeViewModel: recordingModeViewModel,
+                orientationManager: orientationManager,
+                permissionViewModel: permissionViewModel,
                 externalStorageViewModel: externalStorageViewModel,
                 libraryService: libraryService,
                 dualRecordingCoordinator: dualRecordingCoordinator,
@@ -267,6 +283,11 @@ struct CameraPreviewView: View {
                         isHealthDashboardPresented = true
                     } label: {
                         Label("Health Dashboard", systemImage: "heart.text.square")
+                    }
+                    Button {
+                        isCrashReportExportPresented = true
+                    } label: {
+                        Label("Crash Report Export", systemImage: "doc.badge.arrow.up")
                     }
                 } label: {
                     Image(systemName: "wrench.and.screwdriver")
