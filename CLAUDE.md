@@ -63,6 +63,9 @@ These are the priority order and constraints for all DualFrame engineering work.
 46. Before implementing a new feature (Task N), first verify whether previous tasks have regressed.
 47. Existing feature stability takes priority over new features; changes that break existing functionality are not allowed.
 48. After completing every task, perform a Regression Checklist and report both the features affected and the features confirmed unaffected.
+49. Video output quality takes priority over build success.
+50. A recording feature is only considered complete when its output plays back correctly, has the correct aspect ratio and resolution, and passes Validation.
+51. Rendering quality degradation (stretching, distortion, incorrect cropping) is never considered feature completion.
 
 ## Report Templates
 

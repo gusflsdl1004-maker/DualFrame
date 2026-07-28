@@ -42,6 +42,11 @@ actor RecordingService {
         let outputURL: URL
         var isSessionStarted = false
         var hasFailed = false
+        /// Non-nil only for the short-form output (Task 021) — long-form and `.single`
+        /// mode leave both of these `nil`, so `append(_:isVideo:)` takes the exact same
+        /// unmodified-sample-buffer path it always has for them.
+        var cropConfiguration: CropConfiguration?
+        var pixelBufferAdaptor: AVAssetWriterInputPixelBufferAdaptor?
     }
 
     private(set) var state: RecordingState = .idle
@@ -75,6 +80,9 @@ actor RecordingService {
     /// out (actors are inherently `Sendable`) without crossing this actor's isolation.
     nonisolated let performanceMonitor = RecordingPerformanceMonitor()
     nonisolated let checkpointStore = RecordingCheckpointStore()
+    /// Only ever invoked for the short-form output's video (see `append`) — never for
+    /// long-form or `.single` mode.
+    private let frameCropper = VideoFrameCropper()
 
     private var writerContexts: [OutputProfile: WriterContext] = [:]
     private(set) var activeQuality: RecordingQuality = .fullHD
@@ -337,7 +345,34 @@ actor RecordingService {
         guard writer.canAdd(audioWriterInput) else { throw RecordingError.writerCreationFailed }
         writer.add(audioWriterInput)
 
-        return WriterContext(writer: writer, videoInput: videoWriterInput, audioInput: audioWriterInput, outputURL: url)
+        // Requirement 4/5: only the short-form output is cropped. Long-form and
+        // `.single` mode's ad-hoc profile are never `== .shortForm`, so they get no
+        // `cropConfiguration`/`pixelBufferAdaptor` and `append` takes their original,
+        // unmodified-sample-buffer path.
+        var cropConfiguration: CropConfiguration?
+        var pixelBufferAdaptor: AVAssetWriterInputPixelBufferAdaptor?
+        if profile == .shortForm {
+            let targetSize = CGSize(width: profile.resolution.width, height: profile.resolution.height)
+            cropConfiguration = CropConfiguration(targetSize: targetSize, strategy: .center)
+            let sourceAttributes: [String: Any] = [
+                kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,
+                kCVPixelBufferWidthKey as String: Int(targetSize.width),
+                kCVPixelBufferHeightKey as String: Int(targetSize.height)
+            ]
+            pixelBufferAdaptor = AVAssetWriterInputPixelBufferAdaptor(
+                assetWriterInput: videoWriterInput,
+                sourcePixelBufferAttributes: sourceAttributes
+            )
+        }
+
+        return WriterContext(
+            writer: writer,
+            videoInput: videoWriterInput,
+            audioInput: audioWriterInput,
+            outputURL: url,
+            cropConfiguration: cropConfiguration,
+            pixelBufferAdaptor: pixelBufferAdaptor
+        )
     }
 
     /// Appends one sample buffer to every still-active writer (requirement 3). Because
@@ -347,14 +382,14 @@ actor RecordingService {
     /// every writer that hasn't started yet (requirement 4) — there is no per-writer
     /// clock drift to account for.
     ///
-    /// Known limitation (requirement 12, needs real-device verification): each writer
-    /// is configured with its own `OutputProfile`'s width/height, but every writer
-    /// receives the same un-cropped buffer from the single capture session. AVFoundation
-    /// scales the source to fit each writer's configured dimensions — it does not
-    /// intelligently crop a 16:9 source to a 9:16 target. `.shortForm` output will be
-    /// stretched, not center-cropped, until a future task adds a pixel-buffer transform
-    /// step. This cannot be observed in Simulator (no camera), so it has not been seen
-    /// running end to end.
+    /// Task 021: every writer still receives the same source sample buffer, but only
+    /// the short-form writer (identified by `context.cropConfiguration` being non-nil)
+    /// routes its video through `frameCropper` + an `AVAssetWriterInputPixelBufferAdaptor`
+    /// first, to center-crop-and-scale into its target aspect ratio instead of letting
+    /// AVFoundation stretch the raw 16:9 buffer to fit. Long-form and `.single` mode
+    /// never set `cropConfiguration`, so they keep appending the original, untouched
+    /// sample buffer exactly as before this task. This cannot be observed running end to
+    /// end in Simulator (no camera), so it has not been seen with a real capture session.
     private func append(_ sampleBuffer: CMSampleBuffer, isVideo: Bool) async {
         // Paused means an interruption is in effect — never write new samples while
         // paused (requirement 5 from Task 017: never corrupt the existing recording).
@@ -378,7 +413,23 @@ actor RecordingService {
             guard writer.status == .writing, input.isReadyForMoreMediaData else { continue }
 
             let writeStart = Date()
-            input.append(sampleBuffer)
+            if isVideo, let cropConfiguration = context.cropConfiguration, let adaptor = context.pixelBufferAdaptor {
+                // Task 021: the only path that differs from pre-Task-021 behavior — used
+                // exclusively for the short-form output's video. `nil` from the cropper
+                // means this single frame gets dropped, not that the writer failed; only
+                // an actual `adaptor.append` rejection counts as a writer-level failure.
+                if let sourcePixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer),
+                   let croppedBuffer = frameCropper.croppedPixelBuffer(from: sourcePixelBuffer, configuration: cropConfiguration) {
+                    let appended = adaptor.append(croppedBuffer, withPresentationTime: CMSampleBufferGetPresentationTimeStamp(sampleBuffer))
+                    if !appended {
+                        markWriterFailed(profile, error: .writeFailed)
+                    }
+                }
+            } else {
+                // Unchanged since before Task 021: long-form, `.single` mode, and every
+                // audio append always take this exact path.
+                input.append(sampleBuffer)
+            }
             await performanceMonitor.recordWriteLatency(Date().timeIntervalSince(writeStart))
             lastAppendedTimestamp = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
 
