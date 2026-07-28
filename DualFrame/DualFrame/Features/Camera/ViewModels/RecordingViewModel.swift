@@ -376,16 +376,24 @@ final class RecordingViewModel: ObservableObject {
         return String(format: "%02d:%02d", totalSeconds / 60, totalSeconds % 60)
     }
 
+    /// Task 034: captures `self` weakly, matching the pattern already used by
+    /// `RecordingPerformanceMonitor.startMonitoring()` — without this, `self` (via
+    /// `durationTask`) would hold a strong reference to a closure that itself holds a
+    /// strong reference back to `self`, a reference cycle that only resolves once the
+    /// loop is cancelled. `deinit` alone can't break it, since `deinit` never runs while
+    /// the cycle exists — cancellation has to come from outside instead (which
+    /// `stopDurationTimer()` already does on every normal recording-stop path, but a
+    /// future caller that forgets to call it would otherwise leak this view model).
     private func startDurationTimer() {
         duration = 0
         durationTask?.cancel()
-        durationTask = Task {
-            while !Task.isCancelled {
+        durationTask = Task { [weak self] in
+            while let self, !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(1))
                 guard !Task.isCancelled else { return }
-                duration += 1
-                performanceSnapshot = await service.performanceMonitor.snapshot
-                await refreshDualStatuses()
+                self.duration += 1
+                self.performanceSnapshot = await self.service.performanceMonitor.snapshot
+                await self.refreshDualStatuses()
             }
         }
     }

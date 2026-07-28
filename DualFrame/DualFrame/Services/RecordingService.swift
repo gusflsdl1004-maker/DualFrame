@@ -587,13 +587,19 @@ actor RecordingService {
     }
 
     /// Requirement 3: every 5 seconds while recording.
+    ///
+    /// Task 034: captures `self` weakly, matching `RecordingPerformanceMonitor
+    /// .startMonitoring()`'s existing pattern — the actor's own stored `checkpointTask`
+    /// would otherwise hold a strong reference to a closure that holds a strong
+    /// reference back to the actor, a cycle `deinit` can't break on its own (it never
+    /// runs while the cycle exists).
     private func startCheckpointing() {
         checkpointTask?.cancel()
-        checkpointTask = Task {
-            while !Task.isCancelled {
+        checkpointTask = Task { [weak self] in
+            while let self, !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(5))
                 guard !Task.isCancelled else { return }
-                await saveCheckpoint()
+                await self.saveCheckpoint()
             }
         }
     }
