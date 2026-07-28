@@ -8,7 +8,7 @@ import AVFoundation
 /// Lifecycle states for a single recording.
 /// `nonisolated` because it's compared from within `RecordingService`'s own actor context,
 /// not the default main-actor isolation this project applies to unannotated types.
-nonisolated enum RecordingState: Equatable {
+nonisolated enum RecordingState: Equatable, Codable {
     case idle
     case preparing
     case recording
@@ -19,8 +19,10 @@ nonisolated enum RecordingState: Equatable {
 
 /// Owns the `AVAssetWriter` pipeline: creates the writer and inputs, appends sample
 /// buffers forwarded from `CameraService`, finishes the file safely, and validates it
-/// with `RecordingValidator` before reporting success.
-/// No gallery saving, dual recording, or automatic recovery happens here.
+/// with `RecordingValidator` before reporting success. Also persists a periodic
+/// `RecordingCheckpoint` (crash-recovery preparation only — no automatic recovery
+/// happens here; see CLAUDE.md rules 21-24).
+/// No gallery saving or dual recording happens here.
 actor RecordingService {
     private(set) var state: RecordingState = .idle
     private(set) var lastError: RecordingError?
@@ -29,27 +31,33 @@ actor RecordingService {
 
     private let validator = RecordingValidator()
     private let libraryService: InternalVideoLibraryService
-    /// `nonisolated` because it's just a reference to another actor — safe to hand out
-    /// (actors are inherently `Sendable`) without crossing this actor's isolation.
+    /// `nonisolated` because these are just references to other actors — safe to hand
+    /// out (actors are inherently `Sendable`) without crossing this actor's isolation.
     nonisolated let performanceMonitor = RecordingPerformanceMonitor()
+    nonisolated let checkpointStore = RecordingCheckpointStore()
 
     private var assetWriter: AVAssetWriter?
     private var videoInput: AVAssetWriterInput?
     private var audioInput: AVAssetWriterInput?
     private var outputURL: URL?
     private var isSessionStarted = false
-    private var videoDimensions = RecordingQuality.fullHD.dimensions
+    private var activeQuality: RecordingQuality = .fullHD
+    private var activeFPS: RecordingFPS = .fps30
     private var lastAppendedTimestamp: CMTime = .zero
+    private var recordingStartTime: Date?
+    private var checkpointTask: Task<Void, Never>?
 
     init(libraryService: InternalVideoLibraryService) {
         self.libraryService = libraryService
     }
 
-    /// Called by `CameraService` after it resolves the actual capture resolution
-    /// (which may differ from the user's raw preference if a fallback occurred), so
-    /// the asset writer always encodes at the resolution the session is really running at.
-    func updateVideoDimensions(width: Int, height: Int) {
-        videoDimensions = (width, height)
+    /// Called by `CameraService` once it has resolved the actual capture resolution
+    /// and frame rate (which may differ from the user's raw preference if a fallback
+    /// occurred), so the asset writer and recovery checkpoint always reflect what the
+    /// session is really running at.
+    func updateRecordingFormat(quality: RecordingQuality, fps: RecordingFPS) {
+        activeQuality = quality
+        activeFPS = fps
     }
 
     @discardableResult
@@ -60,6 +68,7 @@ actor RecordingService {
         lastValidationResult = nil
         lastImportedRecord = nil
         lastAppendedTimestamp = .zero
+        recordingStartTime = nil
 
         // Warn-only check (requirement 13) — never blocks preparing or recording.
         await performanceMonitor.checkAvailableStorage()
@@ -77,7 +86,10 @@ actor RecordingService {
     func startRecording() async -> RecordingState {
         guard state == .preparing, assetWriter != nil else { return state }
         state = .recording
+        recordingStartTime = Date()
         await performanceMonitor.startMonitoring()
+        await saveCheckpoint()
+        startCheckpointing()
         return state
     }
 
@@ -96,10 +108,12 @@ actor RecordingService {
     func stopRecording(expectsAudioTrack: Bool) async -> RecordingState {
         guard state == .recording else { return state }
         state = .stopping
+        stopCheckpointing()
         await performanceMonitor.stopMonitoring()
 
         guard let writer = assetWriter, isSessionStarted, let url = outputURL else {
             // Nothing was ever written (e.g. stopped before the first sample buffer arrived).
+            // Requirement 8: keep the checkpoint — this counts as an unexpected failure.
             lastError = .writeFailed
             state = .failed
             return state
@@ -134,6 +148,8 @@ actor RecordingService {
             // a recording succeeds.
             lastImportedRecord = try await libraryService.importRecording(from: url, validation: result)
             state = .finished
+            // Requirement 7: only a successful completion clears the checkpoint.
+            await checkpointStore.delete()
         } catch {
             lastError = .unknown
             state = .failed
@@ -151,10 +167,11 @@ actor RecordingService {
         let url = Self.makeOutputURL()
         let writer = try AVAssetWriter(url: url, fileType: .mov)
 
+        let dimensions = activeQuality.dimensions
         let videoSettings: [String: Any] = [
             AVVideoCodecKey: AVVideoCodecType.h264,
-            AVVideoWidthKey: videoDimensions.width,
-            AVVideoHeightKey: videoDimensions.height
+            AVVideoWidthKey: dimensions.width,
+            AVVideoHeightKey: dimensions.height
         ]
         let videoWriterInput = AVAssetWriterInput(mediaType: .video, outputSettings: videoSettings)
         videoWriterInput.expectsMediaDataInRealTime = true
@@ -212,27 +229,44 @@ actor RecordingService {
         FileManager.default.temporaryDirectory.appendingPathComponent("\(UUID().uuidString).mov")
     }
 
-    // MARK: - Recovery extension point (not implemented — see CLAUDE.md rules 21-24)
+    // MARK: - Checkpoint persistence (requirements 2-8; recovery itself is not implemented)
 
-    /// A future interruption/crash recovery feature would need at least: which file
-    /// was being written, how far into it we got, and how long that represents.
-    /// `RecordingCheckpoint` captures exactly that. Nothing calls or persists this yet —
-    /// this task only defines where a recovery checkpoint would be read from.
+    /// Builds the current checkpoint from in-memory state. `nil` before a recording has
+    /// actually started (nothing worth persisting yet).
     func currentCheckpoint() -> RecordingCheckpoint? {
-        guard state == .recording, let url = outputURL else { return nil }
+        guard let url = outputURL, let startTime = recordingStartTime else { return nil }
         return RecordingCheckpoint(
+            recordingState: state,
             outputURL: url,
-            lastSampleTimestamp: lastAppendedTimestamp,
-            recordedDuration: lastAppendedTimestamp.seconds
+            recordingStartTime: startTime,
+            lastSampleTimestampSeconds: lastAppendedTimestamp.seconds,
+            recordingDuration: Date().timeIntervalSince(startTime),
+            selectedQuality: activeQuality,
+            selectedFPS: activeFPS
         )
     }
-}
 
-/// A snapshot of enough state to (in a future task) resume or safely finalize an
-/// interrupted recording instead of losing it outright. Extension point only —
-/// nothing writes this to disk or reads it back yet.
-nonisolated struct RecordingCheckpoint: Equatable {
-    let outputURL: URL
-    let lastSampleTimestamp: CMTime
-    let recordedDuration: TimeInterval
+    /// Fires and does not block the caller — the checkpoint store does its own I/O
+    /// on its own actor, so this never holds up sample buffer appends (requirement 6).
+    private func saveCheckpoint() async {
+        guard let checkpoint = currentCheckpoint() else { return }
+        await checkpointStore.save(checkpoint)
+    }
+
+    /// Requirement 3: every 5 seconds while recording.
+    private func startCheckpointing() {
+        checkpointTask?.cancel()
+        checkpointTask = Task {
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(5))
+                guard !Task.isCancelled else { return }
+                await saveCheckpoint()
+            }
+        }
+    }
+
+    private func stopCheckpointing() {
+        checkpointTask?.cancel()
+        checkpointTask = nil
+    }
 }

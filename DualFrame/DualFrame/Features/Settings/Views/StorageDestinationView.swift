@@ -10,6 +10,7 @@ import SwiftUI
 /// settings — it doesn't itself run export or recording logic.
 struct StorageDestinationView: View {
     @StateObject private var viewModel = StorageSettingsViewModel()
+    @StateObject private var recoveryViewModel = RecoveryViewModel(checkpointStore: RecordingCheckpointStore())
     @ObservedObject var externalStorageViewModel: ExternalStorageViewModel
     @Environment(\.dismiss) private var dismiss
 
@@ -41,6 +42,10 @@ struct StorageDestinationView: View {
                         RecordingFPSView()
                     }
                 }
+
+                Section("Recovery") {
+                    recoveryStatusView
+                }
             }
             .navigationTitle("Settings")
             .toolbar {
@@ -48,6 +53,41 @@ struct StorageDestinationView: View {
                     Button("Done") { dismiss() }
                 }
             }
+        }
+        .task {
+            await recoveryViewModel.checkRecoveryStatus()
+        }
+    }
+
+    @ViewBuilder
+    private var recoveryStatusView: some View {
+        switch recoveryViewModel.status {
+        case .checking:
+            Text("Checking...")
+                .foregroundStyle(.secondary)
+
+        case .noRecoveryNeeded:
+            Text("No Recovery Needed")
+                .foregroundStyle(.secondary)
+
+        case .recoveryAvailable:
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Recovery Available")
+                    .font(.headline)
+                Text("Last Recording: \(recoveryViewModel.formattedTimestamp)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Text("Duration: \(recoveryViewModel.formattedDuration)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Text(recoveryViewModel.temporaryFileExists ? "File Exists" : "File Missing")
+                    .font(.caption)
+                    .foregroundStyle(recoveryViewModel.temporaryFileExists ? .green : .red)
+            }
+
+        case .corrupted:
+            Text("Recovery data is corrupted")
+                .foregroundStyle(.red)
         }
     }
 

@@ -39,6 +39,12 @@ These are the priority order and constraints for all DualFrame engineering work.
 22. Never introduce architecture that makes interrupted recordings unrecoverable.
 23. Any new recording component should define where recovery checkpoints could be added in future tasks.
 24. If recovery cannot yet be implemented, explicitly document what state would be required to restore an interrupted recording.
+25. Every checkpoint written to disk must use an atomic write operation whenever possible.
+26. Never overwrite recovery metadata without validating the previous checkpoint.
+27. Always verify that recovery metadata and recording files remain consistent.
+28. If checkpoint data becomes invalid or corrupted, detect it gracefully and report the issue instead of crashing.
+29. Never automatically delete temporary recording files unless their final recording has been successfully validated.
+30. Every recovery-related task must explicitly document what user data could still be lost in the current implementation.
 
 ## Report Templates
 
@@ -99,6 +105,16 @@ Every completed task's final message must include these four reports (in additio
 - Recovery Extension Points:
 - Crash Recovery Readiness:
 - Known Recovery Risks:
+- Recommended Improvements:
+
+**Data Integrity Report** (include whenever a task touches checkpoint or recording file persistence, per rules 25-30)
+- Checkpoint Write Success:
+- Checkpoint Read Success:
+- Atomic File Write:
+- Temporary File Verified:
+- Final File Verified:
+- Recovery Metadata Valid:
+- Known Data Integrity Risks:
 - Recommended Improvements:
 
 No physical iPhone is available in this environment, and Simulator cannot report real battery/thermal/CPU/memory metrics for camera hardware that doesn't exist there. Every Battery & Thermal Report, Performance Report, and Real Device Test must state this plainly, mark device-dependent fields as untested rather than guessing or fabricating values, and describe exactly what the user needs to measure on real hardware (per rules 12 and 16 above). Every task touching recording/saving/exporting/file management must also include a short failure-path review (rule 20): what happens on crash, sudden power-off, full storage, or a permission change mid-operation.

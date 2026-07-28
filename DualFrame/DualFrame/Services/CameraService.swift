@@ -66,6 +66,10 @@ actor CameraService {
         if !isConfigured {
             try await configure()
             try configureFrameRate()
+            // RecordingService's AVAssetWriter (and its recovery checkpoint) must
+            // reflect the resolution/frame rate the session is actually running at,
+            // not just the user's raw preference.
+            await recordingService.updateRecordingFormat(quality: activeQuality, fps: activeFPS)
         }
         guard !session.isRunning else { return }
         session.startRunning()
@@ -95,12 +99,6 @@ actor CameraService {
         session.sessionPreset = resolved.preset
         activeQuality = resolved.resolvedQuality
         qualityFallbackOccurred = resolved.fallbackOccurred
-        // RecordingService's AVAssetWriter must encode at the resolution the session
-        // is actually running at, not just the user's raw preference.
-        await recordingService.updateVideoDimensions(
-            width: resolved.resolvedQuality.dimensions.width,
-            height: resolved.resolvedQuality.dimensions.height
-        )
 
         if let audioDevice = AVCaptureDevice.default(for: .audio),
            let audioDeviceInput = try? AVCaptureDeviceInput(device: audioDevice),
