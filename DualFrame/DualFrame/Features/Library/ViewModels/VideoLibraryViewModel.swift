@@ -12,11 +12,35 @@ import Foundation
 final class VideoLibraryViewModel: ObservableObject {
     @Published private(set) var records: [VideoRecord] = []
     @Published private(set) var errorMessage: String?
+    @Published private(set) var exportStatuses: [String: PhotoLibraryExportStatus] = [:]
 
     private let libraryService: InternalVideoLibraryService
+    private let exportService: PhotoLibraryExportService
 
-    init(libraryService: InternalVideoLibraryService) {
+    init(
+        libraryService: InternalVideoLibraryService,
+        exportService: PhotoLibraryExportService = PhotoLibraryExportService()
+    ) {
         self.libraryService = libraryService
+        self.exportService = exportService
+    }
+
+    func exportStatus(for record: VideoRecord) -> PhotoLibraryExportStatus {
+        exportStatuses[record.id] ?? .idle
+    }
+
+    /// Copies `record`'s video into Photos. Always user-initiated — never called
+    /// automatically after a recording finishes. The internal library file is untouched.
+    func exportToPhotos(_ record: VideoRecord) async {
+        exportStatuses[record.id] = .exporting
+        do {
+            try await exportService.exportVideo(at: record.localURL)
+            exportStatuses[record.id] = .success
+        } catch PhotoLibraryExportError.permissionDenied {
+            exportStatuses[record.id] = .failed(permissionDenied: true)
+        } catch {
+            exportStatuses[record.id] = .failed(permissionDenied: false)
+        }
     }
 
     /// Rescans the library directory and sorts the results newest first.

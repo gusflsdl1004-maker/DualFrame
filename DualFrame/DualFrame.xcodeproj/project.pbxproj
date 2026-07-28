@@ -255,6 +255,7 @@
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_NSCameraUsageDescription = "DualFrame needs camera access to record video.";
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "DualFrame needs microphone access to record audio with video.";
+				INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription = "DualFrame needs access to save exported videos to your Photos library.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
@@ -288,6 +289,7 @@
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_NSCameraUsageDescription = "DualFrame needs camera access to record video.";
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "DualFrame needs microphone access to record audio with video.";
+				INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription = "DualFrame needs access to save exported videos to your Photos library.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
