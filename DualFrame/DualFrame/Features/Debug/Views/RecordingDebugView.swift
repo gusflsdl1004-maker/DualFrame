@@ -6,37 +6,43 @@
 #if DEBUG
 import SwiftUI
 
-/// Real Device Verification Mode (Task 026) — a debug-only diagnostics screen showing
+/// Diagnostics & Developer Panel (Task 026) — a debug-only diagnostics screen showing
 /// live internal recording state, so a physical device can be checked at a glance
 /// without attaching a debugger. The entire file is wrapped in `#if DEBUG`, so none of
 /// it — including this type itself — is compiled into a Release build; there is no
 /// runtime check to bypass, only a build-time one.
 ///
 /// Read-only: nothing here can start, stop, or otherwise affect a recording. It only
-/// observes `RecordingViewModel`/`OrientationManager` (already-published values) and
-/// reads `RecordingCheckpointStore.load()` once a second — the same public, unmodified
-/// method `RecoveryViewModel` already uses, so this adds no new Recovery code.
+/// observes already-published values (`RecordingViewModel`/`OrientationManager`/
+/// `RecordingModeViewModel`) and reads two already-public, unmodified methods —
+/// `RecordingCheckpointStore.load()` (the same one `RecoveryViewModel` already uses)
+/// and `RecordingPerformanceMonitor.currentAvailableStorageBytes()` — so this adds no
+/// new Recovery/PerformanceMonitor code, only new display.
 struct RecordingDebugView: View {
     @ObservedObject var recordingViewModel: RecordingViewModel
     @ObservedObject var orientationManager: OrientationManager
+    @ObservedObject var recordingModeViewModel: RecordingModeViewModel
     let activeQuality: RecordingQuality?
     let activeFPS: RecordingFPS?
     let dualRecordingCoordinator: DualRecordingCoordinator
 
     @State private var lastCheckpointSavedAt: Date?
+    @State private var storageRemainingText = "--"
+    @State private var activeOutputProfilesText = "--"
 
     var body: some View {
         NavigationStack {
             Form {
                 Section("Session") {
                     LabeledContent("Session ID", value: recordingViewModel.currentSessionID?.uuidString ?? "--")
-                    LabeledContent("Recording State", value: recordingViewModel.statusText)
+                    LabeledContent("Recording Mode", value: recordingModeViewModel.settings.mode.title)
+                    LabeledContent("Recording State", value: recordingViewModel.displayStatusText)
+                    LabeledContent("Active Output Profiles", value: activeOutputProfilesText)
                 }
 
                 Section("Writers") {
-                    LabeledContent("Current Writer", value: recordingViewModel.statusText)
-                    LabeledContent("Long-form Writer", value: recordingViewModel.longFormStatusText ?? "--")
-                    LabeledContent("Short-form Writer", value: recordingViewModel.shortFormStatusText ?? "--")
+                    LabeledContent("Long Writer Status", value: recordingViewModel.longFormStatusText ?? "--")
+                    LabeledContent("Short Writer Status", value: recordingViewModel.shortFormStatusText ?? "--")
                 }
 
                 Section("Capture") {
@@ -50,15 +56,22 @@ struct RecordingDebugView: View {
 
                 Section("Recovery") {
                     LabeledContent(
-                        "Last Checkpoint Saved",
+                        "Checkpoint Time",
                         value: lastCheckpointSavedAt?.formatted(date: .omitted, time: .standard) ?? "--"
                     )
                 }
 
                 Section("Performance") {
-                    LabeledContent("Memory", value: recordingViewModel.memoryStatusText)
+                    LabeledContent("Memory Usage", value: recordingViewModel.memoryStatusText)
                     LabeledContent("Dropped Frames", value: recordingViewModel.formattedDroppedFrames)
                     LabeledContent("Write Latency", value: recordingViewModel.writeStatusText)
+                    LabeledContent("Storage Remaining", value: storageRemainingText)
+                }
+
+                Section {
+                    LabeledContent("Export Status", value: "Not tracked here — see Library")
+                } footer: {
+                    Text("Export state is tracked per-recording in the Library screen, not at the session level this panel observes.")
                 }
             }
             .navigationTitle("Debug Verification")
@@ -66,6 +79,8 @@ struct RecordingDebugView: View {
         .task {
             while !Task.isCancelled {
                 await refreshCheckpointTimestamp()
+                await refreshStorageRemaining()
+                await refreshActiveOutputProfiles()
                 try? await Task.sleep(for: .seconds(1))
             }
         }
@@ -91,6 +106,19 @@ struct RecordingDebugView: View {
             return
         }
         lastCheckpointSavedAt = checkpoint.recordingStartTime.addingTimeInterval(checkpoint.recordingDuration)
+    }
+
+    private func refreshStorageRemaining() async {
+        guard let bytes = await dualRecordingCoordinator.recordingService.performanceMonitor.currentAvailableStorageBytes() else {
+            storageRemainingText = "--"
+            return
+        }
+        storageRemainingText = ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)
+    }
+
+    private func refreshActiveOutputProfiles() async {
+        let profiles = await dualRecordingCoordinator.activeProfiles
+        activeOutputProfilesText = profiles.map(\.outputName).joined(separator: ", ")
     }
 }
 #endif

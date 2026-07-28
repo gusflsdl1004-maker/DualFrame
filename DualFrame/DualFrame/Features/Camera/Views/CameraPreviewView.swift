@@ -107,6 +107,7 @@ struct CameraPreviewView: View {
             RecordingDebugView(
                 recordingViewModel: recordingViewModel,
                 orientationManager: orientationManager,
+                recordingModeViewModel: recordingModeViewModel,
                 activeQuality: activeQuality,
                 activeFPS: activeFPS,
                 dualRecordingCoordinator: dualRecordingCoordinator
