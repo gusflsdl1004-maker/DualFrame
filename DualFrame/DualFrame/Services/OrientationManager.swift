@@ -69,12 +69,14 @@ final class OrientationManager: ObservableObject {
     /// The transform `RecordingService` should apply to a writer's video input so the
     /// saved file plays back right-side-up, for the current orientation and `position`.
     ///
-    /// Convention (standard for `AVAssetWriter`-based capture; **not verified on real
-    /// hardware** — see the Task 022 report's Known Issues): the rear camera's sensor
-    /// is mounted so `.landscapeLeft` needs no rotation and `.landscapeRight` needs
-    /// 180°; the front camera's sensor is mounted rotated 180° relative to the rear
-    /// one, so those two invert. Portrait/portrait-upside-down use the same angle for
-    /// both cameras.
+    /// Task 033: real-device testing on iPhone 15 Pro (rear camera) found
+    /// `.landscapeRight` 180° off — the originally assumed convention (rear sensor
+    /// needs 180° in `.landscapeRight`) was wrong; it needs the same 0° as
+    /// `.landscapeLeft`. Rear-camera portrait/portrait-upside-down passed unchanged.
+    /// The front-camera table below is unchanged by this fix and remains **not
+    /// independently verified per-orientation on real hardware** — the Task 027 "Front
+    /// Camera" pass confirmed the front camera works, not that every one of its four
+    /// orientation angles is individually correct.
     func recordingTransform(for position: AVCaptureDevice.Position) -> CGAffineTransform {
         CGAffineTransform(rotationAngle: Self.rotationAngle(for: deviceOrientation, position: position))
     }
@@ -121,7 +123,9 @@ final class OrientationManager: ObservableObject {
         case .portrait: .pi / 2
         case .portraitUpsideDown: -.pi / 2
         case .landscapeLeft: position == .front ? .pi : 0
-        case .landscapeRight: position == .front ? 0 : .pi
+        // Task 033: rear camera fixed from .pi to 0 per real-device confirmation
+        // (was 180° flipped). Front camera's 0 is unchanged/unverified.
+        case .landscapeRight: 0
         }
     }
 }
