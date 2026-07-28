@@ -6,13 +6,16 @@
 import Combine
 import Foundation
 
-/// Exposes recording state to the camera screen and drives the start/stop flow.
-/// Owns no capture/writing logic itself — that lives in `RecordingService`.
+/// Exposes recording state and validation results to the camera screen, and drives
+/// the start/stop flow. Owns no capture/writing logic itself — that lives in
+/// `RecordingService`.
 @MainActor
 final class RecordingViewModel: ObservableObject {
     @Published private(set) var state: RecordingState = .idle
     @Published private(set) var duration: TimeInterval = 0
     @Published private(set) var lastRecordingURL: URL?
+    @Published private(set) var lastValidationResult: RecordingValidationResult?
+    @Published private(set) var errorMessage: String?
 
     var statusText: String {
         switch state {
@@ -20,14 +23,26 @@ final class RecordingViewModel: ObservableObject {
         case .preparing: "PREPARING"
         case .recording: "RECORDING"
         case .stopping: "STOPPING"
-        case .finished: "FINISHED"
+        case .finished: "SUCCESS"
         case .failed: "FAILED"
         }
     }
 
-    var formattedDuration: String {
-        let totalSeconds = Int(duration)
-        return String(format: "%02d:%02d", totalSeconds / 60, totalSeconds % 60)
+    var formattedDuration: String { Self.format(seconds: duration) }
+
+    var formattedFileSize: String {
+        guard let bytes = lastValidationResult?.fileSize else { return "--" }
+        return ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)
+    }
+
+    var formattedRecordedDuration: String {
+        guard let seconds = lastValidationResult?.duration else { return "--" }
+        return Self.format(seconds: seconds)
+    }
+
+    var formattedResolution: String {
+        guard let size = lastValidationResult?.resolution else { return "--" }
+        return "\(Int(size.width)) × \(Int(size.height))"
     }
 
     var isRecording: Bool { state == .recording }
@@ -40,10 +55,11 @@ final class RecordingViewModel: ObservableObject {
     }
 
     /// Toggles between starting and stopping — the single button the camera screen exposes.
-    func toggleRecording() {
+    /// `expectsAudioTrack` should reflect whether microphone permission was granted.
+    func toggleRecording(expectsAudioTrack: Bool) {
         Task {
             if isRecording {
-                await stopRecording()
+                await stopRecording(expectsAudioTrack: expectsAudioTrack)
             } else {
                 await startRecording()
             }
@@ -51,23 +67,38 @@ final class RecordingViewModel: ObservableObject {
     }
 
     func startRecording() async {
+        lastValidationResult = nil
+        errorMessage = nil
+
         if state != .preparing {
             state = await service.prepareRecording()
         }
-        guard state == .preparing else { return }
+        guard state == .preparing else {
+            errorMessage = await service.lastError?.message
+            return
+        }
         state = await service.startRecording()
         if state == .recording {
             startDurationTimer()
         }
     }
 
-    func stopRecording() async {
+    func stopRecording(expectsAudioTrack: Bool) async {
         guard state == .recording else { return }
-        state = await service.stopRecording()
+        state = await service.stopRecording(expectsAudioTrack: expectsAudioTrack)
         stopDurationTimer()
+        lastValidationResult = await service.lastValidationResult
+
         if state == .finished {
             lastRecordingURL = await service.outputFileURL()
+        } else {
+            errorMessage = await service.lastError?.message
         }
+    }
+
+    private static func format(seconds: TimeInterval) -> String {
+        let totalSeconds = Int(seconds)
+        return String(format: "%02d:%02d", totalSeconds / 60, totalSeconds % 60)
     }
 
     private func startDurationTimer() {

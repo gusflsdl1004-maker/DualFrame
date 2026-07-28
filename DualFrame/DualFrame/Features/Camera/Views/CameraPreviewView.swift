@@ -49,21 +49,40 @@ struct CameraPreviewView: View {
         .onDisappear {
             Task {
                 if recordingViewModel.isRecording {
-                    await recordingViewModel.stopRecording()
+                    await recordingViewModel.stopRecording(expectsAudioTrack: isMicrophoneGranted)
                 }
                 await cameraService.stop()
             }
         }
     }
 
+    private var isMicrophoneGranted: Bool {
+        permissionViewModel.microphoneStatus == .granted
+    }
+
     private var recordingControls: some View {
         VStack(spacing: 8) {
+            if let result = recordingViewModel.lastValidationResult {
+                VStack(spacing: 2) {
+                    Text("Size: \(recordingViewModel.formattedFileSize)")
+                    Text("Duration: \(recordingViewModel.formattedRecordedDuration)")
+                    Text("Resolution: \(recordingViewModel.formattedResolution)")
+                }
+                .font(.caption2)
+                .foregroundStyle(.white)
+                .opacity(result.isValid ? 1 : 0.7)
+            } else if let errorMessage = recordingViewModel.errorMessage {
+                Text(errorMessage)
+                    .font(.caption2)
+                    .foregroundStyle(.red)
+            }
+
             Text(recordingViewModel.formattedDuration)
                 .font(.title3.monospacedDigit())
                 .foregroundStyle(.white)
 
             Button {
-                recordingViewModel.toggleRecording()
+                recordingViewModel.toggleRecording(expectsAudioTrack: isMicrophoneGranted)
             } label: {
                 Text(recordingViewModel.isRecording ? "Stop Recording" : "Start Recording")
                     .font(.headline)

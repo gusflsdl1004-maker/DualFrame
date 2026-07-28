@@ -17,17 +17,16 @@ nonisolated enum RecordingState: Equatable {
     case failed
 }
 
-enum RecordingServiceError: Error {
-    case writerCreationFailed
-    case cannotAddInput
-}
-
 /// Owns the `AVAssetWriter` pipeline: creates the writer and inputs, appends sample
-/// buffers forwarded from `CameraService`, and finishes the file safely.
+/// buffers forwarded from `CameraService`, finishes the file safely, and validates it
+/// with `RecordingValidator` before reporting success.
 /// No gallery saving, dual recording, or automatic recovery happens here.
 actor RecordingService {
     private(set) var state: RecordingState = .idle
-    private(set) var lastError: Error?
+    private(set) var lastError: RecordingError?
+    private(set) var lastValidationResult: RecordingValidationResult?
+
+    private let validator = RecordingValidator()
 
     private var assetWriter: AVAssetWriter?
     private var videoInput: AVAssetWriterInput?
@@ -40,11 +39,12 @@ actor RecordingService {
         guard state == .idle || state == .finished || state == .failed else { return state }
         state = .preparing
         lastError = nil
+        lastValidationResult = nil
 
         do {
             try setUpWriter()
         } catch {
-            lastError = error
+            lastError = .writerCreationFailed
             state = .failed
         }
         return state
@@ -65,13 +65,17 @@ actor RecordingService {
         await append(sampleBuffer, to: audioInput)
     }
 
+    /// Finishes writing and validates the resulting file.
+    /// `expectsAudioTrack` should reflect whether microphone permission was granted —
+    /// a missing audio track is only an error when audio was actually expected.
     @discardableResult
-    func stopRecording() async -> RecordingState {
+    func stopRecording(expectsAudioTrack: Bool) async -> RecordingState {
         guard state == .recording else { return state }
         state = .stopping
 
-        guard let writer = assetWriter, isSessionStarted else {
+        guard let writer = assetWriter, isSessionStarted, let url = outputURL else {
             // Nothing was ever written (e.g. stopped before the first sample buffer arrived).
+            lastError = .writeFailed
             state = .failed
             return state
         }
@@ -85,16 +89,25 @@ actor RecordingService {
             }
         }
 
-        if writer.status == .completed {
+        guard writer.status == .completed else {
+            lastError = .writeFailed
+            state = .failed
+            return state
+        }
+
+        let result = await validator.validate(fileURL: url, expectsAudioTrack: expectsAudioTrack)
+        lastValidationResult = result
+
+        if result.isValid {
             state = .finished
         } else {
-            lastError = writer.error
+            lastError = result.error ?? .validationFailed
             state = .failed
         }
         return state
     }
 
-    /// The finished recording's file URL, if the last recording completed successfully.
+    /// The finished recording's file URL, if the last recording completed and validated successfully.
     func outputFileURL() -> URL? {
         state == .finished ? outputURL : nil
     }
@@ -120,10 +133,10 @@ actor RecordingService {
         let audioWriterInput = AVAssetWriterInput(mediaType: .audio, outputSettings: audioSettings)
         audioWriterInput.expectsMediaDataInRealTime = true
 
-        guard writer.canAdd(videoWriterInput) else { throw RecordingServiceError.cannotAddInput }
+        guard writer.canAdd(videoWriterInput) else { throw RecordingError.writerCreationFailed }
         writer.add(videoWriterInput)
 
-        guard writer.canAdd(audioWriterInput) else { throw RecordingServiceError.cannotAddInput }
+        guard writer.canAdd(audioWriterInput) else { throw RecordingError.writerCreationFailed }
         writer.add(audioWriterInput)
 
         assetWriter = writer
@@ -138,7 +151,7 @@ actor RecordingService {
 
         if !isSessionStarted {
             guard writer.startWriting() else {
-                lastError = writer.error
+                lastError = .writeFailed
                 state = .failed
                 return
             }
@@ -151,7 +164,7 @@ actor RecordingService {
         input.append(sampleBuffer)
 
         if writer.status == .failed {
-            lastError = writer.error
+            lastError = .writeFailed
             state = .failed
         }
     }
