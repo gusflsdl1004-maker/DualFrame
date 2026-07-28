@@ -18,8 +18,73 @@ These are the priority order and constraints for all DualFrame engineering work.
 1. Never sacrifice recording stability for new features.
 2. Test every camera-related feature on a real iPhone whenever possible.
 3. Simulator verification alone is not sufficient for camera functionality.
-4. Every completed task must include: Successful Build, Successful Git Commit, Successful Git Push, Updated Project Status Report, Updated Real Device Test Report.
+4. Every completed task must include: Successful Build, Successful Git Commit, Successful Git Push, Updated Project Status Report, Updated Real Device Test Report, Updated Performance Report, Updated Battery & Thermal Report.
 5. Never implement multiple major features in a single task.
-6. Keep one Git commit per completed task.
-7. If a feature cannot be fully verified in the Simulator, clearly document why and identify what must be tested on a physical device.
+6. Keep exactly one Git commit per completed task.
+7. If a feature cannot be fully verified in the Simulator, clearly explain why and identify exactly what must be tested on a physical device.
 8. Before implementing a new feature, verify that all previously completed features still build and function correctly.
+9. Measure performance whenever recording-related code changes.
+10. Report any increase in memory usage, CPU usage, dropped frames, or disk write latency compared to the previous task.
+11. Never reduce recording quality or stability for the sake of performance optimization without clearly documenting the trade-off.
+12. If performance cannot be measured in the current environment, explicitly state why and describe how it should be verified on a real iPhone.
+13. Evaluate battery consumption and thermal impact whenever recording-related code changes.
+14. Never increase CPU usage significantly without documenting the reason.
+15. If a feature increases battery drain or device temperature, report the trade-offs and possible optimizations.
+16. If battery or thermal behavior cannot be measured in the current environment, explicitly state why and describe how to verify it on a real iPhone.
+17. Compare battery, thermal, memory, and CPU metrics against the previous completed task whenever possible.
+18. If a new feature may affect long-duration recording stability, explicitly analyze the risks before marking the task as complete.
+19. Never risk losing a recorded video for the sake of performance, UI responsiveness, or feature convenience.
+20. Every task that modifies recording, saving, exporting, or file management must include a failure-path review describing what happens if the app crashes, the device powers off, storage becomes full, or permissions change during the operation.
+
+## Report Templates
+
+Every completed task's final message must include these four reports (in addition to the file-by-file explanation the task itself asks for).
+
+**Battery & Thermal Report**
+- Battery Consumption:
+- Device Temperature:
+- Thermal State:
+- Recording Time Until Thermal Warning:
+- Battery Drain Per 10 Minutes:
+- Known Thermal Risks:
+- Optimization Suggestions:
+
+**Performance Report**
+- Recording Resolution:
+- Recording FPS:
+- Memory Usage:
+- CPU Usage:
+- Dropped Frames:
+- Average Write Time:
+- Disk Write Speed:
+- Known Performance Risks:
+- Optimization Suggestions:
+
+**Real Device Test**
+- Device:
+- iOS Version:
+- Recording Quality Tested:
+- Recording FPS Tested:
+- Recording Duration:
+- Photos Export Tested:
+- External Storage Tested:
+- Battery Consumption:
+- Thermal State:
+- Test Result:
+- Known Device Issues:
+- Simulator Result:
+- Real Device Result:
+
+**Project Status Report**
+- Current Task:
+- Current Milestone:
+- Overall Progress (%):
+- Build Status:
+- Files Changed:
+- Git Commit Hash:
+- Git Commit Message:
+- Git Push Status:
+- Known Issues:
+- Next Recommended Task:
+
+No physical iPhone is available in this environment, and Simulator cannot report real battery/thermal/CPU/memory metrics for camera hardware that doesn't exist there. Every Battery & Thermal Report, Performance Report, and Real Device Test must state this plainly, mark device-dependent fields as untested rather than guessing or fabricating values, and describe exactly what the user needs to measure on real hardware (per rules 12 and 16 above). Every task touching recording/saving/exporting/file management must also include a short failure-path review (rule 20): what happens on crash, sudden power-off, full storage, or a permission change mid-operation.

@@ -9,6 +9,7 @@ enum CameraServiceError: Error {
     case deviceUnavailable
     case cannotAddInput
     case cannotAddOutput
+    case cannotConfigureFrameRate
 }
 
 /// Owns the capture session: camera/microphone inputs for a live preview, plus the
@@ -28,6 +29,13 @@ actor CameraService {
     /// True if `activeQuality` differs from the user's selected preference because
     /// the requested quality wasn't supported.
     private(set) var qualityFallbackOccurred = false
+    /// The frame rate actually in effect after resolving the user's preference against
+    /// what the active format supports (see `resolveFrameRate`).
+    private(set) var activeFPS: RecordingFPS = .fps30
+    /// True if `activeFPS` differs from the user's selected preference — either the
+    /// rate itself was unsupported, or the resolved recording quality's format
+    /// doesn't support it (requirement 8: quality + FPS compatibility).
+    private(set) var fpsFallbackOccurred = false
 
     private let videoOutput = AVCaptureVideoDataOutput()
     private let audioOutput = AVCaptureAudioDataOutput()
@@ -35,21 +43,26 @@ actor CameraService {
     private let outputForwarder: SampleBufferOutputForwarder
     private let recordingService: RecordingService
     private let qualitySettingsService: RecordingQualitySettingsService
+    private let fpsSettingsService: RecordingFPSSettingsService
 
+    private var videoDevice: AVCaptureDevice?
     private var isConfigured = false
 
     init(
         recordingService: RecordingService,
-        qualitySettingsService: RecordingQualitySettingsService = RecordingQualitySettingsService()
+        qualitySettingsService: RecordingQualitySettingsService = RecordingQualitySettingsService(),
+        fpsSettingsService: RecordingFPSSettingsService = RecordingFPSSettingsService()
     ) {
         self.recordingService = recordingService
         self.qualitySettingsService = qualitySettingsService
+        self.fpsSettingsService = fpsSettingsService
         outputForwarder = SampleBufferOutputForwarder(recordingService: recordingService)
     }
 
     func start() async throws {
         if !isConfigured {
             try await configure()
+            try configureFrameRate()
         }
         guard !session.isRunning else { return }
         session.startRunning()
@@ -64,10 +77,11 @@ actor CameraService {
         session.beginConfiguration()
         defer { session.commitConfiguration() }
 
-        guard let videoDevice = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .back) else {
+        guard let device = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .back) else {
             throw CameraServiceError.deviceUnavailable
         }
-        let videoDeviceInput = try AVCaptureDeviceInput(device: videoDevice)
+        videoDevice = device
+        let videoDeviceInput = try AVCaptureDeviceInput(device: device)
         guard session.canAddInput(videoDeviceInput) else {
             throw CameraServiceError.cannotAddInput
         }
@@ -131,6 +145,55 @@ actor CameraService {
         case .fullHD: .hd1920x1080
         case .uhd4K: .hd4K3840x2160
         }
+    }
+
+    /// Sets the device's active frame rate to match the user's preference, falling
+    /// back to the highest rate the *current* active format supports. Must run after
+    /// `configure()` has committed the session preset — the preset determines which
+    /// `AVCaptureDevice.Format` (and therefore which frame rate ranges) is active, so
+    /// this is naturally where quality + FPS compatibility (requirement 8) is resolved.
+    private func configureFrameRate() throws {
+        guard let device = videoDevice else { return }
+
+        let requestedFPS = fpsSettingsService.load().selectedFPS
+        let resolved = resolveFrameRate(for: requestedFPS, format: device.activeFormat)
+        activeFPS = resolved.resolvedFPS
+        fpsFallbackOccurred = resolved.fallbackOccurred
+
+        guard let frameDuration = resolved.frameDuration else { return }
+
+        do {
+            try device.lockForConfiguration()
+        } catch {
+            throw CameraServiceError.cannotConfigureFrameRate
+        }
+        device.activeVideoMinFrameDuration = frameDuration
+        device.activeVideoMaxFrameDuration = frameDuration
+        device.unlockForConfiguration()
+    }
+
+    /// Finds the highest frame rate supported by `format` that's no greater than
+    /// `fps`'s requested rate; if `fps` itself is supported, uses it as-is.
+    private func resolveFrameRate(
+        for fps: RecordingFPS,
+        format: AVCaptureDevice.Format
+    ) -> (frameDuration: CMTime?, resolvedFPS: RecordingFPS, fallbackOccurred: Bool) {
+        let ranges = format.videoSupportedFrameRateRanges
+        let requestedRate = Double(fps.rawValue)
+
+        if ranges.contains(where: { requestedRate >= $0.minFrameRate && requestedRate <= $0.maxFrameRate }) {
+            return (CMTime(value: 1, timescale: Int32(fps.rawValue)), fps, false)
+        }
+
+        guard let highestSupportedRate = ranges.map(\.maxFrameRate).max() else {
+            return (nil, fps, true)
+        }
+
+        let fallbackFPS = RecordingFPS.allCases
+            .filter { Double($0.rawValue) <= highestSupportedRate }
+            .max(by: { $0.rawValue < $1.rawValue }) ?? .fps30
+
+        return (CMTime(value: 1, timescale: Int32(fallbackFPS.rawValue)), fallbackFPS, true)
     }
 }
 

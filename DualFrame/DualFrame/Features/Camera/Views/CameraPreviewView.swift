@@ -18,6 +18,8 @@ struct CameraPreviewView: View {
     @State private var isSettingsPresented = false
     @State private var activeQuality: RecordingQuality?
     @State private var qualityFallbackOccurred = false
+    @State private var activeFPS: RecordingFPS?
+    @State private var fpsFallbackOccurred = false
 
     init() {
         let libraryService = InternalVideoLibraryService()
@@ -49,6 +51,8 @@ struct CameraPreviewView: View {
             try? await cameraService.start()
             activeQuality = await cameraService.activeQuality
             qualityFallbackOccurred = await cameraService.qualityFallbackOccurred
+            activeFPS = await cameraService.activeFPS
+            fpsFallbackOccurred = await cameraService.fpsFallbackOccurred
         }
         .onDisappear {
             Task {
@@ -77,6 +81,9 @@ struct CameraPreviewView: View {
                     Text(recordingViewModel.statusText)
                     if let activeQuality {
                         Text("\(activeQuality.dimensions.width)×\(activeQuality.dimensions.height)")
+                    }
+                    if let activeFPS {
+                        Text(activeFPS.title)
                     }
                 }
                 .font(.caption.bold())
@@ -108,6 +115,15 @@ struct CameraPreviewView: View {
 
             if qualityFallbackOccurred, let activeQuality {
                 Text("Requested quality isn't supported on this device — using \(activeQuality.title) instead.")
+                    .font(.caption2)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 6)
+                    .background(.black.opacity(0.5), in: Capsule())
+                    .foregroundStyle(.yellow)
+            }
+
+            if fpsFallbackOccurred, let activeFPS {
+                Text("Requested frame rate isn't supported at this quality — using \(activeFPS.title) instead.")
                     .font(.caption2)
                     .padding(.horizontal, 12)
                     .padding(.vertical, 6)

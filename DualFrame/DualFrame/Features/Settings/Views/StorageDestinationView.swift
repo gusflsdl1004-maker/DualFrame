@@ -37,6 +37,9 @@ struct StorageDestinationView: View {
                     NavigationLink("Recording Quality") {
                         RecordingQualityView()
                     }
+                    NavigationLink("Recording FPS") {
+                        RecordingFPSView()
+                    }
                 }
             }
             .navigationTitle("Settings")
