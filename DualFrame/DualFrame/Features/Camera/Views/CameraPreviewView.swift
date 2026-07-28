@@ -12,6 +12,7 @@ struct CameraPreviewView: View {
     @StateObject private var permissionViewModel = CameraPermissionViewModel()
     @StateObject private var recordingViewModel: RecordingViewModel
     @StateObject private var externalStorageViewModel = ExternalStorageViewModel()
+    @StateObject private var interruptionMonitor = RecordingInterruptionMonitor()
     @State private var cameraService: CameraService
     @State private var libraryService: InternalVideoLibraryService
     @State private var isLibraryPresented = false
@@ -53,8 +54,18 @@ struct CameraPreviewView: View {
             qualityFallbackOccurred = await cameraService.qualityFallbackOccurred
             activeFPS = await cameraService.activeFPS
             fpsFallbackOccurred = await cameraService.fpsFallbackOccurred
+            interruptionMonitor.startObserving(
+                session: cameraService.session,
+                onInterruptionBegan: { source in
+                    await recordingViewModel.handleInterruptionBegan(source)
+                },
+                onInterruptionEnded: {
+                    recordingViewModel.handleInterruptionEnded()
+                }
+            )
         }
         .onDisappear {
+            interruptionMonitor.stopObserving()
             Task {
                 if recordingViewModel.isRecording {
                     await recordingViewModel.stopRecording(expectsAudioTrack: isMicrophoneGranted)
@@ -139,9 +150,33 @@ struct CameraPreviewView: View {
                     .background(.black.opacity(0.5), in: Capsule())
                     .foregroundStyle(.yellow)
             }
+
+            interruptionBanner
         }
         .padding(.horizontal, 16)
         .padding(.top, 8)
+    }
+
+    @ViewBuilder
+    private var interruptionBanner: some View {
+        switch recordingViewModel.interruptionStatus {
+        case .none:
+            EmptyView()
+        case .interrupted(let source):
+            Text("Recording paused — \(source.title)")
+                .font(.caption2)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 6)
+                .background(.black.opacity(0.5), in: Capsule())
+                .foregroundStyle(.orange)
+        case .ended:
+            Text("Interruption ended — recording is still paused. Stop to save what was captured.")
+                .font(.caption2)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 6)
+                .background(.black.opacity(0.5), in: Capsule())
+                .foregroundStyle(.orange)
+        }
     }
 
     private var recordingControls: some View {

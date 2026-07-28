@@ -18,6 +18,7 @@ final class RecordingViewModel: ObservableObject {
     @Published private(set) var errorMessage: String?
     @Published private(set) var performanceSnapshot: RecordingPerformanceSnapshot?
     @Published private(set) var lowStorageWarning: String?
+    @Published private(set) var interruptionStatus: InterruptionStatus = .none
 
     var statusText: String {
         switch state {
@@ -113,6 +114,20 @@ final class RecordingViewModel: ObservableObject {
         } else {
             errorMessage = await service.lastError?.message
         }
+    }
+
+    /// Called by `RecordingInterruptionMonitor` when an interruption begins. Pauses the
+    /// recording (if one is active) and preserves a checkpoint — never resumes anything.
+    func handleInterruptionBegan(_ source: InterruptionSource) async {
+        interruptionStatus = .interrupted(source)
+        await service.pauseRecording()
+    }
+
+    /// Called when the interruption ends. Only updates the displayed status — recording
+    /// stays paused; nothing here calls `resumeRecording()` (requirement 8, 11).
+    func handleInterruptionEnded() {
+        guard interruptionStatus != .none else { return }
+        interruptionStatus = .ended
     }
 
     private static func format(seconds: TimeInterval) -> String {

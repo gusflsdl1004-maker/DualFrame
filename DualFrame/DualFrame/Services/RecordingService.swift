@@ -28,6 +28,10 @@ actor RecordingService {
     private(set) var lastError: RecordingError?
     private(set) var lastValidationResult: RecordingValidationResult?
     private(set) var lastImportedRecord: VideoRecord?
+    /// True while recording is paused due to an interruption. `state` deliberately
+    /// stays `.recording` while paused — pausing is a temporary, resumable condition,
+    /// not a terminal one, and the existing Stop button must keep working regardless.
+    private(set) var isPaused = false
 
     private let validator = RecordingValidator()
     private let libraryService: InternalVideoLibraryService
@@ -69,6 +73,7 @@ actor RecordingService {
         lastImportedRecord = nil
         lastAppendedTimestamp = .zero
         recordingStartTime = nil
+        isPaused = false
 
         // Warn-only check (requirement 13) — never blocks preparing or recording.
         await performanceMonitor.checkAvailableStorage()
@@ -86,11 +91,31 @@ actor RecordingService {
     func startRecording() async -> RecordingState {
         guard state == .preparing, assetWriter != nil else { return state }
         state = .recording
+        isPaused = false
         recordingStartTime = Date()
         await performanceMonitor.startMonitoring()
         await saveCheckpoint()
         startCheckpointing()
         return state
+    }
+
+    /// Stops accepting new sample buffers without finishing the file, so whatever was
+    /// captured before the interruption stays intact and a future resume feature could
+    /// continue writing to the same session. Preserves a checkpoint immediately
+    /// (requirement 6) — this is the closest we can get to "before the interruption"
+    /// since we can only react once the OS notification arrives.
+    func pauseRecording() async {
+        guard state == .recording, !isPaused else { return }
+        isPaused = true
+        await saveCheckpoint()
+    }
+
+    /// Extension point for a future "Resume Recording" feature (requirement 8). Nothing
+    /// in this task calls this automatically or wires it to any UI — recording stays
+    /// paused until the user manually stops it, unless a later task adds a resume button.
+    func resumeRecording() async {
+        guard state == .recording, isPaused else { return }
+        isPaused = false
     }
 
     func appendVideoSampleBuffer(_ sampleBuffer: CMSampleBuffer) async {
@@ -199,7 +224,9 @@ actor RecordingService {
     }
 
     private func append(_ sampleBuffer: CMSampleBuffer, to input: AVAssetWriterInput?) async {
-        guard state == .recording, let writer = assetWriter, let input else { return }
+        // Paused means an interruption is in effect — never write new samples while
+        // paused (requirement 5: never corrupt the existing recording).
+        guard state == .recording, !isPaused, let writer = assetWriter, let input else { return }
 
         if !isSessionStarted {
             guard writer.startWriting() else {

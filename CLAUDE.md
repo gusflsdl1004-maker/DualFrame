@@ -45,6 +45,14 @@ These are the priority order and constraints for all DualFrame engineering work.
 28. If checkpoint data becomes invalid or corrupted, detect it gracefully and report the issue instead of crashing.
 29. Never automatically delete temporary recording files unless their final recording has been successfully validated.
 30. Every recovery-related task must explicitly document what user data could still be lost in the current implementation.
+31. Every interruption-related task must document iOS system behavior separately from application behavior.
+32. Never assume Simulator behavior matches real iPhone behavior for camera, audio, interruptions, or background execution.
+33. Clearly distinguish between "verified on Simulator", "verified on real device", and "not yet verified".
+34. If a feature depends on iOS lifecycle events, explicitly document which UIApplication or UIScene lifecycle states were considered.
+35. Every interruption event must preserve the current recording state before releasing recording resources.
+36. Never assume that recording can safely continue after an interruption.
+37. Clearly distinguish between interruption detection, interruption handling, and interruption recovery.
+38. If interruption behavior cannot be verified in Simulator, explicitly document which scenarios require real-device testing.
 
 ## Report Templates
 
@@ -115,6 +123,30 @@ Every completed task's final message must include these four reports (in additio
 - Final File Verified:
 - Recovery Metadata Valid:
 - Known Data Integrity Risks:
+- Recommended Improvements:
+
+**Platform Behavior Report** (include whenever a task touches interruptions, lifecycle events, or permissions, per rules 31-34)
+- Phone Call Interruption:
+- Lock Screen Behavior:
+- Home Button / App Switch:
+- Background Transition:
+- Camera Permission Change:
+- Microphone Permission Change:
+- Storage Full Behavior:
+- Low Power Mode Behavior:
+- Known Platform Risks:
+- Recommended Improvements:
+
+Every field in this report must be marked "verified on Simulator", "verified on real device", or "not yet verified" (rule 33) — never assume Simulator behavior generalizes to a real iPhone for any of these (rule 32). If a row depends on a specific `UIApplication`/`UIScene` lifecycle event, name it explicitly (rule 34).
+
+**Interruption Report** (include whenever a task touches `AVCaptureSession`/`AVAudioSession` interruption handling, per rules 35-38)
+- Interruption Source:
+- Checkpoint Saved Before Interruption:
+- Recording Stopped Safely:
+- Recording Corrupted:
+- User Notification Shown:
+- Resume Available:
+- Known Interruption Risks:
 - Recommended Improvements:
 
 No physical iPhone is available in this environment, and Simulator cannot report real battery/thermal/CPU/memory metrics for camera hardware that doesn't exist there. Every Battery & Thermal Report, Performance Report, and Real Device Test must state this plainly, mark device-dependent fields as untested rather than guessing or fabricating values, and describe exactly what the user needs to measure on real hardware (per rules 12 and 16 above). Every task touching recording/saving/exporting/file management must also include a short failure-path review (rule 20): what happens on crash, sudden power-off, full storage, or a permission change mid-operation.
