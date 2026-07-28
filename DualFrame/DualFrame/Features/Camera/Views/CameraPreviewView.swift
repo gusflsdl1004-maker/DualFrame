@@ -14,12 +14,14 @@ struct CameraPreviewView: View {
     @StateObject private var externalStorageViewModel = ExternalStorageViewModel()
     @StateObject private var interruptionMonitor = RecordingInterruptionMonitor()
     @StateObject private var recordingModeViewModel = RecordingModeViewModel()
+    @StateObject private var storageSettingsViewModel = StorageSettingsViewModel()
     @StateObject private var orientationManager = OrientationManager()
     @State private var cameraService: CameraService
     @State private var libraryService: InternalVideoLibraryService
     @State private var dualRecordingCoordinator: DualRecordingCoordinator
     @State private var isLibraryPresented = false
     @State private var isSettingsPresented = false
+    @State private var isSettingsSummaryPresented = false
     @State private var activeQuality: RecordingQuality?
     @State private var qualityFallbackOccurred = false
     @State private var activeFPS: RecordingFPS?
@@ -106,6 +108,16 @@ struct CameraPreviewView: View {
         .sheet(isPresented: $isSettingsPresented) {
             StorageDestinationView(externalStorageViewModel: externalStorageViewModel)
         }
+        .sheet(isPresented: $isSettingsSummaryPresented) {
+            RecordingSettingsSummaryView(
+                recordingModeViewModel: recordingModeViewModel,
+                storageSettingsViewModel: storageSettingsViewModel,
+                orientationManager: orientationManager,
+                cameraPosition: cameraPosition,
+                activeQuality: activeQuality,
+                activeFPS: activeFPS
+            )
+        }
         #if DEBUG
         .sheet(isPresented: $isDebugViewPresented) {
             RecordingDebugView(
@@ -178,6 +190,15 @@ struct CameraPreviewView: View {
                     isSettingsPresented = true
                 } label: {
                     Image(systemName: "gearshape")
+                        .padding(10)
+                        .background(.black.opacity(0.5), in: Circle())
+                        .foregroundStyle(.white)
+                }
+
+                Button {
+                    isSettingsSummaryPresented = true
+                } label: {
+                    Image(systemName: "info.circle")
                         .padding(10)
                         .background(.black.opacity(0.5), in: Circle())
                         .foregroundStyle(.white)
