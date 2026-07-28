@@ -53,6 +53,10 @@ These are the priority order and constraints for all DualFrame engineering work.
 36. Never assume that recording can safely continue after an interruption.
 37. Clearly distinguish between interruption detection, interruption handling, and interruption recovery.
 38. If interruption behavior cannot be verified in Simulator, explicitly document which scenarios require real-device testing.
+39. Never duplicate recording logic when preparing for dual recording.
+40. Keep recording pipelines modular so additional outputs can be attached without modifying existing recording flow.
+41. Future dual outputs must share timing information to guarantee synchronization.
+42. Recording mode changes must never affect the stability of the existing single recording pipeline.
 
 ## Report Templates
 
@@ -158,6 +162,16 @@ Every field in this report must be marked "verified on Simulator", "verified on 
 - Recording Finalized:
 - Pending Recovery:
 - Known State Risks:
+- Recommended Improvements:
+
+**Dual Recording Readiness Report** (include whenever a task touches `RecordingMode`, `OutputProfile`, or `DualRecordingCoordinator`, per rules 39-42)
+- Recording Mode:
+- Long-form Output Ready:
+- Short-form Output Ready:
+- Multiple Writer Support:
+- Pipeline Extensibility:
+- Future Rendering Ready:
+- Known Dual Recording Risks:
 - Recommended Improvements:
 
 No physical iPhone is available in this environment, and Simulator cannot report real battery/thermal/CPU/memory metrics for camera hardware that doesn't exist there. Every Battery & Thermal Report, Performance Report, and Real Device Test must state this plainly, mark device-dependent fields as untested rather than guessing or fabricating values, and describe exactly what the user needs to measure on real hardware (per rules 12 and 16 above). Every task touching recording/saving/exporting/file management must also include a short failure-path review (rule 20): what happens on crash, sudden power-off, full storage, or a permission change mid-operation.

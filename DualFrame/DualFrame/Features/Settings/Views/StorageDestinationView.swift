@@ -41,6 +41,9 @@ struct StorageDestinationView: View {
                     NavigationLink("Recording FPS") {
                         RecordingFPSView()
                     }
+                    NavigationLink("Recording Mode") {
+                        RecordingModeView()
+                    }
                 }
 
                 Section("Recovery") {

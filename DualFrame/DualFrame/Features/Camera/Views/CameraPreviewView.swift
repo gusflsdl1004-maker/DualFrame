@@ -13,8 +13,10 @@ struct CameraPreviewView: View {
     @StateObject private var recordingViewModel: RecordingViewModel
     @StateObject private var externalStorageViewModel = ExternalStorageViewModel()
     @StateObject private var interruptionMonitor = RecordingInterruptionMonitor()
+    @StateObject private var recordingModeViewModel = RecordingModeViewModel()
     @State private var cameraService: CameraService
     @State private var libraryService: InternalVideoLibraryService
+    @State private var dualRecordingCoordinator: DualRecordingCoordinator
     @State private var isLibraryPresented = false
     @State private var isSettingsPresented = false
     @State private var activeQuality: RecordingQuality?
@@ -28,6 +30,12 @@ struct CameraPreviewView: View {
         _recordingViewModel = StateObject(wrappedValue: RecordingViewModel(service: recordingService))
         _cameraService = State(wrappedValue: CameraService(recordingService: recordingService))
         _libraryService = State(wrappedValue: libraryService)
+        // Wires the Task 018 architecture into the object graph without changing any
+        // recording behavior — nothing on this screen calls into the coordinator yet.
+        _dualRecordingCoordinator = State(wrappedValue: DualRecordingCoordinator(
+            mode: RecordingModeSettingsService().load().mode,
+            recordingService: recordingService
+        ))
     }
 
     var body: some View {
@@ -96,6 +104,7 @@ struct CameraPreviewView: View {
                     if let activeFPS {
                         Text(activeFPS.title)
                     }
+                    Text(recordingModeViewModel.settings.mode.title)
                 }
                 .font(.caption.bold())
                 .padding(.horizontal, 12)

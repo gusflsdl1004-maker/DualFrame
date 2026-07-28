@@ -24,6 +24,22 @@ nonisolated enum RecordingState: Equatable, Codable {
 /// happens here; see CLAUDE.md rules 21-24).
 /// No gallery saving or dual recording happens here.
 actor RecordingService {
+    /// Everything tied to one active `AVAssetWriter` session: the writer, its inputs,
+    /// output location, and whether its session has started. Task 018 extension point:
+    /// this is grouped into one type specifically so a future dual-recording
+    /// implementation can hold one `WriterContext` per active `OutputProfile` (see
+    /// `DualRecordingCoordinator`) instead of a single instance — `setUpWriter()`,
+    /// `append(_:to:)`, and `stopRecording(expectsAudioTrack:)` already operate purely
+    /// through a `WriterContext` value rather than assuming it's the app's only writer.
+    /// No second context is created anywhere today (requirement 6/12).
+    private struct WriterContext {
+        let writer: AVAssetWriter
+        let videoInput: AVAssetWriterInput
+        let audioInput: AVAssetWriterInput
+        let outputURL: URL
+        var isSessionStarted = false
+    }
+
     private(set) var state: RecordingState = .idle
     private(set) var lastError: RecordingError?
     private(set) var lastValidationResult: RecordingValidationResult?
@@ -40,11 +56,7 @@ actor RecordingService {
     nonisolated let performanceMonitor = RecordingPerformanceMonitor()
     nonisolated let checkpointStore = RecordingCheckpointStore()
 
-    private var assetWriter: AVAssetWriter?
-    private var videoInput: AVAssetWriterInput?
-    private var audioInput: AVAssetWriterInput?
-    private var outputURL: URL?
-    private var isSessionStarted = false
+    private var writerContext: WriterContext?
     private(set) var activeQuality: RecordingQuality = .fullHD
     private(set) var activeFPS: RecordingFPS = .fps30
     private var lastAppendedTimestamp: CMTime = .zero
@@ -93,7 +105,7 @@ actor RecordingService {
 
     @discardableResult
     func startRecording() async -> RecordingState {
-        guard state == .preparing, assetWriter != nil else { return state }
+        guard state == .preparing, writerContext != nil else { return state }
         state = .recording
         isPaused = false
         recordingStartTime = Date()
@@ -123,11 +135,11 @@ actor RecordingService {
     }
 
     func appendVideoSampleBuffer(_ sampleBuffer: CMSampleBuffer) async {
-        await append(sampleBuffer, to: videoInput)
+        await append(sampleBuffer, to: writerContext?.videoInput)
     }
 
     func appendAudioSampleBuffer(_ sampleBuffer: CMSampleBuffer) async {
-        await append(sampleBuffer, to: audioInput)
+        await append(sampleBuffer, to: writerContext?.audioInput)
     }
 
     /// Finishes writing and validates the resulting file.
@@ -140,16 +152,17 @@ actor RecordingService {
         stopCheckpointing()
         await performanceMonitor.stopMonitoring()
 
-        guard let writer = assetWriter, isSessionStarted, let url = outputURL else {
+        guard let context = writerContext, context.isSessionStarted else {
             // Nothing was ever written (e.g. stopped before the first sample buffer arrived).
             // Requirement 8: keep the checkpoint — this counts as an unexpected failure.
             lastError = .writeFailed
             state = .failed
             return state
         }
+        let writer = context.writer
 
-        videoInput?.markAsFinished()
-        audioInput?.markAsFinished()
+        context.videoInput.markAsFinished()
+        context.audioInput.markAsFinished()
 
         await withCheckedContinuation { continuation in
             writer.finishWriting {
@@ -163,7 +176,7 @@ actor RecordingService {
             return state
         }
 
-        let result = await validator.validate(fileURL: url, expectsAudioTrack: expectsAudioTrack)
+        let result = await validator.validate(fileURL: context.outputURL, expectsAudioTrack: expectsAudioTrack)
         lastValidationResult = result
 
         guard result.isValid else {
@@ -175,7 +188,7 @@ actor RecordingService {
         do {
             // Moves the file out of the temporary directory — nothing stays there once
             // a recording succeeds.
-            lastImportedRecord = try await libraryService.importRecording(from: url, validation: result)
+            lastImportedRecord = try await libraryService.importRecording(from: context.outputURL, validation: result)
             state = .finished
             // Requirement 7: only a successful completion clears the checkpoint.
             await checkpointStore.delete()
@@ -220,19 +233,21 @@ actor RecordingService {
         guard writer.canAdd(audioWriterInput) else { throw RecordingError.writerCreationFailed }
         writer.add(audioWriterInput)
 
-        assetWriter = writer
-        videoInput = videoWriterInput
-        audioInput = audioWriterInput
-        outputURL = url
-        isSessionStarted = false
+        writerContext = WriterContext(
+            writer: writer,
+            videoInput: videoWriterInput,
+            audioInput: audioWriterInput,
+            outputURL: url
+        )
     }
 
     private func append(_ sampleBuffer: CMSampleBuffer, to input: AVAssetWriterInput?) async {
         // Paused means an interruption is in effect — never write new samples while
         // paused (requirement 5: never corrupt the existing recording).
-        guard state == .recording, !isPaused, let writer = assetWriter, let input else { return }
+        guard state == .recording, !isPaused, let context = writerContext, let input else { return }
+        let writer = context.writer
 
-        if !isSessionStarted {
+        if !context.isSessionStarted {
             guard writer.startWriting() else {
                 lastError = .writeFailed
                 state = .failed
@@ -240,7 +255,7 @@ actor RecordingService {
             }
             let startTime = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
             writer.startSession(atSourceTime: startTime)
-            isSessionStarted = true
+            writerContext?.isSessionStarted = true
         }
 
         guard writer.status == .writing, input.isReadyForMoreMediaData else { return }
@@ -265,7 +280,7 @@ actor RecordingService {
     /// Builds the current checkpoint from in-memory state. `nil` before a recording has
     /// actually started (nothing worth persisting yet).
     func currentCheckpoint() -> RecordingCheckpoint? {
-        guard let url = outputURL, let startTime = recordingStartTime else { return nil }
+        guard let url = writerContext?.outputURL, let startTime = recordingStartTime else { return nil }
         return RecordingCheckpoint(
             recordingState: state,
             outputURL: url,
