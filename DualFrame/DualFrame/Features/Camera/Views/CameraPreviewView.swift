@@ -24,6 +24,11 @@ struct CameraPreviewView: View {
     @State private var qualityFallbackOccurred = false
     @State private var activeFPS: RecordingFPS?
     @State private var fpsFallbackOccurred = false
+    #if DEBUG
+    /// Task 026: Real Device Verification Mode entry point — debug builds only, per
+    /// this file's `#if DEBUG` guard around every reference to it.
+    @State private var isDebugViewPresented = false
+    #endif
 
     init() {
         let libraryService = InternalVideoLibraryService()
@@ -97,6 +102,17 @@ struct CameraPreviewView: View {
         .sheet(isPresented: $isSettingsPresented) {
             StorageDestinationView(externalStorageViewModel: externalStorageViewModel)
         }
+        #if DEBUG
+        .sheet(isPresented: $isDebugViewPresented) {
+            RecordingDebugView(
+                recordingViewModel: recordingViewModel,
+                orientationManager: orientationManager,
+                activeQuality: activeQuality,
+                activeFPS: activeFPS,
+                dualRecordingCoordinator: dualRecordingCoordinator
+            )
+        }
+        #endif
     }
 
     private var isMicrophoneGranted: Bool {
@@ -141,6 +157,17 @@ struct CameraPreviewView: View {
                         .background(.black.opacity(0.5), in: Circle())
                         .foregroundStyle(.white)
                 }
+
+                #if DEBUG
+                Button {
+                    isDebugViewPresented = true
+                } label: {
+                    Image(systemName: "ladybug")
+                        .padding(10)
+                        .background(.black.opacity(0.5), in: Circle())
+                        .foregroundStyle(.white)
+                }
+                #endif
             }
 
             if qualityFallbackOccurred, let activeQuality {
