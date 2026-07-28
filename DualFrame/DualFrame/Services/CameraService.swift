@@ -105,6 +105,10 @@ actor CameraService {
         }
         guard !session.isRunning else { return }
         session.startRunning()
+        // Task 029: purely observational — logged after the fact, changes nothing
+        // about `startRunning()`'s own behavior (requirement 6: "CameraService 동작"
+        // stays exactly as it was).
+        logStartupEvent("Session Started")
     }
 
     func stop() {
@@ -132,6 +136,7 @@ actor CameraService {
         // choice (default `.back`, per `CameraPositionSettings.default`).
         let requestedPosition = positionSettingsService.load().selectedPosition
         guard let device = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: avCapturePosition(for: requestedPosition)) else {
+            logStartupEvent("Camera Unavailable", detail: requestedPosition.title)
             throw CameraServiceError.deviceUnavailable
         }
         videoDevice = device
@@ -145,6 +150,10 @@ actor CameraService {
            let audioDeviceInput = try? AVCaptureDeviceInput(device: audioDevice),
            session.canAddInput(audioDeviceInput) {
             session.addInput(audioDeviceInput)
+        } else {
+            // Unchanged behavior: audio is still best-effort, never throws — this only
+            // adds a visible breadcrumb for why a recording might end up with no audio.
+            logStartupEvent("Audio Unavailable")
         }
 
         videoOutput.setSampleBufferDelegate(outputForwarder, queue: sampleBufferQueue)
@@ -160,6 +169,17 @@ actor CameraService {
 
         await applyDeviceSpecificSettings(device: device)
         isConfigured = true
+        logStartupEvent("Camera Configured", detail: requestedPosition.title)
+    }
+
+    /// Task 029: writes to the same shared `RecordingDiagnosticsLogService` instance
+    /// `RecordingService` owns, via the `recordingService` reference this type already
+    /// holds — no new dependency, and purely observational (requirement 6: doesn't
+    /// change what `CameraService` actually does, only records that it happened).
+    /// Fire-and-forget, same reasoning as `RecordingService.logEvent`.
+    private func logStartupEvent(_ stage: String, detail: String? = nil) {
+        let logService = recordingService.diagnosticsLogService
+        Task { await logService.log(stage, detail: detail) }
     }
 
     /// Task 027: resolves quality/mirroring for whichever `device` is currently

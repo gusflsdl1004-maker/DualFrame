@@ -57,6 +57,9 @@ actor RecordingService {
     private(set) var lastError: RecordingError?
     private(set) var lastValidationResult: RecordingValidationResult?
     private(set) var lastImportedRecord: VideoRecord?
+    /// Task 029: a more granular diagnosis of the most recent `.failed` transition than
+    /// `lastError` alone provides — purely observational, read only by the debug panel.
+    private(set) var lastStartupFailureReason: RecordingStartupFailureReason?
     /// True while recording is paused due to an interruption. `state` deliberately
     /// stays `.recording` while paused — pausing is a temporary, resumable condition,
     /// not a terminal one, and the existing Stop button must keep working regardless.
@@ -80,6 +83,10 @@ actor RecordingService {
     /// out (actors are inherently `Sendable`) without crossing this actor's isolation.
     nonisolated let performanceMonitor = RecordingPerformanceMonitor()
     nonisolated let checkpointStore = RecordingCheckpointStore()
+    /// Task 029: shared with `CameraService` (which reads it via its own
+    /// `recordingService` reference) so "Camera Configured"/"Session Started" land in
+    /// the same timeline as this actor's own stages — one ring buffer, not two.
+    nonisolated let diagnosticsLogService = RecordingDiagnosticsLogService()
     /// Only ever invoked for the short-form output's video (see `append`) — never for
     /// long-form or `.single` mode.
     private let frameCropper = VideoFrameCropper()
@@ -131,11 +138,58 @@ actor RecordingService {
         recordingTransform = transform
     }
 
+    /// Task 029 requirement 4: the only allowed `RecordingState` transitions. Anything
+    /// else gets logged (never blocked — this task must not change actual behavior,
+    /// only observe it) as a signal that something upstream did the wrong thing.
+    private static let allowedStateTransitions: [RecordingState: Set<RecordingState>] = [
+        .idle: [.preparing],
+        .preparing: [.recording, .failed],
+        .recording: [.stopping, .failed],
+        .stopping: [.finished, .failed],
+        .finished: [.preparing],
+        .failed: [.preparing]
+    ]
+
+    /// Task 029 requirements 1/4: every `state` change goes through here instead of a
+    /// bare assignment, so each one gets validated against
+    /// `allowedStateTransitions` and logged to `diagnosticsLogService` — without
+    /// changing what value ends up in `state` or when (the assignment happens exactly
+    /// where it always did; this just wraps it).
+    private func setState(_ newState: RecordingState, detail: String? = nil) {
+        if state != newState, !(Self.allowedStateTransitions[state]?.contains(newState) ?? false) {
+            logEvent("Invalid transition", detail: "\(state) -> \(newState)")
+            lastStartupFailureReason = .invalidStateTransition
+        }
+        state = newState
+        logEvent(Self.stageName(for: newState), detail: detail)
+    }
+
+    private static func stageName(for state: RecordingState) -> String {
+        switch state {
+        case .idle: "Idle"
+        case .preparing: "Preparing"
+        case .recording: "Recording"
+        case .stopping: "Stopping"
+        case .finished: "Finished"
+        case .failed: "Failed"
+        }
+    }
+
+    /// Task 029 requirement 5: fire-and-forget on purpose — never `await`ed inline, so
+    /// a slow or failing log write can never add latency to (or interrupt) the actual
+    /// recording pipeline. `RecordingDiagnosticsLogService.log` cannot throw, so there
+    /// is nothing to catch; this is simply never on the critical path at all.
+    private func logEvent(_ stage: String, detail: String? = nil) {
+        let logService = diagnosticsLogService
+        Task { await logService.log(stage, detail: detail) }
+    }
+
     @discardableResult
     func prepareRecording() async -> RecordingState {
         guard state == .idle || state == .finished || state == .failed else { return state }
-        state = .preparing
+        setState(.preparing)
         lastError = nil
+        lastStartupFailureReason = nil
         lastValidationResult = nil
         lastImportedRecord = nil
         lastAppendedTimestamp = .zero
@@ -153,16 +207,18 @@ actor RecordingService {
         // this reduces to the original single-writer failure behavior exactly.
         guard !writerContexts.isEmpty else {
             lastError = .writerCreationFailed
-            state = .failed
+            lastStartupFailureReason = .writerCreationFailed
+            setState(.failed)
             return state
         }
+        logEvent("Writer Created", detail: "\(writerContexts.count) profile(s)")
         return state
     }
 
     @discardableResult
     func startRecording() async -> RecordingState {
         guard state == .preparing, !writerContexts.isEmpty else { return state }
-        state = .recording
+        setState(.recording)
         isPaused = false
         recordingStartTime = Date()
         for profile in writerContexts.keys {
@@ -214,7 +270,7 @@ actor RecordingService {
     @discardableResult
     func stopRecording(expectsAudioTrack: Bool) async -> RecordingState {
         guard state == .recording else { return state }
-        state = .stopping
+        setState(.stopping)
         stopCheckpointing()
         await performanceMonitor.stopMonitoring()
 
@@ -232,6 +288,13 @@ actor RecordingService {
                 writerStatuses[profile]?.state = .failed
                 writerStatuses[profile]?.lastError = error
                 lastError = error
+                // Task 029: only diagnose "never started" here if this writer wasn't
+                // already marked failed elsewhere (which already recorded its own,
+                // more specific reason via `markWriterFailed`).
+                if !context.hasFailed {
+                    lastStartupFailureReason = .sessionNotPrepared
+                    logEvent("Writer never started", detail: profile.outputName)
+                }
                 continue
             }
 
@@ -248,6 +311,8 @@ actor RecordingService {
                 writerStatuses[profile]?.state = .failed
                 writerStatuses[profile]?.lastError = .writeFailed
                 lastError = .writeFailed
+                lastStartupFailureReason = .finishWritingFailed
+                logEvent("finishWriting failed", detail: profile.outputName)
                 continue
             }
 
@@ -275,18 +340,20 @@ actor RecordingService {
                 writerStatuses[profile]?.state = .failed
                 writerStatuses[profile]?.lastError = .unknown
                 lastError = .unknown
+                lastStartupFailureReason = .unknown
+                logEvent("Import failed", detail: profile.outputName)
             }
         }
 
         if anySucceeded {
-            state = .finished
+            setState(.finished)
             // Requirement 7 (Task 018): only a successful completion clears the
             // checkpoint. In dual mode this fires as long as at least one output
             // succeeded — rule 1: never lose recorded video just because its sibling
             // output failed.
             await checkpointStore.delete()
         } else {
-            state = .failed
+            setState(.failed)
         }
         return state
     }
@@ -427,7 +494,7 @@ actor RecordingService {
 
             if !context.isSessionStarted {
                 guard writer.startWriting() else {
-                    markWriterFailed(profile, error: .writeFailed)
+                    markWriterFailed(profile, error: .writeFailed, startupReason: .sessionNotPrepared)
                     continue
                 }
                 writer.startSession(atSourceTime: CMSampleBufferGetPresentationTimeStamp(sampleBuffer))
@@ -447,7 +514,7 @@ actor RecordingService {
                    let croppedBuffer = frameCropper.croppedPixelBuffer(from: sourcePixelBuffer, configuration: cropConfiguration) {
                     let appended = adaptor.append(croppedBuffer, withPresentationTime: CMSampleBufferGetPresentationTimeStamp(sampleBuffer))
                     if !appended {
-                        markWriterFailed(profile, error: .writeFailed)
+                        markWriterFailed(profile, error: .writeFailed, startupReason: .appendFailed)
                     }
                 }
             } else {
@@ -459,7 +526,7 @@ actor RecordingService {
             lastAppendedTimestamp = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
 
             if writer.status == .failed {
-                markWriterFailed(profile, error: .writeFailed)
+                markWriterFailed(profile, error: .writeFailed, startupReason: .appendFailed)
             }
         }
 
@@ -469,14 +536,18 @@ actor RecordingService {
         // original "any failure stops the recording" behavior).
         if !writerContexts.isEmpty, writerContexts.values.allSatisfy(\.hasFailed) {
             lastError = .writeFailed
-            state = .failed
+            setState(.failed)
         }
     }
 
-    private func markWriterFailed(_ profile: OutputProfile, error: RecordingError) {
+    /// Task 029 requirement 2: `startupReason` is purely additive diagnostic detail —
+    /// `error`/`writerStatuses` behave exactly as before this task.
+    private func markWriterFailed(_ profile: OutputProfile, error: RecordingError, startupReason: RecordingStartupFailureReason) {
         writerContexts[profile]?.hasFailed = true
         writerStatuses[profile]?.state = .failed
         writerStatuses[profile]?.lastError = error
+        lastStartupFailureReason = startupReason
+        logEvent("Writer failed", detail: "\(profile.outputName): \(startupReason.description)")
     }
 
     private static func makeOutputURL() -> URL {

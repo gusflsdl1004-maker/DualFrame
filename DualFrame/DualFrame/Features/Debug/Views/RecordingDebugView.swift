@@ -29,6 +29,11 @@ struct RecordingDebugView: View {
     @State private var lastCheckpointSavedAt: Date?
     @State private var storageRemainingText = "--"
     @State private var activeOutputProfilesText = "--"
+    /// Task 029: `RecordingService.lastStartupFailureReason` — a more granular
+    /// diagnosis than the single generic error message this app showed before.
+    @State private var lastStartupFailureReasonText = "--"
+    /// Task 029 requirement 3: the last 30 recording startup events, newest first.
+    @State private var timelineEvents: [RecordingStartupEvent] = []
 
     var body: some View {
         NavigationStack {
@@ -61,6 +66,34 @@ struct RecordingDebugView: View {
                     )
                 }
 
+                Section("Failure Diagnosis") {
+                    LabeledContent("Last Failure Reason", value: lastStartupFailureReasonText)
+                }
+
+                Section("Startup Timeline (last 30)") {
+                    if timelineEvents.isEmpty {
+                        Text("No events yet")
+                            .foregroundStyle(.secondary)
+                    } else {
+                        ForEach(timelineEvents.reversed()) { event in
+                            VStack(alignment: .leading, spacing: 2) {
+                                HStack {
+                                    Text(event.timestamp.formatted(date: .omitted, time: .standard))
+                                        .font(.caption.monospacedDigit())
+                                        .foregroundStyle(.secondary)
+                                    Text(event.stage)
+                                        .font(.caption.bold())
+                                }
+                                if let detail = event.detail {
+                                    Text(detail)
+                                        .font(.caption2)
+                                        .foregroundStyle(.secondary)
+                                }
+                            }
+                        }
+                    }
+                }
+
                 Section("Performance") {
                     LabeledContent("Memory Usage", value: recordingViewModel.memoryStatusText)
                     LabeledContent("Dropped Frames", value: recordingViewModel.formattedDroppedFrames)
@@ -81,6 +114,8 @@ struct RecordingDebugView: View {
                 await refreshCheckpointTimestamp()
                 await refreshStorageRemaining()
                 await refreshActiveOutputProfiles()
+                await refreshFailureReason()
+                await refreshTimeline()
                 try? await Task.sleep(for: .seconds(1))
             }
         }
@@ -119,6 +154,20 @@ struct RecordingDebugView: View {
     private func refreshActiveOutputProfiles() async {
         let profiles = await dualRecordingCoordinator.activeProfiles
         activeOutputProfilesText = profiles.map(\.outputName).joined(separator: ", ")
+    }
+
+    /// Task 029 requirement 2: reads `RecordingService.lastStartupFailureReason` —
+    /// read-only, added by this task, never itself a decision point in the pipeline.
+    private func refreshFailureReason() async {
+        let reason = await dualRecordingCoordinator.recordingService.lastStartupFailureReason
+        lastStartupFailureReasonText = reason?.description ?? "--"
+    }
+
+    /// Task 029 requirement 3: reads the last 30 events from the shared
+    /// `RecordingDiagnosticsLogService` both `RecordingService` and `CameraService`
+    /// write to.
+    private func refreshTimeline() async {
+        timelineEvents = await dualRecordingCoordinator.recordingService.diagnosticsLogService.recentEvents()
     }
 }
 #endif
