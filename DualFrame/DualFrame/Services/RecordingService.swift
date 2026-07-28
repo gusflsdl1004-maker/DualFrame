@@ -25,8 +25,10 @@ actor RecordingService {
     private(set) var state: RecordingState = .idle
     private(set) var lastError: RecordingError?
     private(set) var lastValidationResult: RecordingValidationResult?
+    private(set) var lastImportedRecord: VideoRecord?
 
     private let validator = RecordingValidator()
+    private let libraryService: InternalVideoLibraryService
 
     private var assetWriter: AVAssetWriter?
     private var videoInput: AVAssetWriterInput?
@@ -34,12 +36,17 @@ actor RecordingService {
     private var outputURL: URL?
     private var isSessionStarted = false
 
+    init(libraryService: InternalVideoLibraryService) {
+        self.libraryService = libraryService
+    }
+
     @discardableResult
     func prepareRecording() async -> RecordingState {
         guard state == .idle || state == .finished || state == .failed else { return state }
         state = .preparing
         lastError = nil
         lastValidationResult = nil
+        lastImportedRecord = nil
 
         do {
             try setUpWriter()
@@ -98,18 +105,28 @@ actor RecordingService {
         let result = await validator.validate(fileURL: url, expectsAudioTrack: expectsAudioTrack)
         lastValidationResult = result
 
-        if result.isValid {
-            state = .finished
-        } else {
+        guard result.isValid else {
             lastError = result.error ?? .validationFailed
+            state = .failed
+            return state
+        }
+
+        do {
+            // Moves the file out of the temporary directory — nothing stays there once
+            // a recording succeeds.
+            lastImportedRecord = try await libraryService.importRecording(from: url, validation: result)
+            state = .finished
+        } catch {
+            lastError = .unknown
             state = .failed
         }
         return state
     }
 
-    /// The finished recording's file URL, if the last recording completed and validated successfully.
+    /// The finished recording's permanent file URL in the internal library, if the last
+    /// recording completed, validated, and was imported successfully.
     func outputFileURL() -> URL? {
-        state == .finished ? outputURL : nil
+        lastImportedRecord?.localURL
     }
 
     private func setUpWriter() throws {

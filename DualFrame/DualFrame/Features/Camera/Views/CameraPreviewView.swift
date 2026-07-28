@@ -6,17 +6,21 @@
 import SwiftUI
 
 /// Shows the live rear-camera preview, or `CameraPermissionDeniedView` when access is denied.
-/// Lets the user start/stop recording and shows recording status and elapsed time.
-/// No gallery saving happens here.
+/// Lets the user start/stop recording, shows recording status and elapsed time, and
+/// opens the internal video library. No gallery saving happens here.
 struct CameraPreviewView: View {
     @StateObject private var permissionViewModel = CameraPermissionViewModel()
     @StateObject private var recordingViewModel: RecordingViewModel
     @State private var cameraService: CameraService
+    @State private var libraryService: InternalVideoLibraryService
+    @State private var isLibraryPresented = false
 
     init() {
-        let recordingService = RecordingService()
+        let libraryService = InternalVideoLibraryService()
+        let recordingService = RecordingService(libraryService: libraryService)
         _recordingViewModel = StateObject(wrappedValue: RecordingViewModel(service: recordingService))
         _cameraService = State(wrappedValue: CameraService(recordingService: recordingService))
+        _libraryService = State(wrappedValue: libraryService)
     }
 
     var body: some View {
@@ -27,13 +31,7 @@ struct CameraPreviewView: View {
                 CameraPreviewRepresentable(session: cameraService.session)
                     .ignoresSafeArea()
                     .overlay(alignment: .top) {
-                        Text(recordingViewModel.statusText)
-                            .font(.caption.bold())
-                            .padding(.horizontal, 12)
-                            .padding(.vertical, 6)
-                            .background(.black.opacity(0.5), in: Capsule())
-                            .foregroundStyle(.white)
-                            .padding(.top, 8)
+                        statusBar
                     }
                     .overlay(alignment: .bottom) {
                         recordingControls
@@ -54,10 +52,37 @@ struct CameraPreviewView: View {
                 await cameraService.stop()
             }
         }
+        .sheet(isPresented: $isLibraryPresented) {
+            VideoLibraryView(libraryService: libraryService)
+        }
     }
 
     private var isMicrophoneGranted: Bool {
         permissionViewModel.microphoneStatus == .granted
+    }
+
+    private var statusBar: some View {
+        HStack {
+            Text(recordingViewModel.statusText)
+                .font(.caption.bold())
+                .padding(.horizontal, 12)
+                .padding(.vertical, 6)
+                .background(.black.opacity(0.5), in: Capsule())
+                .foregroundStyle(.white)
+
+            Spacer()
+
+            Button {
+                isLibraryPresented = true
+            } label: {
+                Image(systemName: "film")
+                    .padding(10)
+                    .background(.black.opacity(0.5), in: Circle())
+                    .foregroundStyle(.white)
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.top, 8)
     }
 
     private var recordingControls: some View {
