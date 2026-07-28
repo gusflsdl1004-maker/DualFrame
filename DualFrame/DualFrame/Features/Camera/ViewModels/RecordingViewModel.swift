@@ -76,6 +76,11 @@ final class RecordingViewModel: ObservableObject {
     /// right before each recording starts — this view model never reads or computes
     /// orientation itself.
     private let cameraService: CameraService
+    /// Task 023: used only to look up which `VideoRecord`s the session that just
+    /// finished actually produced, so `recordGroup(startTime:endTime:)` can reference
+    /// them by id — never to duplicate or reinterpret their data.
+    private let libraryService: InternalVideoLibraryService
+    private let groupService: RecordingGroupService
     private var durationTask: Task<Void, Never>?
     private var interruptionOccurredThisSession = false
 
@@ -83,12 +88,16 @@ final class RecordingViewModel: ObservableObject {
         service: RecordingService,
         dualRecordingCoordinator: DualRecordingCoordinator,
         cameraService: CameraService,
-        diagnosticsService: RecordingDiagnosticsService = RecordingDiagnosticsService()
+        libraryService: InternalVideoLibraryService,
+        diagnosticsService: RecordingDiagnosticsService = RecordingDiagnosticsService(),
+        groupService: RecordingGroupService = RecordingGroupService()
     ) {
         self.service = service
         self.dualRecordingCoordinator = dualRecordingCoordinator
         self.cameraService = cameraService
+        self.libraryService = libraryService
         self.diagnosticsService = diagnosticsService
+        self.groupService = groupService
     }
 
     /// Toggles between starting and stopping — the single button the camera screen exposes.
@@ -146,7 +155,9 @@ final class RecordingViewModel: ObservableObject {
         lastValidationResult = await service.lastValidationResult
         await refreshDualStatuses()
 
-        await recordDiagnostics(startTime: startTime, endTime: Date())
+        let endTime = Date()
+        await recordDiagnostics(startTime: startTime, endTime: endTime)
+        await recordGroup(startTime: startTime, endTime: endTime)
 
         if state == .finished {
             lastRecordingURL = await service.outputFileURL()
@@ -223,6 +234,72 @@ final class RecordingViewModel: ObservableObject {
             recoveryStatus: recoveryStatus
         )
         await diagnosticsService.save(diagnostics)
+    }
+
+    /// Builds and saves a `RecordingGroup` for the session that just ended (Task 023
+    /// requirement 2), referencing whichever `VideoRecord`s the session actually
+    /// produced — it never creates, copies, or moves a `VideoRecord`, only looks up
+    /// which ones already exist so the group can point at them by `id`.
+    ///
+    /// `RecordingService` doesn't expose which `VideoRecord` came from which profile
+    /// (and this task must not modify it to add that — requirement 8), so profiles are
+    /// matched to library records by recency (created during this session's window)
+    /// and aspect ratio (short-form is portrait, long-form/single is landscape). This
+    /// is a best-effort heuristic, not a guarantee — see the Task 023 report's Known
+    /// Issues for what happens when it can't find a confident match (the `VideoRecord`
+    /// is never lost; it just shows up ungrouped instead).
+    private func recordGroup(startTime: Date, endTime: Date) async {
+        let mode = await service.mode
+        let statuses = await service.writerStatuses
+
+        var candidates = ((try? await libraryService.loadAllRecords()) ?? [])
+            .filter { $0.createdAt >= startTime.addingTimeInterval(-2) && $0.createdAt <= endTime.addingTimeInterval(10) }
+            .sorted { $0.createdAt < $1.createdAt }
+
+        func takeMatch(isPortrait: Bool) -> VideoRecord? {
+            guard let index = candidates.firstIndex(where: { ($0.resolution.height > $0.resolution.width) == isPortrait }) else {
+                return nil
+            }
+            return candidates.remove(at: index)
+        }
+
+        func member(for status: DualWriterStatus?, isPortrait: Bool) -> RecordingGroupMember? {
+            guard let status else { return nil }
+            guard status.state == .finished else { return .failed }
+            guard let record = takeMatch(isPortrait: isPortrait) else { return nil }
+            return .succeeded(videoRecordID: record.id)
+        }
+
+        let longMember: RecordingGroupMember?
+        let shortMember: RecordingGroupMember?
+
+        switch mode {
+        case .single:
+            // Requirement 2: "as before" — a failed single recording produced no
+            // `VideoRecord` before Task 023 and still shows nothing new now.
+            if statuses.values.first?.state == .finished {
+                longMember = takeMatch(isPortrait: false).map { .succeeded(videoRecordID: $0.id) }
+            } else {
+                longMember = nil
+            }
+            shortMember = nil
+
+        case .dual:
+            longMember = member(for: statuses[.longForm], isPortrait: false)
+            shortMember = member(for: statuses[.shortForm], isPortrait: true)
+        }
+
+        guard longMember != nil || shortMember != nil else { return }
+
+        let group = RecordingGroup(
+            id: UUID().uuidString,
+            createdAt: startTime,
+            recordingMode: mode,
+            longRecording: longMember,
+            shortRecording: shortMember,
+            duration: endTime.timeIntervalSince(startTime)
+        )
+        await groupService.save(group)
     }
 
     private static func format(seconds: TimeInterval) -> String {

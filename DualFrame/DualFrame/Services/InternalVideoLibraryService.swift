@@ -82,6 +82,57 @@ actor InternalVideoLibraryService {
         try fileManager.removeItem(at: record.localURL)
     }
 
+    /// Combines every persisted `RecordingGroup` (Task 023) with the library's actual
+    /// `VideoRecord`s, resolving each group's references and never hiding a
+    /// `VideoRecord` that no group happens to reference — those are surfaced as their
+    /// own single-item group (Task 023 principle: existing files must never become
+    /// invisible because of this feature). `loadAllRecords()` above is completely
+    /// unaffected by this method — it's still the plain, ungrouped source of truth.
+    func loadRecordingGroups(groupService: RecordingGroupService) async throws -> [ResolvedRecordingGroup] {
+        let records = try await loadAllRecords()
+        let recordsByID = Dictionary(uniqueKeysWithValues: records.map { ($0.id, $0) })
+        let groups = await groupService.loadAll()
+
+        var referencedIDs = Set<String>()
+        func resolve(_ member: RecordingGroupMember?) -> ResolvedRecordingGroupMember {
+            switch member {
+            case nil:
+                return .none
+            case .failed:
+                return .failed
+            case .succeeded(let id):
+                guard let record = recordsByID[id] else { return .missing }
+                referencedIDs.insert(id)
+                return .succeeded(record)
+            }
+        }
+
+        var resolved = groups.map { group in
+            ResolvedRecordingGroup(
+                id: group.id,
+                createdAt: group.createdAt,
+                recordingMode: group.recordingMode,
+                duration: group.duration,
+                long: resolve(group.longRecording),
+                short: resolve(group.shortRecording)
+            )
+        }
+
+        let orphanRecords = records.filter { !referencedIDs.contains($0.id) }
+        resolved += orphanRecords.map { record in
+            ResolvedRecordingGroup(
+                id: "orphan-\(record.id)",
+                createdAt: record.createdAt,
+                recordingMode: .single,
+                duration: record.duration,
+                long: .succeeded(record),
+                short: .none
+            )
+        }
+
+        return resolved.sorted { $0.createdAt > $1.createdAt }
+    }
+
     private func videosDirectory() throws -> URL {
         guard let appSupport = try? fileManager.url(
             for: .applicationSupportDirectory,

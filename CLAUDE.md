@@ -71,6 +71,8 @@ These are the priority order and constraints for all DualFrame engineering work.
 54. RecordingService only manages writers; CameraService only uses OrientationManager's results.
 55. Video rotation and video rendering (crop) are kept independent of each other.
 56. Orientation changes must never affect Smart Crop or the recording pipeline.
+57. RecordingGroup is UI-convenience metadata; it never replaces VideoRecord or changes the existing storage structure. Every RecordingGroup only references an existing VideoRecord.
+58. When adding a new feature, never migrate existing data. Existing data structures (e.g. VideoRecord) are kept as-is; new features only add a reference layer on top. A recording file already saved must never become invisible or corrupted because of a new feature.
 
 ## Report Templates
 

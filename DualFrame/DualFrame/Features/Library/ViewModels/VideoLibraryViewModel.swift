@@ -6,13 +6,15 @@
 import Combine
 import Foundation
 
-/// Loads and manages the internal video library for display, and runs the
-/// settings-driven export flow through `ExportCoordinator`. This view model only
+/// Loads and manages the internal video library for display, grouped into
+/// `ResolvedRecordingGroup`s (Task 023), and runs the settings-driven export flow
+/// through `ExportCoordinator` for individual `VideoRecord`s. This view model only
 /// presents UI (destination picker, delete confirmation) when the coordinator asks
-/// for it — it makes no export decisions itself.
+/// for it — it makes no export decisions itself, and no grouping decisions either
+/// (those live in `InternalVideoLibraryService.loadRecordingGroups(groupService:)`).
 @MainActor
 final class VideoLibraryViewModel: ObservableObject {
-    @Published private(set) var records: [VideoRecord] = []
+    @Published private(set) var groups: [ResolvedRecordingGroup] = []
     @Published private(set) var errorMessage: String?
     @Published private(set) var exportStates: [String: ExportState] = [:]
 
@@ -22,6 +24,7 @@ final class VideoLibraryViewModel: ObservableObject {
     @Published private(set) var isConfirmingDelete = false
 
     private let libraryService: InternalVideoLibraryService
+    private let groupService: RecordingGroupService
     private let externalStorageViewModel: ExternalStorageViewModel
     private let exportCoordinator: ExportCoordinator
 
@@ -31,10 +34,12 @@ final class VideoLibraryViewModel: ObservableObject {
     init(
         libraryService: InternalVideoLibraryService,
         externalStorageViewModel: ExternalStorageViewModel,
+        groupService: RecordingGroupService = RecordingGroupService(),
         exportCoordinator: ExportCoordinator? = nil
     ) {
         self.libraryService = libraryService
         self.externalStorageViewModel = externalStorageViewModel
+        self.groupService = groupService
         self.exportCoordinator = exportCoordinator ?? ExportCoordinator(libraryService: libraryService)
     }
 
@@ -43,7 +48,9 @@ final class VideoLibraryViewModel: ObservableObject {
     }
 
     /// Runs the settings-driven export flow for `record`. Always user-initiated —
-    /// never called automatically after a recording finishes.
+    /// never called automatically after a recording finishes. Unchanged from before
+    /// Task 023 — still the same `ExportCoordinator` call, just reused for whichever
+    /// `VideoRecord` a `RecordingGroup` row's Export button was tapped for.
     func export(_ record: VideoRecord) async {
         exportStates[record.id] = .exporting
 
@@ -58,7 +65,7 @@ final class VideoLibraryViewModel: ObservableObject {
         case .success(let destination, let internalCopyDeleted):
             exportStates[record.id] = .success(destination)
             if internalCopyDeleted {
-                records.removeAll { $0.id == record.id }
+                await refresh()
             }
         case .cancelled:
             exportStates[record.id] = .idle
@@ -95,23 +102,38 @@ final class VideoLibraryViewModel: ObservableObject {
         }
     }
 
-    /// Rescans the library directory and sorts the results newest first.
+    /// Rescans the library directory and its `RecordingGroup` metadata, newest first.
     func refresh() async {
         do {
-            let loaded = try await libraryService.loadAllRecords()
-            records = loaded.sorted { $0.createdAt > $1.createdAt }
+            groups = try await libraryService.loadRecordingGroups(groupService: groupService)
             errorMessage = nil
         } catch {
             errorMessage = "Could not load the video library."
         }
     }
 
+    /// Deletes one recording (requirement 7: individual deletion). Leaves the rest of
+    /// its `RecordingGroup` — and any other group — untouched; a missing reference
+    /// resolves to `.missing` next refresh rather than breaking the group.
     func delete(_ record: VideoRecord) async {
         do {
             try await libraryService.delete(record)
-            records.removeAll { $0.id == record.id }
+            await refresh()
         } catch {
             errorMessage = "Could not delete the recording."
         }
+    }
+
+    /// Deletes every recording in `group`, plus the group's own metadata (requirement 7:
+    /// group-level deletion). Best-effort per member — one failing to delete doesn't
+    /// stop the others.
+    func delete(_ group: ResolvedRecordingGroup) async {
+        for member in [group.long, group.short] {
+            if case .succeeded(let record) = member {
+                try? await libraryService.delete(record)
+            }
+        }
+        await groupService.delete(id: group.id)
+        await refresh()
     }
 }

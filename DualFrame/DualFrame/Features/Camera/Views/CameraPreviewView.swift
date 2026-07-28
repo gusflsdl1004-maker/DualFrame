@@ -37,7 +37,8 @@ struct CameraPreviewView: View {
         _recordingViewModel = StateObject(wrappedValue: RecordingViewModel(
             service: recordingService,
             dualRecordingCoordinator: coordinator,
-            cameraService: cameraService
+            cameraService: cameraService,
+            libraryService: libraryService
         ))
         _cameraService = State(wrappedValue: cameraService)
         _libraryService = State(wrappedValue: libraryService)

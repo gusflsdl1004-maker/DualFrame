@@ -3,13 +3,18 @@
 //  DualFrame
 //
 
+import AVKit
 import SwiftUI
 
-/// Lists every recording stored in the internal library, newest first, and lets the
-/// user export any of them through the settings-driven `ExportCoordinator` flow.
+/// Lists every recording stored in the internal library, grouped into recording
+/// sessions (Task 023) — a `.single`-mode session shows one video, a `.dual`-mode
+/// session shows its long-form and short-form outputs together, each with its own
+/// success/failure status. Tapping a group opens per-output preview/export.
+///
 /// The internal library file is only removed if the user explicitly confirms
-/// deletion after a successful export (when "keep internal copy" is off) or swipes
-/// to delete it directly — exporting never removes it automatically.
+/// deletion after a successful export (when "keep internal copy" is off), swipes to
+/// delete a whole group, or deletes one output individually from the group's detail
+/// screen — exporting never removes it automatically.
 struct VideoLibraryView: View {
     @StateObject private var viewModel: VideoLibraryViewModel
 
@@ -23,17 +28,17 @@ struct VideoLibraryView: View {
     var body: some View {
         NavigationStack {
             List {
-                ForEach(viewModel.records) { record in
-                    VideoRecordRow(
-                        record: record,
-                        exportState: viewModel.exportState(for: record),
-                        onExport: { export(record) }
-                    )
+                ForEach(viewModel.groups) { group in
+                    NavigationLink {
+                        RecordingGroupDetailView(group: group, viewModel: viewModel)
+                    } label: {
+                        RecordingGroupRow(group: group)
+                    }
                 }
-                .onDelete(perform: delete)
+                .onDelete(perform: deleteGroups)
             }
             .overlay {
-                if viewModel.records.isEmpty {
+                if viewModel.groups.isEmpty {
                     ContentUnavailableView("No Recordings", systemImage: "film")
                 }
             }
@@ -97,23 +102,126 @@ struct VideoLibraryView: View {
         )
     }
 
-    private func delete(at offsets: IndexSet) {
-        let recordsToDelete = offsets.map { viewModel.records[$0] }
+    /// Requirement 7: group-level deletion — removes every output in the group plus
+    /// the group's own metadata.
+    private func deleteGroups(at offsets: IndexSet) {
+        let groupsToDelete = offsets.map { viewModel.groups[$0] }
         Task {
-            for record in recordsToDelete {
-                await viewModel.delete(record)
+            for group in groupsToDelete {
+                await viewModel.delete(group)
             }
-        }
-    }
-
-    private func export(_ record: VideoRecord) {
-        Task {
-            await viewModel.export(record)
         }
     }
 }
 
-private struct VideoRecordRow: View {
+/// One row in the grouped library list — requirement 4's "🎥 Recording / date / Long-form ✅ / Short-form ✅" layout.
+private struct RecordingGroupRow: View {
+    let group: ResolvedRecordingGroup
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Label(group.createdAt.formatted(date: .abbreviated, time: .shortened), systemImage: "video.fill")
+                .font(.headline)
+            Text(formattedDuration)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            memberStatusRow(title: "Long-form", member: group.long)
+            memberStatusRow(title: "Short-form", member: group.short)
+        }
+        .padding(.vertical, 4)
+    }
+
+    private var formattedDuration: String {
+        let totalSeconds = Int(group.duration)
+        return String(format: "%02d:%02d", totalSeconds / 60, totalSeconds % 60)
+    }
+
+    @ViewBuilder
+    private func memberStatusRow(title: String, member: ResolvedRecordingGroupMember) -> some View {
+        switch member {
+        case .none:
+            EmptyView()
+        case .succeeded:
+            Label(title, systemImage: "checkmark.circle.fill")
+                .font(.caption.bold())
+                .foregroundStyle(.green)
+        case .failed:
+            Label("\(title) — FAILED", systemImage: "xmark.circle.fill")
+                .font(.caption.bold())
+                .foregroundStyle(.red)
+        case .missing:
+            Label("\(title) — unavailable", systemImage: "questionmark.circle")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+    }
+}
+
+/// Requirement 5: tapping a group opens this screen, where long-form and short-form
+/// are each independently previewable and exportable (reusing `VideoRecordRow` and
+/// `ExportCoordinator` unchanged — no new export logic).
+private struct RecordingGroupDetailView: View {
+    let group: ResolvedRecordingGroup
+    @ObservedObject var viewModel: VideoLibraryViewModel
+    @State private var previewingRecord: VideoRecord?
+
+    var body: some View {
+        List {
+            memberSection(title: "Long-form", member: group.long)
+            memberSection(title: "Short-form", member: group.short)
+        }
+        .navigationTitle(group.createdAt.formatted(date: .abbreviated, time: .shortened))
+        .sheet(item: $previewingRecord) { record in
+            VideoPlayer(player: AVPlayer(url: record.localURL))
+                .ignoresSafeArea()
+        }
+    }
+
+    @ViewBuilder
+    private func memberSection(title: String, member: ResolvedRecordingGroupMember) -> some View {
+        switch member {
+        case .none:
+            EmptyView()
+
+        case .failed:
+            Section(title) {
+                Label("Recording failed", systemImage: "xmark.circle.fill")
+                    .foregroundStyle(.red)
+            }
+
+        case .missing:
+            Section(title) {
+                Label("File no longer available", systemImage: "questionmark.circle")
+                    .foregroundStyle(.secondary)
+            }
+
+        case .succeeded(let record):
+            Section(title) {
+                VideoRecordRow(
+                    record: record,
+                    exportState: viewModel.exportState(for: record),
+                    onExport: { Task { await viewModel.export(record) } }
+                )
+
+                Button {
+                    previewingRecord = record
+                } label: {
+                    Label("Preview", systemImage: "play.circle")
+                }
+
+                Button(role: .destructive) {
+                    Task { await viewModel.delete(record) }
+                } label: {
+                    Label("Delete", systemImage: "trash")
+                }
+            }
+        }
+    }
+}
+
+/// One output's export status and controls — unchanged since before Task 023, just
+/// now reused inside `RecordingGroupDetailView` instead of a flat list.
+struct VideoRecordRow: View {
     let record: VideoRecord
     let exportState: ExportState
     let onExport: () -> Void
