@@ -19,6 +19,10 @@ final class RecordingViewModel: ObservableObject {
     @Published private(set) var performanceSnapshot: RecordingPerformanceSnapshot?
     @Published private(set) var lowStorageWarning: String?
     @Published private(set) var interruptionStatus: InterruptionStatus = .none
+    /// Non-nil only while `RecordingMode` is `.dual` and a recording has been prepared
+    /// at least once — `nil` hides the corresponding UI row entirely (requirement 8).
+    @Published private(set) var longFormStatusText: String?
+    @Published private(set) var shortFormStatusText: String?
 
     var statusText: String {
         switch state {
@@ -67,11 +71,17 @@ final class RecordingViewModel: ObservableObject {
 
     private let service: RecordingService
     private let diagnosticsService: RecordingDiagnosticsService
+    private let dualRecordingCoordinator: DualRecordingCoordinator
     private var durationTask: Task<Void, Never>?
     private var interruptionOccurredThisSession = false
 
-    init(service: RecordingService, diagnosticsService: RecordingDiagnosticsService = RecordingDiagnosticsService()) {
+    init(
+        service: RecordingService,
+        dualRecordingCoordinator: DualRecordingCoordinator,
+        diagnosticsService: RecordingDiagnosticsService = RecordingDiagnosticsService()
+    ) {
         self.service = service
+        self.dualRecordingCoordinator = dualRecordingCoordinator
         self.diagnosticsService = diagnosticsService
     }
 
@@ -90,8 +100,17 @@ final class RecordingViewModel: ObservableObject {
     func startRecording() async {
         lastValidationResult = nil
         errorMessage = nil
+        longFormStatusText = nil
+        shortFormStatusText = nil
 
         if state != .preparing {
+            // Requirement 1: read the user's current Settings choice fresh on every
+            // start, not just once at app launch, and hand it to both the coordinator
+            // (kept in sync per Task 018's design) and the service that actually acts
+            // on it.
+            let mode = RecordingModeSettingsService().load().mode
+            await dualRecordingCoordinator.setMode(mode)
+            await service.configureMode(mode)
             state = await service.prepareRecording()
             lowStorageWarning = await service.performanceMonitor.lowStorageWarning
         }
@@ -103,6 +122,7 @@ final class RecordingViewModel: ObservableObject {
         if state == .recording {
             performanceSnapshot = nil
             interruptionOccurredThisSession = false
+            await refreshDualStatuses()
             startDurationTimer()
         }
     }
@@ -114,6 +134,7 @@ final class RecordingViewModel: ObservableObject {
         state = await service.stopRecording(expectsAudioTrack: expectsAudioTrack)
         stopDurationTimer()
         lastValidationResult = await service.lastValidationResult
+        await refreshDualStatuses()
 
         await recordDiagnostics(startTime: startTime, endTime: Date())
 
@@ -121,6 +142,26 @@ final class RecordingViewModel: ObservableObject {
             lastRecordingURL = await service.outputFileURL()
         } else {
             errorMessage = await service.lastError?.message
+        }
+    }
+
+    /// Reads `RecordingService.writerStatuses` for the two known dual-mode profiles and
+    /// publishes display text for each — `nil` when that profile isn't currently active
+    /// (i.e. `.single` mode), which hides the corresponding UI row (requirement 8).
+    private func refreshDualStatuses() async {
+        let statuses = await service.writerStatuses
+        longFormStatusText = statuses[.longForm].map(Self.dualStatusText)
+        shortFormStatusText = statuses[.shortForm].map(Self.dualStatusText)
+    }
+
+    private static func dualStatusText(_ status: DualWriterStatus) -> String {
+        switch status.state {
+        case .idle: "READY"
+        case .preparing: "PREPARING"
+        case .recording: "RECORDING"
+        case .stopping: "STOPPING"
+        case .finished: "SUCCESS"
+        case .failed: "FAILED"
         }
     }
 
@@ -188,6 +229,7 @@ final class RecordingViewModel: ObservableObject {
                 guard !Task.isCancelled else { return }
                 duration += 1
                 performanceSnapshot = await service.performanceMonitor.snapshot
+                await refreshDualStatuses()
             }
         }
     }

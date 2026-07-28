@@ -7,14 +7,14 @@ import Foundation
 
 /// A recorded video's pixel dimensions. A small `Codable`/`Equatable` value so
 /// `OutputProfile` can describe a resolution without depending on AVFoundation.
-nonisolated struct OutputResolution: Codable, Equatable {
+nonisolated struct OutputResolution: Codable, Equatable, Hashable {
     let width: Int
     let height: Int
 }
 
 /// The intended shape of one recorded output. `.widescreen` matches today's single
 /// recording pipeline; `.vertical` is the future short-form output.
-nonisolated enum OutputAspectRatio: String, Codable, Equatable {
+nonisolated enum OutputAspectRatio: String, Codable, Equatable, Hashable {
     case widescreen
     case vertical
 
@@ -33,7 +33,7 @@ nonisolated enum OutputAspectRatio: String, Codable, Equatable {
 /// `DualRecordingCoordinator` maps a `RecordingMode` to a list of these; today only
 /// `.longForm` is ever actually recorded (see `RecordingService`'s single
 /// `WriterContext`).
-nonisolated struct OutputProfile: Codable, Equatable, Identifiable {
+nonisolated struct OutputProfile: Codable, Equatable, Hashable, Identifiable {
     let outputName: String
     let resolution: OutputResolution
     let fps: RecordingFPS

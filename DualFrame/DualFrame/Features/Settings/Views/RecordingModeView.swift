@@ -8,17 +8,21 @@ import SwiftUI
 /// Lets the user pick a recording mode. Pushed from the Settings screen, so it has
 /// no `NavigationStack` of its own (matches `RecordingQualityView`).
 ///
-/// Dual Recording is visible but disabled (requirement 8) — the pipeline architecture
-/// for it exists (`DualRecordingCoordinator`, `OutputProfile`) but nothing yet actually
-/// records a second output, so it can't be selected.
+/// Dual Recording is selectable as of Task 019 — `RecordingService` now drives two
+/// independent writers (long-form + short-form) when this is chosen. It was disabled
+/// ("Coming Soon") in Task 018, before that engine existed.
 struct RecordingModeView: View {
     @StateObject private var viewModel = RecordingModeViewModel()
 
     var body: some View {
         Form {
-            Section("Recording Mode") {
+            Section {
                 modeRow(.single)
-                dualRecordingRow
+                modeRow(.dual)
+            } header: {
+                Text("Recording Mode")
+            } footer: {
+                Text("Dual Recording saves two files per session — a long-form (16:9) and a short-form (9:16) — both to the internal library.")
             }
         }
         .navigationTitle("Recording Mode")
@@ -38,21 +42,6 @@ struct RecordingModeView: View {
                 }
             }
         }
-    }
-
-    private var dualRecordingRow: some View {
-        Button {
-            // Intentionally does nothing — Dual Recording isn't implemented yet.
-        } label: {
-            HStack {
-                Text("Dual Recording")
-                Spacer()
-                Text("Coming Soon")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-        }
-        .disabled(true)
     }
 }
 

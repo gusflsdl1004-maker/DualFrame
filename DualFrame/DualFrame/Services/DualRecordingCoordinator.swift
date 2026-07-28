@@ -5,33 +5,27 @@
 
 import Foundation
 
-/// Decides which `OutputProfile`s a recording session should target for the current
-/// `RecordingMode`, and is the future home of dual-output orchestration.
+/// Tracks which `RecordingMode` the app is currently set to and which `OutputProfile`s
+/// that implies, kept in sync with `RecordingModeSettingsService` by
+/// `RecordingViewModel.startRecording()` on every recording start (rule 39: a single
+/// place decides mode → profile mapping, rather than duplicating it).
 ///
-/// Today this coordinator does not drive any recording by itself — `RecordingModeView`
-/// keeps `.dual` disabled and unselectable, and nothing here ever starts a second
-/// `RecordingService` or `AVAssetWriter` (requirements 10, 11, 12). It exists purely as
-/// the architectural seam a future task would extend:
+/// The actual dual-writer engine — independent `AVAssetWriter`s per profile, shared
+/// timing, independent failure handling — lives in `RecordingService` as of Task 019
+/// (see its `WriterContext`/`writerContexts` documentation). This coordinator does not
+/// drive any of that itself; it wraps a reference to the same `RecordingService`
+/// instance the rest of the app already uses (rule 39/40: never a second, duplicate
+/// pipeline) and exists so callers that only need "what mode / what profiles" don't
+/// have to reach into the recording actor's internals.
 ///
-/// - `mode` would gate which of `activeProfiles` are actually recorded.
-/// - Each active `OutputProfile` would need its own writer pipeline (see the
-///   `WriterContext` extension point documented in `RecordingService`), started and
-///   stopped together.
-/// - Requirement 41 (CLAUDE.md rule 41): those pipelines must share a single timing
-///   reference — e.g. the same `recordingStartTime` and sample buffer source — so the
-///   long-form and short-form outputs stay in sync. Nothing here implements that yet;
-///   it is documented so the eventual design doesn't drift from it.
-///
-/// An `actor` because a future implementation will coordinate multiple concurrently
-/// running writer pipelines, which needs the same isolation guarantees `RecordingService`
-/// already relies on.
+/// An `actor` because `RecordingService` (which it references) is one, and because a
+/// future feature (e.g. a Settings screen listing both outputs' profiles live) may read
+/// `activeProfiles` concurrently with a recording in progress.
 actor DualRecordingCoordinator {
     private(set) var mode: RecordingMode
 
-    /// The one pipeline every mode currently uses. Rule 39/40: this is intentionally
-    /// the *same* `RecordingService` instance the rest of the app already drives — dual
-    /// recording must not duplicate recording logic, only attach additional outputs to
-    /// this existing flow in a future task.
+    /// The `RecordingService` instance this coordinator's mode applies to. Always the
+    /// same instance `CameraPreviewView` wires everywhere else.
     let recordingService: RecordingService
 
     init(mode: RecordingMode, recordingService: RecordingService) {
@@ -43,9 +37,10 @@ actor DualRecordingCoordinator {
         self.mode = mode
     }
 
-    /// The output(s) intended for the current mode. Lists both profiles under `.dual`
-    /// to document the intended mapping even though only `.longForm` is ever actually
-    /// recorded today — `.dual` cannot currently be selected from the UI.
+    /// The output(s) intended for the current mode. `RecordingService.targetProfiles`
+    /// mirrors this exact mapping internally — kept as two separate small switch
+    /// statements rather than a shared dependency, since inlining it avoids an actor
+    /// hop from the hot recording path for a two-case lookup.
     var activeProfiles: [OutputProfile] {
         switch mode {
         case .single:

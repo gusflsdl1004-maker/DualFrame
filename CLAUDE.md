@@ -57,6 +57,9 @@ These are the priority order and constraints for all DualFrame engineering work.
 40. Keep recording pipelines modular so additional outputs can be attached without modifying existing recording flow.
 41. Future dual outputs must share timing information to guarantee synchronization.
 42. Recording mode changes must never affect the stability of the existing single recording pipeline.
+43. Dual recording is lower priority than single recording.
+44. If any new feature reduces the stability of existing single recording even slightly, stop that implementation immediately and revert to the previous stable state.
+45. After completing every task, explicitly check and report single-recording regression using a checklist.
 
 ## Report Templates
 
@@ -171,6 +174,18 @@ Every field in this report must be marked "verified on Simulator", "verified on 
 - Multiple Writer Support:
 - Pipeline Extensibility:
 - Future Rendering Ready:
+- Known Dual Recording Risks:
+- Recommended Improvements:
+
+**Dual Recording Report** (include whenever a task touches the actual dual-writer recording engine, per rules 43-45 — distinct from the architecture-only Dual Recording Readiness Report above)
+- Recording Mode:
+- Long-form Writer Status:
+- Short-form Writer Status:
+- Synchronization (shared start time/timestamp):
+- Independent Failure Handling Verified:
+- Long-form Validation Result:
+- Short-form Validation Result:
+- Single Recording Regression Checklist:
 - Known Dual Recording Risks:
 - Recommended Improvements:
 

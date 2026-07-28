@@ -27,15 +27,17 @@ struct CameraPreviewView: View {
     init() {
         let libraryService = InternalVideoLibraryService()
         let recordingService = RecordingService(libraryService: libraryService)
-        _recordingViewModel = StateObject(wrappedValue: RecordingViewModel(service: recordingService))
-        _cameraService = State(wrappedValue: CameraService(recordingService: recordingService))
-        _libraryService = State(wrappedValue: libraryService)
-        // Wires the Task 018 architecture into the object graph without changing any
-        // recording behavior — nothing on this screen calls into the coordinator yet.
-        _dualRecordingCoordinator = State(wrappedValue: DualRecordingCoordinator(
+        let coordinator = DualRecordingCoordinator(
             mode: RecordingModeSettingsService().load().mode,
             recordingService: recordingService
+        )
+        _recordingViewModel = StateObject(wrappedValue: RecordingViewModel(
+            service: recordingService,
+            dualRecordingCoordinator: coordinator
         ))
+        _cameraService = State(wrappedValue: CameraService(recordingService: recordingService))
+        _libraryService = State(wrappedValue: libraryService)
+        _dualRecordingCoordinator = State(wrappedValue: coordinator)
     }
 
     var body: some View {
@@ -188,6 +190,25 @@ struct CameraPreviewView: View {
         }
     }
 
+    /// Long/Short Recording status, shown independently (requirement 8) — only
+    /// populated while `RecordingMode` is `.dual`, so this renders nothing in `.single`
+    /// mode (unchanged from before Task 019).
+    @ViewBuilder
+    private var dualRecordingStatusRows: some View {
+        if recordingViewModel.longFormStatusText != nil || recordingViewModel.shortFormStatusText != nil {
+            VStack(spacing: 2) {
+                if let longFormStatusText = recordingViewModel.longFormStatusText {
+                    Text("Long Recording: \(longFormStatusText)")
+                }
+                if let shortFormStatusText = recordingViewModel.shortFormStatusText {
+                    Text("Short Recording: \(shortFormStatusText)")
+                }
+            }
+            .font(.caption2.bold())
+            .foregroundStyle(.white)
+        }
+    }
+
     private var recordingControls: some View {
         VStack(spacing: 8) {
             if let result = recordingViewModel.lastValidationResult {
@@ -208,6 +229,8 @@ struct CameraPreviewView: View {
             Text(recordingViewModel.formattedDuration)
                 .font(.title3.monospacedDigit())
                 .foregroundStyle(.white)
+
+            dualRecordingStatusRows
 
             if recordingViewModel.isRecording {
                 HStack(spacing: 12) {
