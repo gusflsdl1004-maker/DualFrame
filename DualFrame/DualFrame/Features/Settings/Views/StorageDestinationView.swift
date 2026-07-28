@@ -10,7 +10,7 @@ import SwiftUI
 /// these values yet.
 struct StorageDestinationView: View {
     @StateObject private var viewModel = StorageSettingsViewModel()
-    @StateObject private var externalStorageViewModel = ExternalStorageViewModel()
+    @ObservedObject var externalStorageViewModel: ExternalStorageViewModel
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
@@ -74,5 +74,5 @@ struct StorageDestinationView: View {
 }
 
 #Preview {
-    StorageDestinationView()
+    StorageDestinationView(externalStorageViewModel: ExternalStorageViewModel())
 }

@@ -11,6 +11,7 @@ import SwiftUI
 struct CameraPreviewView: View {
     @StateObject private var permissionViewModel = CameraPermissionViewModel()
     @StateObject private var recordingViewModel: RecordingViewModel
+    @StateObject private var externalStorageViewModel = ExternalStorageViewModel()
     @State private var cameraService: CameraService
     @State private var libraryService: InternalVideoLibraryService
     @State private var isLibraryPresented = false
@@ -54,10 +55,10 @@ struct CameraPreviewView: View {
             }
         }
         .sheet(isPresented: $isLibraryPresented) {
-            VideoLibraryView(libraryService: libraryService)
+            VideoLibraryView(libraryService: libraryService, externalStorageViewModel: externalStorageViewModel)
         }
         .sheet(isPresented: $isSettingsPresented) {
-            StorageDestinationView()
+            StorageDestinationView(externalStorageViewModel: externalStorageViewModel)
         }
     }
 

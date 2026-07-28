@@ -6,27 +6,41 @@
 import Combine
 import Foundation
 
-/// Loads and manages the internal video library for display.
-/// Owns no file I/O itself — that lives in `InternalVideoLibraryService`.
+/// Loads and manages the internal video library for display, and exports recordings
+/// to Photos or external storage. Owns no file I/O itself — that lives in
+/// `InternalVideoLibraryService`, `PhotoLibraryExportService`, and
+/// `ExternalStorageExportService`.
 @MainActor
 final class VideoLibraryViewModel: ObservableObject {
     @Published private(set) var records: [VideoRecord] = []
     @Published private(set) var errorMessage: String?
     @Published private(set) var exportStatuses: [String: PhotoLibraryExportStatus] = [:]
+    @Published private(set) var externalExportStatuses: [String: ExternalStorageExportStatus] = [:]
+    @Published private(set) var externalExportErrorMessages: [String: String] = [:]
 
     private let libraryService: InternalVideoLibraryService
     private let exportService: PhotoLibraryExportService
+    private let externalExportService: ExternalStorageExportService
+    private let externalStorageViewModel: ExternalStorageViewModel
 
     init(
         libraryService: InternalVideoLibraryService,
-        exportService: PhotoLibraryExportService = PhotoLibraryExportService()
+        externalStorageViewModel: ExternalStorageViewModel,
+        exportService: PhotoLibraryExportService = PhotoLibraryExportService(),
+        externalExportService: ExternalStorageExportService = ExternalStorageExportService()
     ) {
         self.libraryService = libraryService
+        self.externalStorageViewModel = externalStorageViewModel
         self.exportService = exportService
+        self.externalExportService = externalExportService
     }
 
     func exportStatus(for record: VideoRecord) -> PhotoLibraryExportStatus {
         exportStatuses[record.id] ?? .idle
+    }
+
+    func externalExportStatus(for record: VideoRecord) -> ExternalStorageExportStatus {
+        externalExportStatuses[record.id] ?? .idle
     }
 
     /// Copies `record`'s video into Photos. Always user-initiated — never called
@@ -40,6 +54,28 @@ final class VideoLibraryViewModel: ObservableObject {
             exportStatuses[record.id] = .failed(permissionDenied: true)
         } catch {
             exportStatuses[record.id] = .failed(permissionDenied: false)
+        }
+    }
+
+    /// Copies `record`'s video to the external storage location connected in
+    /// Settings. Always user-initiated. The internal library file is only read from —
+    /// never moved or deleted.
+    func exportToExternalStorage(_ record: VideoRecord) async {
+        guard let destinationURL = externalStorageViewModel.selectedURL else {
+            externalExportStatuses[record.id] = .failed
+            externalExportErrorMessages[record.id] = "Connect an external storage location in Settings first."
+            return
+        }
+
+        externalExportStatuses[record.id] = .exporting
+        externalExportErrorMessages[record.id] = nil
+
+        do {
+            try await externalExportService.export(record: record, to: destinationURL)
+            externalExportStatuses[record.id] = .success
+        } catch {
+            externalExportStatuses[record.id] = .failed
+            externalExportErrorMessages[record.id] = "Export failed. Please try again."
         }
     }
 

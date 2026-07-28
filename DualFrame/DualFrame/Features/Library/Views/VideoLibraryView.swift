@@ -6,13 +6,17 @@
 import SwiftUI
 
 /// Lists every recording stored in the internal library, newest first, and lets the
-/// user export any of them to Photos. The internal library file is never deleted by
-/// exporting — only user-initiated deletion (swipe) removes it.
+/// user export any of them to Photos or to a connected external storage location.
+/// The internal library file is never deleted by exporting — only user-initiated
+/// deletion (swipe) removes it.
 struct VideoLibraryView: View {
     @StateObject private var viewModel: VideoLibraryViewModel
 
-    init(libraryService: InternalVideoLibraryService) {
-        _viewModel = StateObject(wrappedValue: VideoLibraryViewModel(libraryService: libraryService))
+    init(libraryService: InternalVideoLibraryService, externalStorageViewModel: ExternalStorageViewModel) {
+        _viewModel = StateObject(wrappedValue: VideoLibraryViewModel(
+            libraryService: libraryService,
+            externalStorageViewModel: externalStorageViewModel
+        ))
     }
 
     var body: some View {
@@ -21,8 +25,11 @@ struct VideoLibraryView: View {
                 ForEach(viewModel.records) { record in
                     VideoRecordRow(
                         record: record,
-                        exportStatus: viewModel.exportStatus(for: record),
-                        onExport: { export(record) }
+                        photosExportStatus: viewModel.exportStatus(for: record),
+                        externalExportStatus: viewModel.externalExportStatus(for: record),
+                        externalExportErrorMessage: viewModel.externalExportErrorMessages[record.id],
+                        onExportToPhotos: { exportToPhotos(record) },
+                        onExportToExternalStorage: { exportToExternalStorage(record) }
                     )
                 }
                 .onDelete(perform: delete)
@@ -48,17 +55,26 @@ struct VideoLibraryView: View {
         }
     }
 
-    private func export(_ record: VideoRecord) {
+    private func exportToPhotos(_ record: VideoRecord) {
         Task {
             await viewModel.exportToPhotos(record)
+        }
+    }
+
+    private func exportToExternalStorage(_ record: VideoRecord) {
+        Task {
+            await viewModel.exportToExternalStorage(record)
         }
     }
 }
 
 private struct VideoRecordRow: View {
     let record: VideoRecord
-    let exportStatus: PhotoLibraryExportStatus
-    let onExport: () -> Void
+    let photosExportStatus: PhotoLibraryExportStatus
+    let externalExportStatus: ExternalStorageExportStatus
+    let externalExportErrorMessage: String?
+    let onExportToPhotos: () -> Void
+    let onExportToExternalStorage: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -71,16 +87,17 @@ private struct VideoRecordRow: View {
                 .font(.caption2)
                 .foregroundStyle(.secondary)
 
-            exportControl
+            photosExportControl
+            externalStorageExportControl
         }
         .padding(.vertical, 4)
     }
 
     @ViewBuilder
-    private var exportControl: some View {
-        switch exportStatus {
+    private var photosExportControl: some View {
+        switch photosExportStatus {
         case .idle:
-            Button("Export to Photos", action: onExport)
+            Button("Export to Photos", action: onExportToPhotos)
                 .font(.caption.bold())
 
         case .exporting:
@@ -92,13 +109,13 @@ private struct VideoRecordRow: View {
             .foregroundStyle(.secondary)
 
         case .success:
-            Label("Success", systemImage: "checkmark.circle.fill")
+            Label("Photos: Success", systemImage: "checkmark.circle.fill")
                 .font(.caption.bold())
                 .foregroundStyle(.green)
 
         case .failed(let permissionDenied):
             VStack(alignment: .leading, spacing: 4) {
-                Label("Failed", systemImage: "xmark.circle.fill")
+                Label("Photos: Failed", systemImage: "xmark.circle.fill")
                     .font(.caption.bold())
                     .foregroundStyle(.red)
 
@@ -109,9 +126,45 @@ private struct VideoRecordRow: View {
                     Button("Open Settings", action: openSettings)
                         .font(.caption2)
                 } else {
-                    Button("Retry", action: onExport)
+                    Button("Retry", action: onExportToPhotos)
                         .font(.caption2)
                 }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var externalStorageExportControl: some View {
+        switch externalExportStatus {
+        case .idle:
+            Button("Export to External Storage", action: onExportToExternalStorage)
+                .font(.caption.bold())
+
+        case .exporting:
+            HStack(spacing: 6) {
+                ProgressView()
+                Text("Exporting...")
+            }
+            .font(.caption)
+            .foregroundStyle(.secondary)
+
+        case .success:
+            Label("External: Success", systemImage: "checkmark.circle.fill")
+                .font(.caption.bold())
+                .foregroundStyle(.green)
+
+        case .failed:
+            VStack(alignment: .leading, spacing: 4) {
+                Label("External: Failed", systemImage: "xmark.circle.fill")
+                    .font(.caption.bold())
+                    .foregroundStyle(.red)
+                if let externalExportErrorMessage {
+                    Text(externalExportErrorMessage)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+                Button("Retry", action: onExportToExternalStorage)
+                    .font(.caption2)
             }
         }
     }
@@ -136,5 +189,8 @@ private struct VideoRecordRow: View {
 }
 
 #Preview {
-    VideoLibraryView(libraryService: InternalVideoLibraryService())
+    VideoLibraryView(
+        libraryService: InternalVideoLibraryService(),
+        externalStorageViewModel: ExternalStorageViewModel()
+    )
 }
