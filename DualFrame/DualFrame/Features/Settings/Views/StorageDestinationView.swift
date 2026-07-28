@@ -46,6 +46,12 @@ struct StorageDestinationView: View {
                 Section("Recovery") {
                     recoveryStatusView
                 }
+
+                Section("Diagnostics") {
+                    NavigationLink("Recording Sessions") {
+                        DiagnosticsView()
+                    }
+                }
             }
             .navigationTitle("Settings")
             .toolbar {

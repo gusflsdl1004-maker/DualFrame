@@ -47,6 +47,9 @@ actor RecordingPerformanceMonitor {
     private(set) var snapshot = RecordingPerformanceSnapshot()
     private(set) var anomalies: [RecordingAnomaly] = []
     private(set) var lowStorageWarning: String?
+    /// The highest memory reading seen since `startMonitoring()` — for the
+    /// diagnostics report, where the peak matters more than any single sample.
+    private(set) var peakMemoryUsageBytes: UInt64 = 0
 
     private var recordingStartTime: Date?
     private var droppedVideoFrameCount = 0
@@ -72,6 +75,7 @@ actor RecordingPerformanceMonitor {
         completedFrameCount = 0
         anomalies.removeAll()
         snapshot = RecordingPerformanceSnapshot()
+        peakMemoryUsageBytes = 0
 
         monitoringTask?.cancel()
         monitoringTask = Task { [weak self] in
@@ -135,8 +139,7 @@ actor RecordingPerformanceMonitor {
         minimumFreeBytes: Int64? = nil
     ) -> String? {
         let threshold = minimumFreeBytes ?? lowStorageThresholdBytes
-        guard let values = try? directory.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey]),
-              let available = values.volumeAvailableCapacityForImportantUsage else {
+        guard let available = currentAvailableStorageBytes(directory: directory) else {
             lowStorageWarning = nil
             return nil
         }
@@ -151,6 +154,15 @@ actor RecordingPerformanceMonitor {
         lowStorageWarning = warning
         logAnomaly(.lowStorage, detail: warning)
         return warning
+    }
+
+    /// The raw available space, for the diagnostics report — unlike
+    /// `checkAvailableStorage`, this doesn't compare against a threshold or log anything.
+    func currentAvailableStorageBytes(directory: URL = FileManager.default.temporaryDirectory) -> Int64? {
+        guard let values = try? directory.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey]) else {
+            return nil
+        }
+        return values.volumeAvailableCapacityForImportantUsage
     }
 
     // MARK: - Private
@@ -169,6 +181,8 @@ actor RecordingPerformanceMonitor {
             averageWriteLatency: averageLatency,
             queueBacklog: backlog
         )
+
+        peakMemoryUsageBytes = max(peakMemoryUsageBytes, memory)
 
         if memory > memoryWarningThresholdBytes {
             logAnomaly(.highMemoryUsage, detail: "Memory usage: \(memory / 1_024 / 1_024) MB")

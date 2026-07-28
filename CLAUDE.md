@@ -149,4 +149,15 @@ Every field in this report must be marked "verified on Simulator", "verified on 
 - Known Interruption Risks:
 - Recommended Improvements:
 
+**Recording State Report** (include whenever a task touches `RecordingState`, pause/resume, or interruption handling)
+- Current Recording State:
+- Paused:
+- Interrupted:
+- Waiting For Resume:
+- Checkpoint Updated:
+- Recording Finalized:
+- Pending Recovery:
+- Known State Risks:
+- Recommended Improvements:
+
 No physical iPhone is available in this environment, and Simulator cannot report real battery/thermal/CPU/memory metrics for camera hardware that doesn't exist there. Every Battery & Thermal Report, Performance Report, and Real Device Test must state this plainly, mark device-dependent fields as untested rather than guessing or fabricating values, and describe exactly what the user needs to measure on real hardware (per rules 12 and 16 above). Every task touching recording/saving/exporting/file management must also include a short failure-path review (rule 20): what happens on crash, sudden power-off, full storage, or a permission change mid-operation.

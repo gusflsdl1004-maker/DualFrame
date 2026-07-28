@@ -66,10 +66,13 @@ final class RecordingViewModel: ObservableObject {
     }
 
     private let service: RecordingService
+    private let diagnosticsService: RecordingDiagnosticsService
     private var durationTask: Task<Void, Never>?
+    private var interruptionOccurredThisSession = false
 
-    init(service: RecordingService) {
+    init(service: RecordingService, diagnosticsService: RecordingDiagnosticsService = RecordingDiagnosticsService()) {
         self.service = service
+        self.diagnosticsService = diagnosticsService
     }
 
     /// Toggles between starting and stopping — the single button the camera screen exposes.
@@ -99,15 +102,20 @@ final class RecordingViewModel: ObservableObject {
         state = await service.startRecording()
         if state == .recording {
             performanceSnapshot = nil
+            interruptionOccurredThisSession = false
             startDurationTimer()
         }
     }
 
     func stopRecording(expectsAudioTrack: Bool) async {
         guard state == .recording else { return }
+        let startTime = await service.recordingStartTime ?? Date()
+
         state = await service.stopRecording(expectsAudioTrack: expectsAudioTrack)
         stopDurationTimer()
         lastValidationResult = await service.lastValidationResult
+
+        await recordDiagnostics(startTime: startTime, endTime: Date())
 
         if state == .finished {
             lastRecordingURL = await service.outputFileURL()
@@ -120,6 +128,7 @@ final class RecordingViewModel: ObservableObject {
     /// recording (if one is active) and preserves a checkpoint — never resumes anything.
     func handleInterruptionBegan(_ source: InterruptionSource) async {
         interruptionStatus = .interrupted(source)
+        interruptionOccurredThisSession = true
         await service.pauseRecording()
     }
 
@@ -128,6 +137,41 @@ final class RecordingViewModel: ObservableObject {
     func handleInterruptionEnded() {
         guard interruptionStatus != .none else { return }
         interruptionStatus = .ended
+    }
+
+    /// Builds and saves a `RecordingDiagnostics` record for the session that just
+    /// ended (success or failure) — one file per session (Task 018 requirement 5).
+    private func recordDiagnostics(startTime: Date, endTime: Date) async {
+        let snapshot = await service.performanceMonitor.snapshot
+        let peakMemory = await service.performanceMonitor.peakMemoryUsageBytes
+        let availableStorage = await service.performanceMonitor.currentAvailableStorageBytes() ?? 0
+        let checkpointCount = await service.checkpointSaveCount
+        let resolution = await service.activeQuality
+        let fps = await service.activeFPS
+
+        let recoveryStatus: DiagnosticsRecoveryStatus
+        if state == .finished {
+            recoveryStatus = interruptionOccurredThisSession ? .completedAfterInterruption : .completedNormally
+        } else {
+            recoveryStatus = .failed
+        }
+
+        let diagnostics = RecordingDiagnostics(
+            id: UUID().uuidString,
+            recordingStartTime: startTime,
+            recordingEndTime: endTime,
+            recordingDuration: endTime.timeIntervalSince(startTime),
+            resolution: resolution,
+            fps: fps,
+            averageWriteLatency: snapshot.averageWriteLatency,
+            droppedVideoFrames: snapshot.droppedVideoFrames,
+            droppedAudioBuffers: snapshot.droppedAudioBuffers,
+            peakMemoryUsageBytes: peakMemory,
+            availableStorageBytes: availableStorage,
+            checkpointCount: checkpointCount,
+            recoveryStatus: recoveryStatus
+        )
+        await diagnosticsService.save(diagnostics)
     }
 
     private static func format(seconds: TimeInterval) -> String {

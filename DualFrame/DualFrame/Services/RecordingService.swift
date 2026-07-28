@@ -45,11 +45,14 @@ actor RecordingService {
     private var audioInput: AVAssetWriterInput?
     private var outputURL: URL?
     private var isSessionStarted = false
-    private var activeQuality: RecordingQuality = .fullHD
-    private var activeFPS: RecordingFPS = .fps30
+    private(set) var activeQuality: RecordingQuality = .fullHD
+    private(set) var activeFPS: RecordingFPS = .fps30
     private var lastAppendedTimestamp: CMTime = .zero
-    private var recordingStartTime: Date?
+    private(set) var recordingStartTime: Date?
     private var checkpointTask: Task<Void, Never>?
+    /// How many times a checkpoint was actually saved during the current/last
+    /// recording — surfaced in the diagnostics report.
+    private(set) var checkpointSaveCount = 0
 
     init(libraryService: InternalVideoLibraryService) {
         self.libraryService = libraryService
@@ -74,6 +77,7 @@ actor RecordingService {
         lastAppendedTimestamp = .zero
         recordingStartTime = nil
         isPaused = false
+        checkpointSaveCount = 0
 
         // Warn-only check (requirement 13) — never blocks preparing or recording.
         await performanceMonitor.checkAvailableStorage()
@@ -278,6 +282,7 @@ actor RecordingService {
     private func saveCheckpoint() async {
         guard let checkpoint = currentCheckpoint() else { return }
         await checkpointStore.save(checkpoint)
+        checkpointSaveCount += 1
     }
 
     /// Requirement 3: every 5 seconds while recording.
