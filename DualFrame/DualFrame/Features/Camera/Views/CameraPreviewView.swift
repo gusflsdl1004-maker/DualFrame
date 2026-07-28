@@ -33,6 +33,8 @@ struct CameraPreviewView: View {
     /// Task 026: Real Device Verification Mode entry point — debug builds only, per
     /// this file's `#if DEBUG` guard around every reference to it.
     @State private var isDebugViewPresented = false
+    /// Task 030: Automated Self Test entry point — debug builds only.
+    @State private var isSelfTestPresented = false
     #endif
 
     init() {
@@ -129,6 +131,9 @@ struct CameraPreviewView: View {
                 dualRecordingCoordinator: dualRecordingCoordinator
             )
         }
+        .sheet(isPresented: $isSelfTestPresented) {
+            SelfTestView(libraryService: libraryService, externalStorageViewModel: externalStorageViewModel)
+        }
         #endif
     }
 
@@ -222,6 +227,15 @@ struct CameraPreviewView: View {
                     isDebugViewPresented = true
                 } label: {
                     Image(systemName: "ladybug")
+                        .padding(10)
+                        .background(.black.opacity(0.5), in: Circle())
+                        .foregroundStyle(.white)
+                }
+
+                Button {
+                    isSelfTestPresented = true
+                } label: {
+                    Image(systemName: "checkmark.shield")
                         .padding(10)
                         .background(.black.opacity(0.5), in: Circle())
                         .foregroundStyle(.white)
