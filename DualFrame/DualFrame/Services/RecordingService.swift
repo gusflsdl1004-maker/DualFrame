@@ -295,6 +295,10 @@ actor RecordingService {
                     lastStartupFailureReason = .sessionNotPrepared
                     logEvent("Writer never started", detail: profile.outputName)
                 }
+                // Task 036: this writer will never reach `finishWriting()` below —
+                // explicitly cancel it here instead of leaving it dangling in
+                // `writerContexts` until the next `prepareRecording()` overwrites it.
+                cancelWriterIfNeeded(context.writer, isSessionStarted: context.isSessionStarted)
                 continue
             }
 
@@ -355,6 +359,14 @@ actor RecordingService {
         } else {
             setState(.failed)
         }
+        // Task 036: every writer this recording attempt used has now either finished
+        // (finishWriting already called above), or been cancelled (in the guard branch
+        // above). Nothing should still hold an AVAssetWriter/AVAssetWriterInput/
+        // PixelBufferAdaptor reference past this point — release them immediately
+        // rather than waiting for the next prepareRecording() to overwrite
+        // writerContexts. writerStatuses is untouched — the UI still needs to show
+        // this recording's final per-profile result.
+        writerContexts.removeAll()
         return state
     }
 
@@ -536,6 +548,23 @@ actor RecordingService {
         // original "any failure stops the recording" behavior).
         if !writerContexts.isEmpty, writerContexts.values.allSatisfy(\.hasFailed) {
             lastError = .writeFailed
+            // Task 036: `state` is about to leave `.recording` here, which means
+            // `stopRecording()`'s own `guard state == .recording` will reject any later
+            // call — this is the only point these writers will ever be released from.
+            // Without this, every writer that failed mid-recording (which, in `.single`
+            // mode, is every failure at all, since one writer failing already satisfies
+            // `allSatisfy`) would stay referenced in `writerContexts` — uncancelled and
+            // unreleased — until the next `prepareRecording()` overwrote the dictionary.
+            for context in writerContexts.values {
+                cancelWriterIfNeeded(context.writer, isSessionStarted: context.isSessionStarted)
+            }
+            writerContexts.removeAll()
+            // Task 036: `stopRecording()` normally stops these two — since it will
+            // never run for this path either, stop them here so the checkpoint timer
+            // and performance monitor don't keep polling indefinitely after the
+            // recording has already ended.
+            stopCheckpointing()
+            await performanceMonitor.stopMonitoring()
             setState(.failed)
         }
     }
@@ -548,6 +577,17 @@ actor RecordingService {
         writerStatuses[profile]?.lastError = error
         lastStartupFailureReason = startupReason
         logEvent("Writer failed", detail: "\(profile.outputName): \(startupReason.description)")
+    }
+
+    /// Task 036: cancels `writer` only if `startWriting()` actually succeeded for it at
+    /// some point (`isSessionStarted`) — `AVAssetWriter.cancelWriting()` must never be
+    /// called before `startWriting()` has succeeded, and never called twice on the same
+    /// writer. A writer whose `startWriting()` itself failed, or that never received a
+    /// single sample buffer, has nothing to cancel; dropping the last strong reference
+    /// to it (via `writerContexts.removeAll()`) is enough to release it through ARC.
+    private func cancelWriterIfNeeded(_ writer: AVAssetWriter, isSessionStarted: Bool) {
+        guard isSessionStarted else { return }
+        writer.cancelWriting()
     }
 
     private static func makeOutputURL() -> URL {
