@@ -14,6 +14,7 @@ struct CameraPreviewView: View {
     @State private var cameraService: CameraService
     @State private var libraryService: InternalVideoLibraryService
     @State private var isLibraryPresented = false
+    @State private var isSettingsPresented = false
 
     init() {
         let libraryService = InternalVideoLibraryService()
@@ -55,6 +56,9 @@ struct CameraPreviewView: View {
         .sheet(isPresented: $isLibraryPresented) {
             VideoLibraryView(libraryService: libraryService)
         }
+        .sheet(isPresented: $isSettingsPresented) {
+            StorageDestinationView()
+        }
     }
 
     private var isMicrophoneGranted: Bool {
@@ -76,6 +80,15 @@ struct CameraPreviewView: View {
                 isLibraryPresented = true
             } label: {
                 Image(systemName: "film")
+                    .padding(10)
+                    .background(.black.opacity(0.5), in: Circle())
+                    .foregroundStyle(.white)
+            }
+
+            Button {
+                isSettingsPresented = true
+            } label: {
+                Image(systemName: "gearshape")
                     .padding(10)
                     .background(.black.opacity(0.5), in: Circle())
                     .foregroundStyle(.white)
