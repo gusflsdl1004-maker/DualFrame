@@ -20,12 +20,12 @@ struct RecordingModeView: View {
                 modeRow(.single)
                 modeRow(.dual)
             } header: {
-                Text("Recording Mode")
+                Text("녹화 모드")
             } footer: {
-                Text("Dual Recording saves two files per session — a long-form (16:9) and a short-form (9:16) — both to the internal library.")
+                Text("듀얼 녹화는 한 번의 녹화로 롱폼(16:9)과 숏폼(9:16) 두 개의 파일을 만들어 모두 내부 보관함에 저장합니다.")
             }
         }
-        .navigationTitle("Recording Mode")
+        .navigationTitle("녹화 모드")
     }
 
     private func modeRow(_ mode: RecordingMode) -> some View {

@@ -31,46 +31,46 @@ struct HealthDashboardView: View {
     @State private var internalLibraryStatusText = "--"
     @State private var lastRecordingText = "--"
     @State private var checkpointTimeText = "--"
-    @State private var selfTestSummaryText = "Running…"
+    @State private var selfTestSummaryText = "실행 중…"
 
     var body: some View {
         NavigationStack {
             Form {
-                Section("Permissions") {
-                    LabeledContent("Camera", value: permissionText(permissionViewModel.cameraStatus))
-                    LabeledContent("Microphone", value: permissionText(permissionViewModel.microphoneStatus))
-                    LabeledContent("Photos", value: photosStatusText)
+                Section("권한") {
+                    LabeledContent("카메라", value: permissionText(permissionViewModel.cameraStatus))
+                    LabeledContent("마이크", value: permissionText(permissionViewModel.microphoneStatus))
+                    LabeledContent("사진", value: photosStatusText)
                 }
 
-                Section("Storage") {
-                    LabeledContent("Internal Library", value: internalLibraryStatusText)
-                    LabeledContent("External Storage", value: externalStorageStatusText)
+                Section("저장소") {
+                    LabeledContent("내부 보관함", value: internalLibraryStatusText)
+                    LabeledContent("외장 저장소", value: externalStorageStatusText)
                 }
 
-                Section("Recording") {
-                    LabeledContent("Recording State", value: recordingViewModel.displayStatusText)
-                    LabeledContent("Recording Mode", value: recordingModeViewModel.settings.mode.title)
+                Section("녹화") {
+                    LabeledContent("녹화 상태", value: recordingViewModel.displayStatusText)
+                    LabeledContent("녹화 모드", value: recordingModeViewModel.settings.mode.title)
                     LabeledContent(
-                        "Resolution",
+                        "해상도",
                         value: activeQuality.map { "\($0.dimensions.width)×\($0.dimensions.height)" } ?? "--"
                     )
                     LabeledContent("FPS", value: activeFPS?.title ?? "--")
-                    LabeledContent("Camera Position", value: cameraPosition.title)
+                    LabeledContent("카메라 방향", value: cameraPosition.title)
                 }
 
-                Section("History") {
-                    LabeledContent("Last Recording", value: lastRecordingText)
-                    LabeledContent("Last Export", value: "Not tracked here — see Library")
-                    LabeledContent("Checkpoint", value: checkpointTimeText)
+                Section("기록") {
+                    LabeledContent("마지막 녹화", value: lastRecordingText)
+                    LabeledContent("마지막 내보내기", value: "여기서는 추적하지 않음 — 보관함 참고")
+                    LabeledContent("체크포인트", value: checkpointTimeText)
                 }
 
-                Section("Status") {
-                    LabeledContent("Recovery Status", value: recoveryStatusText)
-                    LabeledContent("Diagnostics Status", value: diagnosticsStatusText)
-                    LabeledContent("Self Test Result", value: selfTestSummaryText)
+                Section("상태") {
+                    LabeledContent("복구 상태", value: recoveryStatusText)
+                    LabeledContent("진단 상태", value: diagnosticsStatusText)
+                    LabeledContent("자가 진단 결과", value: selfTestSummaryText)
                 }
             }
-            .navigationTitle("Health Dashboard")
+            .navigationTitle("상태 대시보드")
         }
         .task {
             await refreshAll()
@@ -79,34 +79,34 @@ struct HealthDashboardView: View {
 
     private func permissionText(_ status: PermissionStatus) -> String {
         switch status {
-        case .granted: "Granted"
-        case .denied: "Denied"
-        case .notDetermined: "Not Determined"
+        case .granted: "허용됨"
+        case .denied: "거부됨"
+        case .notDetermined: "미결정"
         }
     }
 
     private var externalStorageStatusText: String {
         switch externalStorageViewModel.status {
-        case .connected: externalStorageViewModel.device?.name ?? "Connected"
-        case .disconnected: "Not Connected"
-        case .unavailable: "Unavailable"
+        case .connected: externalStorageViewModel.device?.name ?? "연결됨"
+        case .disconnected: "연결 안 됨"
+        case .unavailable: "사용 불가"
         }
     }
 
     private var recoveryStatusText: String {
         switch recoveryViewModel.status {
-        case .checking: "Checking…"
-        case .recoveryAvailable: "Recovery Available"
-        case .noRecoveryNeeded: "No Recovery Needed"
-        case .corrupted: "Checkpoint Corrupted"
+        case .checking: "확인 중…"
+        case .recoveryAvailable: "복구 가능"
+        case .noRecoveryNeeded: "복구할 항목 없음"
+        case .corrupted: "체크포인트 손상됨"
         }
     }
 
     private var diagnosticsStatusText: String {
         guard let latest = diagnosticsViewModel.sessions.first else {
-            return "No sessions recorded yet"
+            return "기록된 세션 없음"
         }
-        return "\(latest.recoveryStatus.title) (\(diagnosticsViewModel.sessions.count) session(s))"
+        return "\(latest.recoveryStatus.title) (\(diagnosticsViewModel.sessions.count)개 세션)"
     }
 
     private func refreshAll() async {
@@ -124,14 +124,14 @@ struct HealthDashboardView: View {
 
         do {
             let records = try await libraryService.loadAllRecords()
-            internalLibraryStatusText = "Reachable (\(records.count) recording(s))"
+            internalLibraryStatusText = "정상 (\(records.count)개 녹화)"
             if let mostRecent = records.max(by: { $0.createdAt < $1.createdAt }) {
                 lastRecordingText = mostRecent.createdAt.formatted(date: .abbreviated, time: .shortened)
             } else {
-                lastRecordingText = "None yet"
+                lastRecordingText = "아직 없음"
             }
         } catch {
-            internalLibraryStatusText = "Unreachable"
+            internalLibraryStatusText = "접근 불가"
             lastRecordingText = "--"
         }
 
@@ -140,21 +140,21 @@ struct HealthDashboardView: View {
         let failCount = results.filter { if case .fail = $0.status { true } else { false } }.count
         let warningCount = results.filter { if case .warning = $0.status { true } else { false } }.count
         if failCount > 0 {
-            selfTestSummaryText = "\(failCount) FAIL, \(warningCount) WARNING"
+            selfTestSummaryText = "실패 \(failCount)건, 경고 \(warningCount)건"
         } else if warningCount > 0 {
-            selfTestSummaryText = "\(warningCount) WARNING"
+            selfTestSummaryText = "경고 \(warningCount)건"
         } else {
-            selfTestSummaryText = "All \(results.count) checks passed"
+            selfTestSummaryText = "\(results.count)개 항목 모두 통과"
         }
     }
 
     private func photosPermissionText(_ status: PHAuthorizationStatus) -> String {
         switch status {
-        case .authorized: "Granted"
-        case .limited: "Limited"
-        case .notDetermined: "Not Determined"
-        case .denied, .restricted: "Denied"
-        @unknown default: "Unknown"
+        case .authorized: "허용됨"
+        case .limited: "제한적 허용"
+        case .notDetermined: "미결정"
+        case .denied, .restricted: "거부됨"
+        @unknown default: "알 수 없음"
         }
     }
 }

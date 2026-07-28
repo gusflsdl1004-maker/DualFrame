@@ -12,13 +12,13 @@ struct RecordingFPSView: View {
 
     var body: some View {
         Form {
-            Section("Recording FPS") {
+            Section("녹화 프레임레이트") {
                 ForEach(RecordingFPS.allCases) { fps in
                     fpsRow(fps)
                 }
             }
         }
-        .navigationTitle("Recording FPS")
+        .navigationTitle("녹화 프레임레이트")
     }
 
     private func fpsRow(_ fps: RecordingFPS) -> some View {

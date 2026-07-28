@@ -21,10 +21,10 @@ struct DiagnosticsView: View {
         }
         .overlay {
             if viewModel.sessions.isEmpty {
-                ContentUnavailableView("No Recording Sessions", systemImage: "chart.bar.doc.horizontal")
+                ContentUnavailableView("녹화 기록이 없습니다", systemImage: "chart.bar.doc.horizontal")
             }
         }
-        .navigationTitle("Diagnostics")
+        .navigationTitle("진단")
         .task {
             await viewModel.refresh()
         }

@@ -21,37 +21,23 @@ struct RecordingSettingsSummaryView: View {
     var body: some View {
         NavigationStack {
             Form {
-                Section("Camera") {
-                    LabeledContent("Camera", value: cameraPosition.title)
-                    LabeledContent("Orientation", value: orientationLabel)
+                Section("카메라") {
+                    LabeledContent("카메라", value: cameraPosition.title)
+                    LabeledContent("방향", value: AppStrings.orientationLabel(orientationManager.deviceOrientation))
                 }
 
-                Section("Recording") {
-                    LabeledContent("Recording Mode", value: recordingModeViewModel.settings.mode.title)
-                    LabeledContent("Recording Group Mode", value: recordingModeViewModel.settings.mode.title)
-                    LabeledContent("Recording Quality", value: activeQuality?.title ?? "--")
-                    LabeledContent(
-                        "Resolution",
-                        value: activeQuality.map { "\($0.dimensions.width)×\($0.dimensions.height)" } ?? "--"
-                    )
+                Section("녹화") {
+                    LabeledContent("녹화 모드", value: recordingModeViewModel.settings.mode.title)
+                    LabeledContent("화질", value: activeQuality?.title ?? "--")
                     LabeledContent("FPS", value: activeFPS?.title ?? "--")
                 }
 
-                Section("Storage") {
-                    LabeledContent("Storage Destination", value: storageSettingsViewModel.settings.defaultDestination.title)
-                    LabeledContent("Keep Internal Copy", value: storageSettingsViewModel.settings.keepInternalCopy ? "On" : "Off")
+                Section("저장") {
+                    LabeledContent("저장 위치", value: storageSettingsViewModel.settings.defaultDestination.title)
+                    LabeledContent("내부 보관함에도 보관", value: storageSettingsViewModel.settings.keepInternalCopy ? "켬" : "끔")
                 }
             }
-            .navigationTitle("Recording Summary")
-        }
-    }
-
-    private var orientationLabel: String {
-        switch orientationManager.deviceOrientation {
-        case .portrait: "Portrait"
-        case .portraitUpsideDown: "Portrait Upside Down"
-        case .landscapeLeft: "Landscape Left"
-        case .landscapeRight: "Landscape Right"
+            .navigationTitle("녹화 요약")
         }
     }
 }

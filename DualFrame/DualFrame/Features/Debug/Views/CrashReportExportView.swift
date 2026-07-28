@@ -32,34 +32,34 @@ struct CrashReportExportView: View {
         NavigationStack {
             Form {
                 if let payload {
-                    Section("Preview") {
-                        LabeledContent("Session ID", value: payload.sessionID)
-                        LabeledContent("Recording State", value: payload.recordingState)
-                        LabeledContent("Recording Mode", value: payload.recordingMode)
-                        LabeledContent("Resolution", value: payload.resolution)
+                    Section("미리보기") {
+                        LabeledContent("세션 ID", value: payload.sessionID)
+                        LabeledContent("녹화 상태", value: payload.recordingState)
+                        LabeledContent("녹화 모드", value: payload.recordingMode)
+                        LabeledContent("해상도", value: payload.resolution)
                         LabeledContent("FPS", value: payload.fps)
-                        LabeledContent("Orientation", value: payload.orientation)
-                        LabeledContent("Camera Position", value: payload.cameraPosition)
-                        LabeledContent("Checkpoint", value: payload.checkpointTime)
-                        LabeledContent("Recovery Status", value: payload.recoveryStatus)
-                        LabeledContent("Failure Reason", value: payload.failureReason)
-                        LabeledContent("Timeline Events", value: "\(payload.startupTimeline.count)")
+                        LabeledContent("방향", value: payload.orientation)
+                        LabeledContent("카메라 방향", value: payload.cameraPosition)
+                        LabeledContent("체크포인트", value: payload.checkpointTime)
+                        LabeledContent("복구 상태", value: payload.recoveryStatus)
+                        LabeledContent("실패 원인", value: payload.failureReason)
+                        LabeledContent("타임라인 이벤트 수", value: "\(payload.startupTimeline.count)")
                     }
-                    Section("Health Dashboard Snapshot") {
-                        LabeledContent("Camera", value: payload.healthDashboardSnapshot.cameraPermission)
-                        LabeledContent("Microphone", value: payload.healthDashboardSnapshot.microphonePermission)
-                        LabeledContent("Photos", value: payload.healthDashboardSnapshot.photosPermission)
-                        LabeledContent("Internal Library", value: payload.healthDashboardSnapshot.internalLibraryStatus)
-                        LabeledContent("External Storage", value: payload.healthDashboardSnapshot.externalStorageStatus)
-                        LabeledContent("Last Recording", value: payload.healthDashboardSnapshot.lastRecording)
-                        LabeledContent("Self Test", value: payload.healthDashboardSnapshot.selfTestSummary)
+                    Section("상태 대시보드 스냅샷") {
+                        LabeledContent("카메라", value: payload.healthDashboardSnapshot.cameraPermission)
+                        LabeledContent("마이크", value: payload.healthDashboardSnapshot.microphonePermission)
+                        LabeledContent("사진", value: payload.healthDashboardSnapshot.photosPermission)
+                        LabeledContent("내부 보관함", value: payload.healthDashboardSnapshot.internalLibraryStatus)
+                        LabeledContent("외장 저장소", value: payload.healthDashboardSnapshot.externalStorageStatus)
+                        LabeledContent("마지막 녹화", value: payload.healthDashboardSnapshot.lastRecording)
+                        LabeledContent("자가 진단", value: payload.healthDashboardSnapshot.selfTestSummary)
                     }
                 } else {
-                    Text(isBuilding ? "Building report…" : "Not built yet")
+                    Text(isBuilding ? "보고서 생성 중…" : "아직 생성되지 않음")
                         .foregroundStyle(.secondary)
                 }
             }
-            .navigationTitle("Crash Report Export")
+            .navigationTitle("진단 로그 내보내기")
             .toolbar {
                 ToolbarItem(placement: .primaryAction) {
                     if let payload {

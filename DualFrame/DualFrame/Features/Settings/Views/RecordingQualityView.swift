@@ -12,13 +12,13 @@ struct RecordingQualityView: View {
 
     var body: some View {
         Form {
-            Section("Recording Quality") {
+            Section("녹화 화질") {
                 ForEach(RecordingQuality.allCases) { quality in
                     qualityRow(quality)
                 }
             }
         }
-        .navigationTitle("Recording Quality")
+        .navigationTitle("녹화 화질")
     }
 
     private func qualityRow(_ quality: RecordingQuality) -> some View {

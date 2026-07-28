@@ -11,22 +11,22 @@ struct DiagnosticsDetailView: View {
 
     var body: some View {
         Form {
-            Section("Recording") {
-                LabeledContent("Duration", value: formattedDuration)
-                LabeledContent("Resolution", value: diagnostics.resolution.title)
+            Section("녹화") {
+                LabeledContent("길이", value: formattedDuration)
+                LabeledContent("해상도", value: diagnostics.resolution.title)
                 LabeledContent("FPS", value: diagnostics.fps.title)
             }
 
-            Section("Performance") {
-                LabeledContent("Dropped Frames", value: "\(diagnostics.droppedVideoFrames + diagnostics.droppedAudioBuffers)")
-                LabeledContent("Write Latency", value: formattedWriteLatency)
-                LabeledContent("Memory Usage", value: formattedMemory)
-                LabeledContent("Storage Remaining", value: formattedStorage)
+            Section("성능") {
+                LabeledContent("드롭된 프레임", value: "\(diagnostics.droppedVideoFrames + diagnostics.droppedAudioBuffers)")
+                LabeledContent("쓰기 지연 시간", value: formattedWriteLatency)
+                LabeledContent("메모리 사용량", value: formattedMemory)
+                LabeledContent("남은 저장 공간", value: formattedStorage)
             }
 
-            Section("Recovery") {
-                LabeledContent("Checkpoint Count", value: "\(diagnostics.checkpointCount)")
-                LabeledContent("Recovery Status", value: diagnostics.recoveryStatus.title)
+            Section("복구") {
+                LabeledContent("체크포인트 저장 횟수", value: "\(diagnostics.checkpointCount)")
+                LabeledContent("복구 상태", value: diagnostics.recoveryStatus.title)
             }
         }
         .navigationTitle(diagnostics.recordingStartTime.formatted(date: .abbreviated, time: .shortened))

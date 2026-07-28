@@ -21,13 +21,13 @@ nonisolated enum InterruptionSource: Equatable {
 
     var title: String {
         switch self {
-        case .phoneCall: "Phone Call"
+        case .phoneCall: "전화 수신"
         case .siri: "Siri"
-        case .lockScreen: "Lock Screen"
-        case .appBackground: "App Backgrounded"
-        case .cameraInUse: "Camera In Use by Another App"
-        case .audioRouteChange: "Audio Route Change"
-        case .unknown: "Unknown Interruption"
+        case .lockScreen: "잠금 화면"
+        case .appBackground: "앱 백그라운드 전환"
+        case .cameraInUse: "다른 앱이 카메라 사용 중"
+        case .audioRouteChange: "오디오 경로 변경"
+        case .unknown: "알 수 없는 중단"
         }
     }
 }

@@ -23,10 +23,10 @@ struct RealDeviceVerificationChecklistView: View {
                         Toggle(item.title, isOn: binding(for: item))
                     }
                 } footer: {
-                    Text("Check off each item only after confirming it on a physical iPhone. Simulator has no camera and cannot verify any of these.")
+                    Text("실제 iPhone에서 확인한 항목만 체크하세요. 시뮬레이터는 카메라가 없어 검증할 수 없습니다.")
                 }
             }
-            .navigationTitle("Device Verification")
+            .navigationTitle("실기기 점검 목록")
         }
         .onAppear {
             checkedState = service.load()

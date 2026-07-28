@@ -16,8 +16,8 @@ nonisolated enum RecordingMode: String, CaseIterable, Identifiable, Codable {
 
     var title: String {
         switch self {
-        case .single: "Single Recording"
-        case .dual: "Dual Recording"
+        case .single: "단일 녹화"
+        case .dual: "듀얼 녹화"
         }
     }
 }

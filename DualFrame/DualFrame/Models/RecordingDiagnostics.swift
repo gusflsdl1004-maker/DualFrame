@@ -16,9 +16,9 @@ nonisolated enum DiagnosticsRecoveryStatus: String, Codable, Equatable {
 
     var title: String {
         switch self {
-        case .completedNormally: "Completed Normally"
-        case .completedAfterInterruption: "Completed After Interruption"
-        case .failed: "Failed"
+        case .completedNormally: "정상 완료"
+        case .completedAfterInterruption: "중단 후 완료"
+        case .failed: "실패"
         }
     }
 }

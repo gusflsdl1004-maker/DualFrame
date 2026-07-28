@@ -13,20 +13,21 @@ struct CameraPermissionDeniedView: View {
                 .font(.system(size: 48))
                 .foregroundStyle(.secondary)
 
-            Text("Camera Access Required")
+            Text("카메라 권한이 필요합니다")
                 .font(.title2.bold())
 
-            Text("DualFrame needs camera and microphone access to record video. Please enable access in Settings.")
+            Text("영상을 녹화하려면 카메라와 마이크 접근 권한이 필요합니다. 설정에서 권한을 허용해 주세요.")
                 .font(.body)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
                 .padding(.horizontal, 32)
 
-            Button("Open Settings") {
+            Button("설정으로 이동") {
                 guard let url = URL(string: UIApplication.openSettingsURLString) else { return }
                 UIApplication.shared.open(url)
             }
             .buttonStyle(.borderedProminent)
+            .controlSize(.large)
         }
         .padding()
     }

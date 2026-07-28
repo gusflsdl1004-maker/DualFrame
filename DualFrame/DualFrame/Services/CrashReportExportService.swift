@@ -95,7 +95,7 @@ struct CrashReportExportService {
             recordingMode: recordingModeViewModel.settings.mode.title,
             resolution: activeQuality.map { "\($0.dimensions.width)×\($0.dimensions.height)" } ?? "--",
             fps: activeFPS?.title ?? "--",
-            orientation: Self.orientationText(orientationManager.deviceOrientation),
+            orientation: AppStrings.orientationLabel(orientationManager.deviceOrientation),
             cameraPosition: cameraPosition.title,
             longWriterStatus: recordingViewModel.longFormStatusText ?? "--",
             shortWriterStatus: recordingViewModel.shortFormStatusText ?? "--",
@@ -119,11 +119,11 @@ struct CrashReportExportService {
         let lastRecording: String
         do {
             let records = try await libraryService.loadAllRecords()
-            internalLibraryStatus = "Reachable (\(records.count) recording(s))"
+            internalLibraryStatus = "정상 (\(records.count)개 녹화)"
             lastRecording = records.max(by: { $0.createdAt < $1.createdAt })?
-                .createdAt.formatted(date: .abbreviated, time: .shortened) ?? "None yet"
+                .createdAt.formatted(date: .abbreviated, time: .shortened) ?? "아직 없음"
         } catch {
-            internalLibraryStatus = "Unreachable"
+            internalLibraryStatus = "접근 불가"
             lastRecording = "--"
         }
 
@@ -134,11 +134,11 @@ struct CrashReportExportService {
         let failCount = selfTestResults.filter { if case .fail = $0.status { true } else { false } }.count
         let warningCount = selfTestResults.filter { if case .warning = $0.status { true } else { false } }.count
         let selfTestSummary: String = if failCount > 0 {
-            "\(failCount) FAIL, \(warningCount) WARNING"
+            "실패 \(failCount)건, 경고 \(warningCount)건"
         } else if warningCount > 0 {
-            "\(warningCount) WARNING"
+            "경고 \(warningCount)건"
         } else {
-            "All \(selfTestResults.count) checks passed"
+            "\(selfTestResults.count)개 항목 모두 통과"
         }
 
         return CrashReportPayload.HealthSnapshot(
@@ -154,47 +154,38 @@ struct CrashReportExportService {
 
     private static func permissionText(_ status: PermissionStatus) -> String {
         switch status {
-        case .granted: "Granted"
-        case .denied: "Denied"
-        case .notDetermined: "Not Determined"
+        case .granted: "허용됨"
+        case .denied: "거부됨"
+        case .notDetermined: "미결정"
         }
     }
 
     @MainActor
     private static func externalStorageStatusText(_ viewModel: ExternalStorageViewModel) -> String {
         switch viewModel.status {
-        case .connected: viewModel.device?.name ?? "Connected"
-        case .disconnected: "Not Connected"
-        case .unavailable: "Unavailable"
+        case .connected: viewModel.device?.name ?? "연결됨"
+        case .disconnected: "연결 안 됨"
+        case .unavailable: "사용 불가"
         }
     }
 
     private static func photosPermissionText(_ status: PHAuthorizationStatus) -> String {
         switch status {
-        case .authorized: "Granted"
-        case .limited: "Limited"
-        case .notDetermined: "Not Determined"
-        case .denied, .restricted: "Denied"
-        @unknown default: "Unknown"
-        }
-    }
-
-    private static func orientationText(_ orientation: RecordingOrientation) -> String {
-        switch orientation {
-        case .portrait: "Portrait"
-        case .portraitUpsideDown: "Portrait Upside Down"
-        case .landscapeLeft: "Landscape Left"
-        case .landscapeRight: "Landscape Right"
+        case .authorized: "허용됨"
+        case .limited: "제한적 허용"
+        case .notDetermined: "미결정"
+        case .denied, .restricted: "거부됨"
+        @unknown default: "알 수 없음"
         }
     }
 
     @MainActor
     private static func recoveryStatusText(_ status: RecoveryStatus) -> String {
         switch status {
-        case .checking: "Checking…"
-        case .recoveryAvailable: "Recovery Available"
-        case .noRecoveryNeeded: "No Recovery Needed"
-        case .corrupted: "Checkpoint Corrupted"
+        case .checking: "확인 중…"
+        case .recoveryAvailable: "복구 가능"
+        case .noRecoveryNeeded: "복구할 항목 없음"
+        case .corrupted: "체크포인트 손상됨"
         }
     }
 }

@@ -27,14 +27,15 @@ final class RecordingViewModel: ObservableObject {
     /// the lifetime of `currentSessionMetadata` below.
     @Published private(set) var currentSessionID: UUID?
 
+    /// Task 038 requirement 3: READY→준비 완료, RECORDING→녹화 중, FAILED→녹화 실패, etc.
     var statusText: String {
         switch state {
-        case .idle: "READY"
-        case .preparing: "PREPARING"
-        case .recording: "RECORDING"
-        case .stopping: "STOPPING"
-        case .finished: "SUCCESS"
-        case .failed: "FAILED"
+        case .idle: AppStrings.RecordingStatus.ready
+        case .preparing: AppStrings.RecordingStatus.preparing
+        case .recording: AppStrings.RecordingStatus.recording
+        case .stopping: AppStrings.RecordingStatus.stopping
+        case .finished: AppStrings.RecordingStatus.success
+        case .failed: AppStrings.RecordingStatus.failed
         }
     }
 
@@ -44,7 +45,7 @@ final class RecordingViewModel: ObservableObject {
     /// `statusText`/`state` themselves mean anywhere else.
     var displayStatusText: String {
         guard state == .recording, interruptionStatus != .none else { return statusText }
-        return "PAUSED"
+        return AppStrings.RecordingStatus.paused
     }
 
     var formattedDuration: String { Self.format(seconds: duration) }

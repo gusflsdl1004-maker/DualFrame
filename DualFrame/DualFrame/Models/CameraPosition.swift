@@ -16,8 +16,8 @@ nonisolated enum CameraPosition: String, CaseIterable, Identifiable, Codable {
 
     var title: String {
         switch self {
-        case .back: "Back Camera"
-        case .front: "Front Camera"
+        case .back: "후면 카메라"
+        case .front: "전면 카메라"
         }
     }
 }

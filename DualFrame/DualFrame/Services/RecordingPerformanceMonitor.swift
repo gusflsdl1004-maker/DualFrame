@@ -150,7 +150,7 @@ actor RecordingPerformanceMonitor {
         }
 
         let formatted = ByteCountFormatter.string(fromByteCount: available, countStyle: .file)
-        let warning = "Low storage: only \(formatted) free."
+        let warning = "저장 공간 부족: \(formatted) 남음"
         lowStorageWarning = warning
         logAnomaly(.lowStorage, detail: warning)
         return warning

@@ -17,49 +17,49 @@ struct StorageDestinationView: View {
     var body: some View {
         NavigationStack {
             Form {
-                Section("Default Destination") {
+                Section("기본 저장 위치") {
                     ForEach(StorageDestination.allCases) { destination in
                         destinationRow(destination)
                     }
                 }
 
                 Section {
-                    Toggle("Ask every time", isOn: $viewModel.settings.askEveryTime)
-                    Toggle("Keep internal copy", isOn: $viewModel.settings.keepInternalCopy)
+                    Toggle("매번 물어보기", isOn: $viewModel.settings.askEveryTime)
+                    Toggle("내부 보관함에도 보관", isOn: $viewModel.settings.keepInternalCopy)
                 }
 
                 Section {
-                    NavigationLink("Manage External Storage") {
+                    NavigationLink("외장 저장소 관리") {
                         ExternalStorageView(viewModel: externalStorageViewModel)
                     }
                 }
 
-                Section("Recording") {
-                    NavigationLink("Recording Quality") {
+                Section("녹화") {
+                    NavigationLink("녹화 화질") {
                         RecordingQualityView()
                     }
-                    NavigationLink("Recording FPS") {
+                    NavigationLink("녹화 프레임레이트") {
                         RecordingFPSView()
                     }
-                    NavigationLink("Recording Mode") {
+                    NavigationLink("녹화 모드") {
                         RecordingModeView()
                     }
                 }
 
-                Section("Recovery") {
+                Section("복구") {
                     recoveryStatusView
                 }
 
-                Section("Diagnostics") {
-                    NavigationLink("Recording Sessions") {
+                Section("진단") {
+                    NavigationLink("녹화 세션 기록") {
                         DiagnosticsView()
                     }
                 }
             }
-            .navigationTitle("Settings")
+            .navigationTitle("설정")
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Done") { dismiss() }
+                    Button("완료") { dismiss() }
                 }
             }
         }
@@ -72,30 +72,30 @@ struct StorageDestinationView: View {
     private var recoveryStatusView: some View {
         switch recoveryViewModel.status {
         case .checking:
-            Text("Checking...")
+            Text("확인 중...")
                 .foregroundStyle(.secondary)
 
         case .noRecoveryNeeded:
-            Text("No Recovery Needed")
+            Text("복구할 항목 없음")
                 .foregroundStyle(.secondary)
 
         case .recoveryAvailable:
             VStack(alignment: .leading, spacing: 4) {
-                Text("Recovery Available")
+                Text("복구 가능한 녹화가 있습니다")
                     .font(.headline)
-                Text("Last Recording: \(recoveryViewModel.formattedTimestamp)")
+                Text("마지막 녹화: \(recoveryViewModel.formattedTimestamp)")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                Text("Duration: \(recoveryViewModel.formattedDuration)")
+                Text("길이: \(recoveryViewModel.formattedDuration)")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                Text(recoveryViewModel.temporaryFileExists ? "File Exists" : "File Missing")
+                Text(recoveryViewModel.temporaryFileExists ? "파일 있음" : "파일 없음")
                     .font(.caption)
                     .foregroundStyle(recoveryViewModel.temporaryFileExists ? .green : .red)
             }
 
         case .corrupted:
-            Text("Recovery data is corrupted")
+            Text("복구 데이터가 손상되었습니다")
                 .foregroundStyle(.red)
         }
     }
@@ -109,7 +109,7 @@ struct StorageDestinationView: View {
                 Text(destination.title)
                     .foregroundStyle(available ? .primary : .secondary)
                 if !available {
-                    Text("(Disabled)")
+                    Text("(사용 불가)")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }

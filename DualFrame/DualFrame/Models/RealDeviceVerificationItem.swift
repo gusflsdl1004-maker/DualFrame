@@ -28,19 +28,19 @@ nonisolated enum RealDeviceVerificationItem: String, CaseIterable, Identifiable,
 
     var title: String {
         switch self {
-        case .singleRecording: "Single Recording"
-        case .dualRecording: "Dual Recording"
-        case .resume: "Resume"
-        case .frontCamera: "Front Camera"
-        case .backCamera: "Back Camera"
-        case .orientation: "Orientation"
-        case .crop: "Crop"
-        case .recordingGroup: "Recording Group"
-        case .photosExport: "Photos Export"
-        case .externalStorageExport: "External Storage Export"
-        case .recovery: "Recovery"
-        case .diagnostics: "Diagnostics"
-        case .selfTest: "Self Test"
+        case .singleRecording: "단일 녹화"
+        case .dualRecording: "듀얼 녹화"
+        case .resume: "이어하기"
+        case .frontCamera: "전면 카메라"
+        case .backCamera: "후면 카메라"
+        case .orientation: "화면 방향"
+        case .crop: "스마트 크롭"
+        case .recordingGroup: "녹화 그룹"
+        case .photosExport: "사진 앱 내보내기"
+        case .externalStorageExport: "외장 저장소 내보내기"
+        case .recovery: "복구"
+        case .diagnostics: "진단"
+        case .selfTest: "자가 진단"
         }
     }
 }

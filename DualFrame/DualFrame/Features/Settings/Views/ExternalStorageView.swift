@@ -15,19 +15,19 @@ struct ExternalStorageView: View {
 
     var body: some View {
         Form {
-            Section("Connected Storage") {
-                LabeledContent("Name", value: viewModel.device?.name ?? "—")
-                LabeledContent("Available Space", value: formattedSpace(viewModel.device?.availableSpace))
-                LabeledContent("Total Space", value: formattedSpace(viewModel.device?.totalSpace))
-                LabeledContent("Status", value: statusText)
+            Section("연결된 저장소") {
+                LabeledContent("이름", value: viewModel.device?.name ?? "—")
+                LabeledContent("사용 가능 공간", value: formattedSpace(viewModel.device?.availableSpace))
+                LabeledContent("전체 공간", value: formattedSpace(viewModel.device?.totalSpace))
+                LabeledContent("상태", value: statusText)
             }
 
             Section {
-                Button("Choose Storage Location") {
+                Button("저장 위치 선택") {
                     isPickerPresented = true
                 }
                 if viewModel.device != nil {
-                    Button("Disconnect", role: .destructive) {
+                    Button("연결 해제", role: .destructive) {
                         viewModel.disconnect()
                     }
                 }
@@ -40,7 +40,7 @@ struct ExternalStorageView: View {
                 }
             }
         }
-        .navigationTitle("External Storage")
+        .navigationTitle("외장 저장소")
         .fileImporter(isPresented: $isPickerPresented, allowedContentTypes: [.folder]) { result in
             switch result {
             case .success(let url):
@@ -53,9 +53,9 @@ struct ExternalStorageView: View {
 
     private var statusText: String {
         switch viewModel.status {
-        case .connected: "Connected"
-        case .disconnected: "Disconnected"
-        case .unavailable: "Unavailable"
+        case .connected: "연결됨"
+        case .disconnected: "연결 안 됨"
+        case .unavailable: "사용 불가"
         }
     }
 

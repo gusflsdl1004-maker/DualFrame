@@ -19,9 +19,9 @@ nonisolated enum StorageDestination: String, CaseIterable, Identifiable, Codable
 
     var title: String {
         switch self {
-        case .internalLibrary: "Internal Library"
-        case .photos: "Photos"
-        case .externalDrive: "External Drive"
+        case .internalLibrary: "내부 보관함"
+        case .photos: "사진 앱"
+        case .externalDrive: "외장 저장소"
         }
     }
 }

@@ -17,9 +17,9 @@ nonisolated enum RecordingQuality: String, CaseIterable, Identifiable, Codable {
 
     var title: String {
         switch self {
-        case .hd: "HD"
-        case .fullHD: "Full HD"
-        case .uhd4K: "4K"
+        case .hd: "HD (720p)"
+        case .fullHD: "Full HD (1080p)"
+        case .uhd4K: "4K (2160p)"
         }
     }
 

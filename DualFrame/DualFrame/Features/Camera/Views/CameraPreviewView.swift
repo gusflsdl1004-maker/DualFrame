@@ -203,7 +203,10 @@ struct CameraPreviewView: View {
                 HStack(spacing: 6) {
                     Text(recordingViewModel.displayStatusText)
                     if let activeQuality {
-                        Text("\(activeQuality.dimensions.width)×\(activeQuality.dimensions.height)")
+                        // Task 038 requirement 2: shows the readable quality tier
+                        // (e.g. "Full HD (1080p)") instead of raw pixel dimensions —
+                        // simpler at a glance, same underlying value.
+                        Text(activeQuality.title)
                     }
                     if let activeFPS {
                         Text(activeFPS.title)
@@ -218,11 +221,13 @@ struct CameraPreviewView: View {
 
                 Spacer()
 
+                // Task 038 requirement 2: icon buttons enlarged (10 → 14 padding) for
+                // easier tapping, matching the Camera app's touch-target sizing.
                 Button {
                     isLibraryPresented = true
                 } label: {
                     Image(systemName: "film")
-                        .padding(10)
+                        .padding(14)
                         .background(.black.opacity(0.5), in: Circle())
                         .foregroundStyle(.white)
                 }
@@ -231,7 +236,7 @@ struct CameraPreviewView: View {
                     isSettingsPresented = true
                 } label: {
                     Image(systemName: "gearshape")
-                        .padding(10)
+                        .padding(14)
                         .background(.black.opacity(0.5), in: Circle())
                         .foregroundStyle(.white)
                 }
@@ -240,7 +245,7 @@ struct CameraPreviewView: View {
                     isSettingsSummaryPresented = true
                 } label: {
                     Image(systemName: "info.circle")
-                        .padding(10)
+                        .padding(14)
                         .background(.black.opacity(0.5), in: Circle())
                         .foregroundStyle(.white)
                 }
@@ -252,7 +257,7 @@ struct CameraPreviewView: View {
                     Task { await toggleCameraPosition() }
                 } label: {
                     Image(systemName: "arrow.triangle.2.circlepath.camera")
-                        .padding(10)
+                        .padding(14)
                         .background(.black.opacity(0.5), in: Circle())
                         .foregroundStyle(.white)
                 }
@@ -267,31 +272,31 @@ struct CameraPreviewView: View {
                     Button {
                         isDebugViewPresented = true
                     } label: {
-                        Label("Recording Debug", systemImage: "ladybug")
+                        Label("녹화 디버그", systemImage: "ladybug")
                     }
                     Button {
                         isSelfTestPresented = true
                     } label: {
-                        Label("Self Test", systemImage: "checkmark.shield")
+                        Label("자가 진단", systemImage: "checkmark.shield")
                     }
                     Button {
                         isVerificationChecklistPresented = true
                     } label: {
-                        Label("Device Checklist", systemImage: "checklist")
+                        Label("실기기 점검 목록", systemImage: "checklist")
                     }
                     Button {
                         isHealthDashboardPresented = true
                     } label: {
-                        Label("Health Dashboard", systemImage: "heart.text.square")
+                        Label("상태 대시보드", systemImage: "heart.text.square")
                     }
                     Button {
                         isCrashReportExportPresented = true
                     } label: {
-                        Label("Crash Report Export", systemImage: "doc.badge.arrow.up")
+                        Label("진단 로그 내보내기", systemImage: "doc.badge.arrow.up")
                     }
                 } label: {
                     Image(systemName: "wrench.and.screwdriver")
-                        .padding(10)
+                        .padding(14)
                         .background(.black.opacity(0.5), in: Circle())
                         .foregroundStyle(.white)
                 }
@@ -299,7 +304,7 @@ struct CameraPreviewView: View {
             }
 
             if qualityFallbackOccurred, let activeQuality {
-                Text("Requested quality isn't supported on this device — using \(activeQuality.title) instead.")
+                Text("이 기기에서 지원하지 않는 화질이라 \(activeQuality.title)(으)로 대신 녹화합니다.")
                     .font(.caption2)
                     .padding(.horizontal, 12)
                     .padding(.vertical, 6)
@@ -308,7 +313,7 @@ struct CameraPreviewView: View {
             }
 
             if fpsFallbackOccurred, let activeFPS {
-                Text("Requested frame rate isn't supported at this quality — using \(activeFPS.title) instead.")
+                Text("현재 화질에서 지원하지 않는 프레임레이트라 \(activeFPS.title)(으)로 대신 녹화합니다.")
                     .font(.caption2)
                     .padding(.horizontal, 12)
                     .padding(.vertical, 6)
@@ -338,7 +343,7 @@ struct CameraPreviewView: View {
             EmptyView()
         case .interrupted(let source):
             VStack(spacing: 6) {
-                Text("Recording paused — \(source.title)")
+                Text("녹화 일시정지됨 — \(source.title)")
                     .font(.caption2)
                     .padding(.horizontal, 12)
                     .padding(.vertical, 6)
@@ -348,7 +353,7 @@ struct CameraPreviewView: View {
             }
         case .ended:
             VStack(spacing: 6) {
-                Text("Interruption ended — recording is still paused.")
+                Text("중단 상황이 끝났습니다 — 녹화는 계속 일시정지 상태입니다.")
                     .font(.caption2)
                     .padding(.horizontal, 12)
                     .padding(.vertical, 6)
@@ -365,10 +370,10 @@ struct CameraPreviewView: View {
         Button {
             Task { await recordingViewModel.resumeRecording() }
         } label: {
-            Text("Resume Recording")
+            Text(AppStrings.Camera.resumeRecording)
                 .font(.caption.bold())
-                .padding(.horizontal, 12)
-                .padding(.vertical, 6)
+                .padding(.horizontal, 16)
+                .padding(.vertical, 10)
                 .background(Color.white, in: Capsule())
                 .foregroundStyle(.black)
         }
@@ -382,10 +387,10 @@ struct CameraPreviewView: View {
         if recordingViewModel.longFormStatusText != nil || recordingViewModel.shortFormStatusText != nil {
             VStack(spacing: 2) {
                 if let longFormStatusText = recordingViewModel.longFormStatusText {
-                    Text("Long Recording: \(longFormStatusText)")
+                    Text("롱폼: \(longFormStatusText)")
                 }
                 if let shortFormStatusText = recordingViewModel.shortFormStatusText {
-                    Text("Short Recording: \(shortFormStatusText)")
+                    Text("숏폼: \(shortFormStatusText)")
                 }
             }
             .font(.caption2.bold())
@@ -394,12 +399,12 @@ struct CameraPreviewView: View {
     }
 
     private var recordingControls: some View {
-        VStack(spacing: 8) {
+        VStack(spacing: 10) {
             if let result = recordingViewModel.lastValidationResult {
                 VStack(spacing: 2) {
-                    Text("Size: \(recordingViewModel.formattedFileSize)")
-                    Text("Duration: \(recordingViewModel.formattedRecordedDuration)")
-                    Text("Resolution: \(recordingViewModel.formattedResolution)")
+                    Text("용량 \(recordingViewModel.formattedFileSize)")
+                    Text("길이 \(recordingViewModel.formattedRecordedDuration)")
+                    Text("해상도 \(recordingViewModel.formattedResolution)")
                 }
                 .font(.caption2)
                 .foregroundStyle(.white)
@@ -411,11 +416,16 @@ struct CameraPreviewView: View {
             }
 
             Text(recordingViewModel.formattedDuration)
-                .font(.title3.monospacedDigit())
+                .font(.title2.monospacedDigit().bold())
                 .foregroundStyle(.white)
 
             dualRecordingStatusRows
 
+            #if DEBUG
+            // Task 038 requirement 4: frame-drop/memory/write-latency figures are
+            // developer diagnostics, not something an end user needs mid-recording —
+            // moved behind #if DEBUG instead of always showing on the main screen.
+            // The underlying stats are unchanged; only where they're displayed moved.
             if recordingViewModel.isRecording {
                 HStack(spacing: 12) {
                     Text("Dropped: \(recordingViewModel.formattedDroppedFrames)")
@@ -425,14 +435,18 @@ struct CameraPreviewView: View {
                 .font(.caption2)
                 .foregroundStyle(.white.opacity(0.8))
             }
+            #endif
 
+            // Task 038 requirement 2: enlarged (bigger font, more padding) so the
+            // primary action reads clearly at a glance, closer to the Camera app's
+            // prominent shutter control.
             Button {
                 recordingViewModel.toggleRecording(expectsAudioTrack: isMicrophoneGranted)
             } label: {
-                Text(recordingViewModel.isRecording ? "Stop Recording" : "Start Recording")
-                    .font(.headline)
-                    .padding(.horizontal, 24)
-                    .padding(.vertical, 14)
+                Text(recordingViewModel.isRecording ? AppStrings.Camera.stopRecording : AppStrings.Camera.startRecording)
+                    .font(.title3.bold())
+                    .padding(.horizontal, 36)
+                    .padding(.vertical, 18)
                     .background(recordingViewModel.isRecording ? Color.red : Color.white, in: Capsule())
                     .foregroundStyle(recordingViewModel.isRecording ? .white : .black)
             }

@@ -39,36 +39,36 @@ struct RecordingDebugView: View {
     var body: some View {
         NavigationStack {
             Form {
-                Section("Session") {
-                    LabeledContent("Session ID", value: recordingViewModel.currentSessionID?.uuidString ?? "--")
-                    LabeledContent("Recording Mode", value: recordingModeViewModel.settings.mode.title)
-                    LabeledContent("Recording State", value: recordingViewModel.displayStatusText)
-                    LabeledContent("Active Output Profiles", value: activeOutputProfilesText)
+                Section("세션") {
+                    LabeledContent("세션 ID", value: recordingViewModel.currentSessionID?.uuidString ?? "--")
+                    LabeledContent("녹화 모드", value: recordingModeViewModel.settings.mode.title)
+                    LabeledContent("녹화 상태", value: recordingViewModel.displayStatusText)
+                    LabeledContent("활성 출력 프로필", value: activeOutputProfilesText)
                 }
 
-                Section("Writers") {
-                    LabeledContent("Long Writer Status", value: recordingViewModel.longFormStatusText ?? "--")
-                    LabeledContent("Short Writer Status", value: recordingViewModel.shortFormStatusText ?? "--")
+                Section("Writer") {
+                    LabeledContent("롱폼 Writer 상태", value: recordingViewModel.longFormStatusText ?? "--")
+                    LabeledContent("숏폼 Writer 상태", value: recordingViewModel.shortFormStatusText ?? "--")
                 }
 
-                Section("Capture") {
-                    LabeledContent("Orientation", value: orientationLabel)
+                Section("캡처") {
+                    LabeledContent("방향", value: AppStrings.orientationLabel(orientationManager.deviceOrientation))
                     LabeledContent(
-                        "Resolution",
+                        "해상도",
                         value: activeQuality.map { "\($0.dimensions.width)×\($0.dimensions.height)" } ?? "--"
                     )
                     LabeledContent("FPS", value: activeFPS?.title ?? "--")
                 }
 
-                Section("Recovery") {
+                Section("복구") {
                     LabeledContent(
-                        "Checkpoint Time",
+                        "체크포인트 시간",
                         value: lastCheckpointSavedAt?.formatted(date: .omitted, time: .standard) ?? "--"
                     )
                 }
 
-                Section("Failure Diagnosis") {
-                    LabeledContent("Last Failure Reason", value: lastStartupFailureReasonText)
+                Section("실패 진단") {
+                    LabeledContent("마지막 실패 원인", value: lastStartupFailureReasonText)
                 }
 
                 // Task 031 requirement 3: everything needed to diagnose a "Writing the
@@ -77,11 +77,11 @@ struct RecordingDebugView: View {
                 // Purely additive display — reuses the exact same already-fetched
                 // state as the sections above, no new service calls.
                 Section {
-                    LabeledContent("Failure Reason", value: lastStartupFailureReasonText)
-                    LabeledContent("Recording State", value: recordingViewModel.displayStatusText)
-                    LabeledContent("Session ID", value: recordingViewModel.currentSessionID?.uuidString ?? "--")
+                    LabeledContent("실패 원인", value: lastStartupFailureReasonText)
+                    LabeledContent("녹화 상태", value: recordingViewModel.displayStatusText)
+                    LabeledContent("세션 ID", value: recordingViewModel.currentSessionID?.uuidString ?? "--")
                     if timelineEvents.isEmpty {
-                        Text("No events yet")
+                        Text("아직 이벤트 없음")
                             .foregroundStyle(.secondary)
                     } else {
                         ForEach(timelineEvents.suffix(5).reversed()) { event in
@@ -102,29 +102,29 @@ struct RecordingDebugView: View {
                         }
                     }
                 } header: {
-                    Text("Failure Detail")
+                    Text("실패 상세")
                 } footer: {
-                    Text("Last 5 startup events shown here for quick correlation — see Startup Timeline below for the full last-30 history.")
+                    Text("최근 5개 시작 이벤트입니다 — 전체 30개 기록은 아래 시작 타임라인을 참고하세요.")
                 }
 
                 // Task 031 requirement 2: the same fields now shown alongside the
                 // Startup Timeline, so a tester reviewing the timeline doesn't have to
                 // scroll back up to Session/Writers/Recovery to see current state.
-                Section("Diagnostics Snapshot") {
-                    LabeledContent("Recording State", value: recordingViewModel.displayStatusText)
-                    LabeledContent("Session ID", value: recordingViewModel.currentSessionID?.uuidString ?? "--")
-                    LabeledContent("Long Writer Status", value: recordingViewModel.longFormStatusText ?? "--")
-                    LabeledContent("Short Writer Status", value: recordingViewModel.shortFormStatusText ?? "--")
+                Section("진단 스냅샷") {
+                    LabeledContent("녹화 상태", value: recordingViewModel.displayStatusText)
+                    LabeledContent("세션 ID", value: recordingViewModel.currentSessionID?.uuidString ?? "--")
+                    LabeledContent("롱폼 Writer 상태", value: recordingViewModel.longFormStatusText ?? "--")
+                    LabeledContent("숏폼 Writer 상태", value: recordingViewModel.shortFormStatusText ?? "--")
                     LabeledContent(
-                        "Checkpoint Time",
+                        "체크포인트 시간",
                         value: lastCheckpointSavedAt?.formatted(date: .omitted, time: .standard) ?? "--"
                     )
-                    LabeledContent("Recording Mode", value: recordingModeViewModel.settings.mode.title)
+                    LabeledContent("녹화 모드", value: recordingModeViewModel.settings.mode.title)
                 }
 
-                Section("Startup Timeline (last 30)") {
+                Section("시작 타임라인 (최근 30개)") {
                     if timelineEvents.isEmpty {
-                        Text("No events yet")
+                        Text("아직 이벤트 없음")
                             .foregroundStyle(.secondary)
                     } else {
                         ForEach(timelineEvents.reversed()) { event in
@@ -146,20 +146,20 @@ struct RecordingDebugView: View {
                     }
                 }
 
-                Section("Performance") {
-                    LabeledContent("Memory Usage", value: recordingViewModel.memoryStatusText)
-                    LabeledContent("Dropped Frames", value: recordingViewModel.formattedDroppedFrames)
-                    LabeledContent("Write Latency", value: recordingViewModel.writeStatusText)
-                    LabeledContent("Storage Remaining", value: storageRemainingText)
+                Section("성능") {
+                    LabeledContent("메모리 사용량", value: recordingViewModel.memoryStatusText)
+                    LabeledContent("드롭된 프레임", value: recordingViewModel.formattedDroppedFrames)
+                    LabeledContent("쓰기 지연 시간", value: recordingViewModel.writeStatusText)
+                    LabeledContent("남은 저장 공간", value: storageRemainingText)
                 }
 
                 Section {
-                    LabeledContent("Export Status", value: "Not tracked here — see Library")
+                    LabeledContent("내보내기 상태", value: "여기서는 추적하지 않음 — 보관함 참고")
                 } footer: {
-                    Text("Export state is tracked per-recording in the Library screen, not at the session level this panel observes.")
+                    Text("내보내기 상태는 이 화면이 보는 세션 단위가 아니라 보관함 화면에서 녹화별로 추적됩니다.")
                 }
             }
-            .navigationTitle("Debug Verification")
+            .navigationTitle("녹화 디버그")
             .toolbar {
                 // Task 031 requirement 5: Debug-only JSON export of the current
                 // diagnostics snapshot — read-only, no new recording logic. The
@@ -184,15 +184,6 @@ struct RecordingDebugView: View {
                 await refreshTimeline()
                 try? await Task.sleep(for: .seconds(1))
             }
-        }
-    }
-
-    private var orientationLabel: String {
-        switch orientationManager.deviceOrientation {
-        case .portrait: "Portrait"
-        case .portraitUpsideDown: "Portrait Upside Down"
-        case .landscapeLeft: "Landscape Left"
-        case .landscapeRight: "Landscape Right"
         }
     }
 

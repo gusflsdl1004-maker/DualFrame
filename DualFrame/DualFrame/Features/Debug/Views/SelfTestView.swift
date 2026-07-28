@@ -29,16 +29,16 @@ struct SelfTestView: View {
         NavigationStack {
             List {
                 Section {
-                    LabeledContent("Self Test Version", value: SelfTestService.version)
-                    LabeledContent("Last Run", value: lastRunAt?.formatted(date: .abbreviated, time: .standard) ?? "--")
-                    Toggle("Show Failed/Warning Only", isOn: $showFailedOnly)
+                    LabeledContent("버전", value: SelfTestService.version)
+                    LabeledContent("마지막 실행", value: lastRunAt?.formatted(date: .abbreviated, time: .standard) ?? "--")
+                    Toggle("실패/경고만 보기", isOn: $showFailedOnly)
                 }
 
                 if items.isEmpty {
-                    Text(isRunning ? "Running…" : "No results yet")
+                    Text(isRunning ? "실행 중…" : "아직 결과 없음")
                         .foregroundStyle(.secondary)
                 } else if displayedItems.isEmpty {
-                    Text("No failures or warnings — everything passed.")
+                    Text("실패나 경고 없음 — 모두 통과했습니다.")
                         .foregroundStyle(.secondary)
                 } else {
                     ForEach(displayedItems) { item in
@@ -62,10 +62,10 @@ struct SelfTestView: View {
                     }
                 }
             }
-            .navigationTitle("Self Test")
+            .navigationTitle("자가 진단")
             .toolbar {
                 ToolbarItem(placement: .primaryAction) {
-                    Button("Run") {
+                    Button("실행") {
                         Task { await runSelfTest() }
                     }
                     .disabled(isRunning)

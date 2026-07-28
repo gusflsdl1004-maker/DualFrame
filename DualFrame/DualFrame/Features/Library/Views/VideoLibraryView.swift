@@ -39,16 +39,16 @@ struct VideoLibraryView: View {
             }
             .overlay {
                 if viewModel.groups.isEmpty {
-                    ContentUnavailableView("No Recordings", systemImage: "film")
+                    ContentUnavailableView("녹화된 영상이 없습니다", systemImage: "film")
                 }
             }
-            .navigationTitle("Library")
+            .navigationTitle("보관함")
         }
         .task {
             await viewModel.refresh()
         }
         .confirmationDialog(
-            "Choose Destination",
+            "저장 위치 선택",
             isPresented: destinationPickerBinding,
             titleVisibility: .visible
         ) {
@@ -57,23 +57,23 @@ struct VideoLibraryView: View {
                     viewModel.resolveDestinationChoice(destination)
                 }
             }
-            Button("Cancel", role: .cancel) {
+            Button("취소", role: .cancel) {
                 viewModel.resolveDestinationChoice(nil)
             }
         }
         .confirmationDialog(
-            "Remove the internal copy?",
+            "내부 보관함에서도 삭제할까요?",
             isPresented: deleteConfirmationBinding,
             titleVisibility: .visible
         ) {
-            Button("Delete", role: .destructive) {
+            Button("삭제", role: .destructive) {
                 viewModel.resolveDeleteConfirmation(true)
             }
-            Button("Keep", role: .cancel) {
+            Button("보관", role: .cancel) {
                 viewModel.resolveDeleteConfirmation(false)
             }
         } message: {
-            Text("The video was exported successfully. Remove it from the internal library?")
+            Text("내보내기가 완료되었습니다. 내부 보관함에 있는 사본을 삭제할까요?")
         }
     }
 
@@ -125,8 +125,8 @@ private struct RecordingGroupRow: View {
             Text(formattedDuration)
                 .font(.caption)
                 .foregroundStyle(.secondary)
-            memberStatusRow(title: "Long-form", member: group.long)
-            memberStatusRow(title: "Short-form", member: group.short)
+            memberStatusRow(title: "롱폼", member: group.long)
+            memberStatusRow(title: "숏폼", member: group.short)
         }
         .padding(.vertical, 4)
     }
@@ -146,11 +146,11 @@ private struct RecordingGroupRow: View {
                 .font(.caption.bold())
                 .foregroundStyle(.green)
         case .failed:
-            Label("\(title) — FAILED", systemImage: "xmark.circle.fill")
+            Label("\(title) — 실패", systemImage: "xmark.circle.fill")
                 .font(.caption.bold())
                 .foregroundStyle(.red)
         case .missing:
-            Label("\(title) — unavailable", systemImage: "questionmark.circle")
+            Label("\(title) — 파일 없음", systemImage: "questionmark.circle")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
@@ -167,8 +167,8 @@ private struct RecordingGroupDetailView: View {
 
     var body: some View {
         List {
-            memberSection(title: "Long-form", member: group.long)
-            memberSection(title: "Short-form", member: group.short)
+            memberSection(title: "롱폼", member: group.long)
+            memberSection(title: "숏폼", member: group.short)
         }
         .navigationTitle(group.createdAt.formatted(date: .abbreviated, time: .shortened))
         .sheet(item: $previewingRecord) { record in
@@ -185,13 +185,13 @@ private struct RecordingGroupDetailView: View {
 
         case .failed:
             Section(title) {
-                Label("Recording failed", systemImage: "xmark.circle.fill")
+                Label("녹화 실패", systemImage: "xmark.circle.fill")
                     .foregroundStyle(.red)
             }
 
         case .missing:
             Section(title) {
-                Label("File no longer available", systemImage: "questionmark.circle")
+                Label("파일을 찾을 수 없습니다", systemImage: "questionmark.circle")
                     .foregroundStyle(.secondary)
             }
 
@@ -206,13 +206,13 @@ private struct RecordingGroupDetailView: View {
                 Button {
                     previewingRecord = record
                 } label: {
-                    Label("Preview", systemImage: "play.circle")
+                    Label("미리보기", systemImage: "play.circle")
                 }
 
                 Button(role: .destructive) {
                     Task { await viewModel.delete(record) }
                 } label: {
-                    Label("Delete", systemImage: "trash")
+                    Label("삭제", systemImage: "trash")
                 }
             }
         }
@@ -246,36 +246,36 @@ struct VideoRecordRow: View {
     private var exportControl: some View {
         switch exportState {
         case .idle:
-            Button("Export", action: onExport)
+            Button("내보내기", action: onExport)
                 .font(.caption.bold())
 
         case .exporting:
             HStack(spacing: 6) {
                 ProgressView()
-                Text("Exporting...")
+                Text("내보내는 중...")
             }
             .font(.caption)
             .foregroundStyle(.secondary)
 
         case .success(let destination):
-            Label("Success (\(destination.title))", systemImage: "checkmark.circle.fill")
+            Label("완료 (\(destination.title))", systemImage: "checkmark.circle.fill")
                 .font(.caption.bold())
                 .foregroundStyle(.green)
 
         case .failed(let reason):
             VStack(alignment: .leading, spacing: 4) {
-                Label("Failed", systemImage: "xmark.circle.fill")
+                Label("실패", systemImage: "xmark.circle.fill")
                     .font(.caption.bold())
                     .foregroundStyle(.red)
 
                 if reason == .photosPermissionDenied {
-                    Text("Photos access is required. Enable it in Settings to export.")
+                    Text("사진 접근 권한이 필요합니다. 설정에서 권한을 허용한 뒤 다시 시도해 주세요.")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
-                    Button("Open Settings", action: openSettings)
+                    Button("설정으로 이동", action: openSettings)
                         .font(.caption2)
                 } else {
-                    Button("Retry", action: onExport)
+                    Button("다시 시도", action: onExport)
                         .font(.caption2)
                 }
             }
