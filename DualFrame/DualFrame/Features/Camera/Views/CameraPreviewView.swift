@@ -37,6 +37,8 @@ struct CameraPreviewView: View {
     @State private var isSelfTestPresented = false
     /// Task 031: Real Device Verification checklist entry point — debug builds only.
     @State private var isVerificationChecklistPresented = false
+    /// Task 032: App Health Dashboard entry point — debug builds only.
+    @State private var isHealthDashboardPresented = false
     #endif
 
     init() {
@@ -139,6 +141,19 @@ struct CameraPreviewView: View {
         .sheet(isPresented: $isVerificationChecklistPresented) {
             RealDeviceVerificationChecklistView()
         }
+        .sheet(isPresented: $isHealthDashboardPresented) {
+            HealthDashboardView(
+                permissionViewModel: permissionViewModel,
+                recordingViewModel: recordingViewModel,
+                recordingModeViewModel: recordingModeViewModel,
+                externalStorageViewModel: externalStorageViewModel,
+                libraryService: libraryService,
+                dualRecordingCoordinator: dualRecordingCoordinator,
+                cameraPosition: cameraPosition,
+                activeQuality: activeQuality,
+                activeFPS: activeFPS
+            )
+        }
         #endif
     }
 
@@ -228,28 +243,33 @@ struct CameraPreviewView: View {
                 .disabled(recordingViewModel.isRecording)
 
                 #if DEBUG
-                Button {
-                    isDebugViewPresented = true
+                // Task 032: as the number of debug-only tools grew, a fixed row of
+                // standalone icons stopped scaling. Consolidated into one menu —
+                // still debug-only, still just entry points into existing read-only
+                // tools, no new behavior.
+                Menu {
+                    Button {
+                        isDebugViewPresented = true
+                    } label: {
+                        Label("Recording Debug", systemImage: "ladybug")
+                    }
+                    Button {
+                        isSelfTestPresented = true
+                    } label: {
+                        Label("Self Test", systemImage: "checkmark.shield")
+                    }
+                    Button {
+                        isVerificationChecklistPresented = true
+                    } label: {
+                        Label("Device Checklist", systemImage: "checklist")
+                    }
+                    Button {
+                        isHealthDashboardPresented = true
+                    } label: {
+                        Label("Health Dashboard", systemImage: "heart.text.square")
+                    }
                 } label: {
-                    Image(systemName: "ladybug")
-                        .padding(10)
-                        .background(.black.opacity(0.5), in: Circle())
-                        .foregroundStyle(.white)
-                }
-
-                Button {
-                    isSelfTestPresented = true
-                } label: {
-                    Image(systemName: "checkmark.shield")
-                        .padding(10)
-                        .background(.black.opacity(0.5), in: Circle())
-                        .foregroundStyle(.white)
-                }
-
-                Button {
-                    isVerificationChecklistPresented = true
-                } label: {
-                    Image(systemName: "checklist")
+                    Image(systemName: "wrench.and.screwdriver")
                         .padding(10)
                         .background(.black.opacity(0.5), in: Circle())
                         .foregroundStyle(.white)
