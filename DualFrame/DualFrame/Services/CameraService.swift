@@ -56,7 +56,10 @@ actor CameraService {
         self.recordingService = recordingService
         self.qualitySettingsService = qualitySettingsService
         self.fpsSettingsService = fpsSettingsService
-        outputForwarder = SampleBufferOutputForwarder(recordingService: recordingService)
+        outputForwarder = SampleBufferOutputForwarder(
+            recordingService: recordingService,
+            performanceMonitor: recordingService.performanceMonitor
+        )
     }
 
     func start() async throws {
@@ -207,9 +210,11 @@ private nonisolated final class SampleBufferOutputForwarder: NSObject,
     AVCaptureAudioDataOutputSampleBufferDelegate {
 
     private let recordingService: RecordingService
+    private let performanceMonitor: RecordingPerformanceMonitor
 
-    init(recordingService: RecordingService) {
+    init(recordingService: RecordingService, performanceMonitor: RecordingPerformanceMonitor) {
         self.recordingService = recordingService
+        self.performanceMonitor = performanceMonitor
     }
 
     func captureOutput(
@@ -218,10 +223,34 @@ private nonisolated final class SampleBufferOutputForwarder: NSObject,
         from connection: AVCaptureConnection
     ) {
         let recordingService = recordingService
+        let performanceMonitor = performanceMonitor
         if output is AVCaptureVideoDataOutput {
-            Task { await recordingService.appendVideoSampleBuffer(sampleBuffer) }
+            Task {
+                await performanceMonitor.frameSpawned()
+                await recordingService.appendVideoSampleBuffer(sampleBuffer)
+                await performanceMonitor.frameCompleted()
+            }
         } else if output is AVCaptureAudioDataOutput {
-            Task { await recordingService.appendAudioSampleBuffer(sampleBuffer) }
+            Task {
+                await performanceMonitor.frameSpawned()
+                await recordingService.appendAudioSampleBuffer(sampleBuffer)
+                await performanceMonitor.frameCompleted()
+            }
+        }
+    }
+
+    /// AVFoundation calls this instead of `didOutput` when it has to drop a sample —
+    /// e.g. because the pipeline (recording write, in our case) couldn't keep up.
+    func captureOutput(
+        _ output: AVCaptureOutput,
+        didDrop sampleBuffer: CMSampleBuffer,
+        from connection: AVCaptureConnection
+    ) {
+        let performanceMonitor = performanceMonitor
+        if output is AVCaptureVideoDataOutput {
+            Task { await performanceMonitor.recordDroppedVideoFrame() }
+        } else if output is AVCaptureAudioDataOutput {
+            Task { await performanceMonitor.recordDroppedAudioBuffer() }
         }
     }
 }

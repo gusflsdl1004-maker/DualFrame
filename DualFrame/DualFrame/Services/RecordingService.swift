@@ -29,6 +29,9 @@ actor RecordingService {
 
     private let validator = RecordingValidator()
     private let libraryService: InternalVideoLibraryService
+    /// `nonisolated` because it's just a reference to another actor — safe to hand out
+    /// (actors are inherently `Sendable`) without crossing this actor's isolation.
+    nonisolated let performanceMonitor = RecordingPerformanceMonitor()
 
     private var assetWriter: AVAssetWriter?
     private var videoInput: AVAssetWriterInput?
@@ -36,6 +39,7 @@ actor RecordingService {
     private var outputURL: URL?
     private var isSessionStarted = false
     private var videoDimensions = RecordingQuality.fullHD.dimensions
+    private var lastAppendedTimestamp: CMTime = .zero
 
     init(libraryService: InternalVideoLibraryService) {
         self.libraryService = libraryService
@@ -55,6 +59,10 @@ actor RecordingService {
         lastError = nil
         lastValidationResult = nil
         lastImportedRecord = nil
+        lastAppendedTimestamp = .zero
+
+        // Warn-only check (requirement 13) — never blocks preparing or recording.
+        await performanceMonitor.checkAvailableStorage()
 
         do {
             try setUpWriter()
@@ -69,6 +77,7 @@ actor RecordingService {
     func startRecording() async -> RecordingState {
         guard state == .preparing, assetWriter != nil else { return state }
         state = .recording
+        await performanceMonitor.startMonitoring()
         return state
     }
 
@@ -87,6 +96,7 @@ actor RecordingService {
     func stopRecording(expectsAudioTrack: Bool) async -> RecordingState {
         guard state == .recording else { return state }
         state = .stopping
+        await performanceMonitor.stopMonitoring()
 
         guard let writer = assetWriter, isSessionStarted, let url = outputURL else {
             // Nothing was ever written (e.g. stopped before the first sample buffer arrived).
@@ -186,7 +196,11 @@ actor RecordingService {
         }
 
         guard writer.status == .writing, input.isReadyForMoreMediaData else { return }
+
+        let writeStart = Date()
         input.append(sampleBuffer)
+        await performanceMonitor.recordWriteLatency(Date().timeIntervalSince(writeStart))
+        lastAppendedTimestamp = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
 
         if writer.status == .failed {
             lastError = .writeFailed
@@ -197,4 +211,28 @@ actor RecordingService {
     private static func makeOutputURL() -> URL {
         FileManager.default.temporaryDirectory.appendingPathComponent("\(UUID().uuidString).mov")
     }
+
+    // MARK: - Recovery extension point (not implemented — see CLAUDE.md rules 21-24)
+
+    /// A future interruption/crash recovery feature would need at least: which file
+    /// was being written, how far into it we got, and how long that represents.
+    /// `RecordingCheckpoint` captures exactly that. Nothing calls or persists this yet —
+    /// this task only defines where a recovery checkpoint would be read from.
+    func currentCheckpoint() -> RecordingCheckpoint? {
+        guard state == .recording, let url = outputURL else { return nil }
+        return RecordingCheckpoint(
+            outputURL: url,
+            lastSampleTimestamp: lastAppendedTimestamp,
+            recordedDuration: lastAppendedTimestamp.seconds
+        )
+    }
+}
+
+/// A snapshot of enough state to (in a future task) resume or safely finalize an
+/// interrupted recording instead of losing it outright. Extension point only —
+/// nothing writes this to disk or reads it back yet.
+nonisolated struct RecordingCheckpoint: Equatable {
+    let outputURL: URL
+    let lastSampleTimestamp: CMTime
+    let recordedDuration: TimeInterval
 }

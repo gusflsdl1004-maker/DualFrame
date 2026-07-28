@@ -35,6 +35,10 @@ These are the priority order and constraints for all DualFrame engineering work.
 18. If a new feature may affect long-duration recording stability, explicitly analyze the risks before marking the task as complete.
 19. Never risk losing a recorded video for the sake of performance, UI responsiveness, or feature convenience.
 20. Every task that modifies recording, saving, exporting, or file management must include a failure-path review describing what happens if the app crashes, the device powers off, storage becomes full, or permissions change during the operation.
+21. Every recording-related task must preserve a clear path toward future crash recovery.
+22. Never introduce architecture that makes interrupted recordings unrecoverable.
+23. Any new recording component should define where recovery checkpoints could be added in future tasks.
+24. If recovery cannot yet be implemented, explicitly document what state would be required to restore an interrupted recording.
 
 ## Report Templates
 
@@ -86,5 +90,15 @@ Every completed task's final message must include these four reports (in additio
 - Git Push Status:
 - Known Issues:
 - Next Recommended Task:
+
+**Recovery Readiness Report** (include whenever a task touches the recording pipeline, per rules 21-24)
+- Current Recovery Points:
+- Last Safe Recording State:
+- Temporary File Integrity:
+- Recording Session Status:
+- Recovery Extension Points:
+- Crash Recovery Readiness:
+- Known Recovery Risks:
+- Recommended Improvements:
 
 No physical iPhone is available in this environment, and Simulator cannot report real battery/thermal/CPU/memory metrics for camera hardware that doesn't exist there. Every Battery & Thermal Report, Performance Report, and Real Device Test must state this plainly, mark device-dependent fields as untested rather than guessing or fabricating values, and describe exactly what the user needs to measure on real hardware (per rules 12 and 16 above). Every task touching recording/saving/exporting/file management must also include a short failure-path review (rule 20): what happens on crash, sudden power-off, full storage, or a permission change mid-operation.

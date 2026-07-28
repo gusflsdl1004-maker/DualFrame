@@ -130,6 +130,15 @@ struct CameraPreviewView: View {
                     .background(.black.opacity(0.5), in: Capsule())
                     .foregroundStyle(.yellow)
             }
+
+            if let lowStorageWarning = recordingViewModel.lowStorageWarning {
+                Text(lowStorageWarning)
+                    .font(.caption2)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 6)
+                    .background(.black.opacity(0.5), in: Capsule())
+                    .foregroundStyle(.yellow)
+            }
         }
         .padding(.horizontal, 16)
         .padding(.top, 8)
@@ -155,6 +164,16 @@ struct CameraPreviewView: View {
             Text(recordingViewModel.formattedDuration)
                 .font(.title3.monospacedDigit())
                 .foregroundStyle(.white)
+
+            if recordingViewModel.isRecording {
+                HStack(spacing: 12) {
+                    Text("Dropped: \(recordingViewModel.formattedDroppedFrames)")
+                    Text("Mem: \(recordingViewModel.memoryStatusText)")
+                    Text("Write: \(recordingViewModel.writeStatusText)")
+                }
+                .font(.caption2)
+                .foregroundStyle(.white.opacity(0.8))
+            }
 
             Button {
                 recordingViewModel.toggleRecording(expectsAudioTrack: isMicrophoneGranted)

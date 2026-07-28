@@ -16,6 +16,8 @@ final class RecordingViewModel: ObservableObject {
     @Published private(set) var lastRecordingURL: URL?
     @Published private(set) var lastValidationResult: RecordingValidationResult?
     @Published private(set) var errorMessage: String?
+    @Published private(set) var performanceSnapshot: RecordingPerformanceSnapshot?
+    @Published private(set) var lowStorageWarning: String?
 
     var statusText: String {
         switch state {
@@ -47,6 +49,21 @@ final class RecordingViewModel: ObservableObject {
 
     var isRecording: Bool { state == .recording }
 
+    var formattedDroppedFrames: String {
+        guard let snapshot = performanceSnapshot else { return "0" }
+        return "\(snapshot.droppedVideoFrames + snapshot.droppedAudioBuffers)"
+    }
+
+    var memoryStatusText: String {
+        guard let snapshot = performanceSnapshot else { return "--" }
+        return ByteCountFormatter.string(fromByteCount: Int64(snapshot.memoryUsageBytes), countStyle: .memory)
+    }
+
+    var writeStatusText: String {
+        guard let snapshot = performanceSnapshot else { return "--" }
+        return snapshot.averageWriteLatency > 0.05 ? "Slow" : "Normal"
+    }
+
     private let service: RecordingService
     private var durationTask: Task<Void, Never>?
 
@@ -72,6 +89,7 @@ final class RecordingViewModel: ObservableObject {
 
         if state != .preparing {
             state = await service.prepareRecording()
+            lowStorageWarning = await service.performanceMonitor.lowStorageWarning
         }
         guard state == .preparing else {
             errorMessage = await service.lastError?.message
@@ -79,6 +97,7 @@ final class RecordingViewModel: ObservableObject {
         }
         state = await service.startRecording()
         if state == .recording {
+            performanceSnapshot = nil
             startDurationTimer()
         }
     }
@@ -109,6 +128,7 @@ final class RecordingViewModel: ObservableObject {
                 try? await Task.sleep(for: .seconds(1))
                 guard !Task.isCancelled else { return }
                 duration += 1
+                performanceSnapshot = await service.performanceMonitor.snapshot
             }
         }
     }
