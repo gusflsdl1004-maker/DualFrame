@@ -87,6 +87,11 @@ actor RecordingService {
     private var writerContexts: [OutputProfile: WriterContext] = [:]
     private(set) var activeQuality: RecordingQuality = .fullHD
     private(set) var activeFPS: RecordingFPS = .fps30
+    /// Task 022: applied to every writer's video input at creation time (see
+    /// `makeWriterContext`), identically across long-form/short-form/single — pure
+    /// file-track metadata computed by `OrientationManager`, never by this actor
+    /// (Additional Development Rule, Task 022).
+    private var recordingTransform: CGAffineTransform = .identity
     private var lastAppendedTimestamp: CMTime = .zero
     private(set) var recordingStartTime: Date?
     private var checkpointTask: Task<Void, Never>?
@@ -114,6 +119,16 @@ actor RecordingService {
     func configureMode(_ mode: RecordingMode) {
         guard state == .idle || state == .finished || state == .failed else { return }
         self.mode = mode
+    }
+
+    /// Stores the transform `CameraService`/`OrientationManager` computed for the next
+    /// recording (Task 022 requirement 9: this actor only stores and applies a given
+    /// value — it never computes orientation). Applied once per writer at creation time
+    /// in `makeWriterContext`; changing it while a recording is already in progress has
+    /// no effect on that recording (requirement 5/6 — orientation changes mid-recording
+    /// never touch `RecordingState`, checkpoints, validation, or the writer already in use).
+    func updateRecordingTransform(_ transform: CGAffineTransform) {
+        recordingTransform = transform
     }
 
     @discardableResult
@@ -329,6 +344,10 @@ actor RecordingService {
         ]
         let videoWriterInput = AVAssetWriterInput(mediaType: .video, outputSettings: videoSettings)
         videoWriterInput.expectsMediaDataInRealTime = true
+        // Task 022 requirement 7: applied identically to every profile — long-form,
+        // short-form, and single all get the same transform, set once here and never
+        // touched again by this actor.
+        videoWriterInput.transform = recordingTransform
 
         let audioSettings: [String: Any] = [
             AVFormatIDKey: kAudioFormatMPEG4AAC,

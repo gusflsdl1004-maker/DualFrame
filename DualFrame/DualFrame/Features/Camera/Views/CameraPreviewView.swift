@@ -14,6 +14,7 @@ struct CameraPreviewView: View {
     @StateObject private var externalStorageViewModel = ExternalStorageViewModel()
     @StateObject private var interruptionMonitor = RecordingInterruptionMonitor()
     @StateObject private var recordingModeViewModel = RecordingModeViewModel()
+    @StateObject private var orientationManager = OrientationManager()
     @State private var cameraService: CameraService
     @State private var libraryService: InternalVideoLibraryService
     @State private var dualRecordingCoordinator: DualRecordingCoordinator
@@ -31,13 +32,17 @@ struct CameraPreviewView: View {
             mode: RecordingModeSettingsService().load().mode,
             recordingService: recordingService
         )
+        let orientationManager = OrientationManager()
+        let cameraService = CameraService(recordingService: recordingService, orientationManager: orientationManager)
         _recordingViewModel = StateObject(wrappedValue: RecordingViewModel(
             service: recordingService,
-            dualRecordingCoordinator: coordinator
+            dualRecordingCoordinator: coordinator,
+            cameraService: cameraService
         ))
-        _cameraService = State(wrappedValue: CameraService(recordingService: recordingService))
+        _cameraService = State(wrappedValue: cameraService)
         _libraryService = State(wrappedValue: libraryService)
         _dualRecordingCoordinator = State(wrappedValue: coordinator)
+        _orientationManager = StateObject(wrappedValue: orientationManager)
     }
 
     var body: some View {
@@ -56,6 +61,7 @@ struct CameraPreviewView: View {
             }
         }
         .task {
+            orientationManager.startObserving()
             await permissionViewModel.requestPermissionsIfNeeded()
             guard permissionViewModel.cameraStatus == .granted,
                   permissionViewModel.microphoneStatus == .granted else { return }
@@ -76,6 +82,7 @@ struct CameraPreviewView: View {
         }
         .onDisappear {
             interruptionMonitor.stopObserving()
+            orientationManager.stopObserving()
             Task {
                 if recordingViewModel.isRecording {
                     await recordingViewModel.stopRecording(expectsAudioTrack: isMicrophoneGranted)

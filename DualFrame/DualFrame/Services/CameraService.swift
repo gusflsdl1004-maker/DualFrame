@@ -44,16 +44,26 @@ actor CameraService {
     private let recordingService: RecordingService
     private let qualitySettingsService: RecordingQualitySettingsService
     private let fpsSettingsService: RecordingFPSSettingsService
+    /// Task 022: the only source of orientation/mirroring decisions — this type never
+    /// computes either itself (requirement 2).
+    private let orientationManager: OrientationManager
 
     private var videoDevice: AVCaptureDevice?
     private var isConfigured = false
 
+    /// `orientationManager` has no default value on purpose — it's `@MainActor`
+    /// (see the project's `SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor` history of
+    /// default-parameter isolation errors), so it must be constructed by the caller
+    /// and passed in explicitly, same as `CameraPreviewView` already does for every
+    /// other shared dependency.
     init(
         recordingService: RecordingService,
+        orientationManager: OrientationManager,
         qualitySettingsService: RecordingQualitySettingsService = RecordingQualitySettingsService(),
         fpsSettingsService: RecordingFPSSettingsService = RecordingFPSSettingsService()
     ) {
         self.recordingService = recordingService
+        self.orientationManager = orientationManager
         self.qualitySettingsService = qualitySettingsService
         self.fpsSettingsService = fpsSettingsService
         outputForwarder = SampleBufferOutputForwarder(
@@ -78,6 +88,18 @@ actor CameraService {
     func stop() {
         guard session.isRunning else { return }
         session.stopRunning()
+    }
+
+    /// Reads the current recording orientation from `OrientationManager` for whichever
+    /// camera is active, and pushes the resulting transform to `RecordingService`
+    /// (requirement 2: never computed here). Called once per recording, right before
+    /// `prepareRecording()` (see `RecordingViewModel.startRecording()`), so a device
+    /// rotation between recordings is picked up, while a rotation *during* an active
+    /// recording is never read again and so has no effect on it (requirement 5/6).
+    func refreshRecordingOrientation() async {
+        guard let device = videoDevice else { return }
+        let transform = await orientationManager.recordingTransform(for: device.position)
+        await recordingService.updateRecordingTransform(transform)
     }
 
     private func configure() async throws {
@@ -111,6 +133,15 @@ actor CameraService {
             throw CameraServiceError.cannotAddOutput
         }
         session.addOutput(videoOutput)
+
+        // Requirement 3: the *recorded* connection must never mirror, regardless of
+        // AVFoundation's automatic-mirroring defaults for a front camera. This only
+        // affects the data output feeding `RecordingService` — it doesn't touch the
+        // preview layer's own connection (no UI change, per this task's scope).
+        if let recordingConnection = videoOutput.connection(with: .video) {
+            recordingConnection.automaticallyAdjustsVideoMirroring = false
+            recordingConnection.isVideoMirrored = await orientationManager.shouldMirrorRecording(for: device.position)
+        }
 
         audioOutput.setSampleBufferDelegate(outputForwarder, queue: sampleBufferQueue)
         if session.canAddOutput(audioOutput) {

@@ -72,16 +72,22 @@ final class RecordingViewModel: ObservableObject {
     private let service: RecordingService
     private let diagnosticsService: RecordingDiagnosticsService
     private let dualRecordingCoordinator: DualRecordingCoordinator
+    /// Task 022: used only to trigger `CameraService.refreshRecordingOrientation()`
+    /// right before each recording starts — this view model never reads or computes
+    /// orientation itself.
+    private let cameraService: CameraService
     private var durationTask: Task<Void, Never>?
     private var interruptionOccurredThisSession = false
 
     init(
         service: RecordingService,
         dualRecordingCoordinator: DualRecordingCoordinator,
+        cameraService: CameraService,
         diagnosticsService: RecordingDiagnosticsService = RecordingDiagnosticsService()
     ) {
         self.service = service
         self.dualRecordingCoordinator = dualRecordingCoordinator
+        self.cameraService = cameraService
         self.diagnosticsService = diagnosticsService
     }
 
@@ -111,6 +117,10 @@ final class RecordingViewModel: ObservableObject {
             let mode = RecordingModeSettingsService().load().mode
             await dualRecordingCoordinator.setMode(mode)
             await service.configureMode(mode)
+            // Task 022 requirement 5: read fresh right before this recording, not once
+            // at camera setup — a rotation *during* the recording that follows is never
+            // read again, so it has no effect on the file already being written.
+            await cameraService.refreshRecordingOrientation()
             state = await service.prepareRecording()
             lowStorageWarning = await service.performanceMonitor.lowStorageWarning
         }

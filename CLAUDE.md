@@ -66,6 +66,11 @@ These are the priority order and constraints for all DualFrame engineering work.
 49. Video output quality takes priority over build success.
 50. A recording feature is only considered complete when its output plays back correctly, has the correct aspect ratio and resolution, and passes Validation.
 51. Rendering quality degradation (stretching, distortion, incorrect cropping) is never considered feature completion.
+52. Orientation is never calculated inside RecordingService.
+53. Orientation calculation is always the responsibility of OrientationManager.
+54. RecordingService only manages writers; CameraService only uses OrientationManager's results.
+55. Video rotation and video rendering (crop) are kept independent of each other.
+56. Orientation changes must never affect Smart Crop or the recording pipeline.
 
 ## Report Templates
 
