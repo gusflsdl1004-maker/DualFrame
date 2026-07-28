@@ -17,4 +17,10 @@ nonisolated struct VideoRecord: Identifiable, Equatable {
     let resolution: CGSize
     let fileSize: Int64
     let localURL: URL
+    /// Task 024: which recording session produced this file, and which output
+    /// (long-form/short-form/single) it is. `nil` for any recording made before Task
+    /// 024 existed — see `InternalVideoLibraryService.loadRecordingGroups(groupService:)`
+    /// for how those fall back to the Task 023 time/aspect-ratio heuristic instead.
+    let sessionID: UUID?
+    let outputProfile: OutputProfile?
 }

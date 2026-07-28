@@ -73,6 +73,10 @@ These are the priority order and constraints for all DualFrame engineering work.
 56. Orientation changes must never affect Smart Crop or the recording pipeline.
 57. RecordingGroup is UI-convenience metadata; it never replaces VideoRecord or changes the existing storage structure. Every RecordingGroup only references an existing VideoRecord.
 58. When adding a new feature, never migrate existing data. Existing data structures (e.g. VideoRecord) are kept as-is; new features only add a reference layer on top. A recording file already saved must never become invisible or corrupted because of a new feature.
+59. A RecordingSession is created exactly once, when recording starts.
+60. Every long-form/short-form output shares the same sessionID.
+61. RecordingGroup is built from sessionID; time/filename/aspect-ratio heuristics are only a fallback for pre-existing data.
+62. New features are always designed identifier-first. Inferable information (time, filename, resolution, size) is never used as an identifier — heuristics are permitted only as a compatibility fallback for existing data.
 
 ## Report Templates
 

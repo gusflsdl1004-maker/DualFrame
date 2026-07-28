@@ -19,6 +19,14 @@ nonisolated enum InternalVideoLibraryError: Error {
 /// No Photos saving, export, or external storage happens here.
 actor InternalVideoLibraryService {
     private let fileManager = FileManager.default
+    private let metadataService: VideoRecordMetadataService
+
+    /// Task 024: the current recording session, if one is active. Every
+    /// `importRecording(...)` call tags its resulting `VideoRecord` with this session's
+    /// `sessionID` — this is how `RecordingService` (which this task must not modify)
+    /// ends up producing sessionID-tagged files without ever knowing sessions exist:
+    /// its existing, unchanged `importRecording` call just runs while this is set.
+    private var pendingSession: RecordingSessionMetadata?
 
     private static let filenameFormatter: DateFormatter = {
         let formatter = DateFormatter()
@@ -28,14 +36,34 @@ actor InternalVideoLibraryService {
         return formatter
     }()
 
+    init(metadataService: VideoRecordMetadataService = VideoRecordMetadataService()) {
+        self.metadataService = metadataService
+    }
+
+    /// Task 024 requirement 2: called by `RecordingViewModel.startRecording()` right
+    /// before a recording begins. Every `importRecording` call until `endSession()` is
+    /// tagged with `metadata.sessionID`.
+    func beginSession(_ metadata: RecordingSessionMetadata) {
+        pendingSession = metadata
+    }
+
+    /// Called once the session's `RecordingGroup` has been built, so no later,
+    /// unrelated import could ever be mistagged with a stale session.
+    func endSession() {
+        pendingSession = nil
+    }
+
     /// Moves a validated recording out of the temporary directory and into the
-    /// permanent library, generating a unique, timestamp-based filename.
+    /// permanent library, generating a unique, timestamp-based filename. Tags the
+    /// resulting `VideoRecord` with the active session's `sessionID`/`outputProfile`,
+    /// if `beginSession(_:)` was called (Task 024) — untagged (both `nil`) otherwise,
+    /// same as every recording made before Task 024 existed.
     @discardableResult
     func importRecording(
         from temporaryURL: URL,
         validation: RecordingValidationResult,
         createdAt: Date = Date()
-    ) throws -> VideoRecord {
+    ) async throws -> VideoRecord {
         let directory = try videosDirectory()
         let filename = uniqueFilename(for: createdAt, in: directory)
         let destinationURL = directory.appendingPathComponent(filename)
@@ -46,6 +74,18 @@ actor InternalVideoLibraryService {
             throw InternalVideoLibraryError.importFailed
         }
 
+        var sessionID: UUID?
+        var outputProfile: OutputProfile?
+        if let session = pendingSession {
+            let profile = Self.matchProfile(resolution: validation.resolution, among: Self.expectedProfiles(for: session))
+            sessionID = session.sessionID
+            outputProfile = profile
+            if let profile {
+                let metadata = VideoRecordMetadata(videoRecordID: filename, sessionID: session.sessionID, outputProfile: profile)
+                await metadataService.save(metadata)
+            }
+        }
+
         return VideoRecord(
             id: filename,
             filename: filename,
@@ -53,11 +93,15 @@ actor InternalVideoLibraryService {
             duration: validation.duration,
             resolution: validation.resolution ?? .zero,
             fileSize: validation.fileSize,
-            localURL: destinationURL
+            localURL: destinationURL,
+            sessionID: sessionID,
+            outputProfile: outputProfile
         )
     }
 
-    /// Scans the library directory and reads each file's metadata.
+    /// Scans the library directory and reads each file's metadata. Unchanged in shape
+    /// since before Task 023 — still the plain, ungrouped source of truth every other
+    /// method here builds on.
     func loadAllRecords() async throws -> [VideoRecord] {
         let directory = try videosDirectory()
         let fileURLs = try fileManager.contentsOfDirectory(
@@ -75,19 +119,19 @@ actor InternalVideoLibraryService {
         return records
     }
 
-    func delete(_ record: VideoRecord) throws {
+    func delete(_ record: VideoRecord) async throws {
         guard fileManager.fileExists(atPath: record.localURL.path) else {
             throw InternalVideoLibraryError.recordNotFound
         }
         try fileManager.removeItem(at: record.localURL)
+        await metadataService.delete(videoRecordID: record.id)
     }
 
-    /// Combines every persisted `RecordingGroup` (Task 023) with the library's actual
+    /// Combines every persisted `RecordingGroup` with the library's actual
     /// `VideoRecord`s, resolving each group's references and never hiding a
     /// `VideoRecord` that no group happens to reference — those are surfaced as their
-    /// own single-item group (Task 023 principle: existing files must never become
-    /// invisible because of this feature). `loadAllRecords()` above is completely
-    /// unaffected by this method — it's still the plain, ungrouped source of truth.
+    /// own single-item group. `loadAllRecords()` above is completely unaffected by this
+    /// method — it's still the plain, ungrouped source of truth.
     func loadRecordingGroups(groupService: RecordingGroupService) async throws -> [ResolvedRecordingGroup] {
         let records = try await loadAllRecords()
         let recordsByID = Dictionary(uniqueKeysWithValues: records.map { ($0.id, $0) })
@@ -119,7 +163,13 @@ actor InternalVideoLibraryService {
         }
 
         let orphanRecords = records.filter { !referencedIDs.contains($0.id) }
-        resolved += orphanRecords.map { record in
+
+        // Task 024 requirement 7: a `VideoRecord` that already carries a `sessionID`
+        // was made under this task's regime — if it's still orphaned (no persisted
+        // group referenced it), that's unexpected, but it must never be guessed into a
+        // pairing via the legacy heuristic. Shown standalone instead.
+        let taggedOrphans = orphanRecords.filter { $0.sessionID != nil }
+        resolved += taggedOrphans.map { record in
             ResolvedRecordingGroup(
                 id: "orphan-\(record.id)",
                 createdAt: record.createdAt,
@@ -130,7 +180,82 @@ actor InternalVideoLibraryService {
             )
         }
 
+        // Task 024 requirement 7: only recordings made before Task 024 (no sessionID
+        // at all) fall back to the Task 023 time/aspect-ratio heuristic.
+        let legacyOrphans = orphanRecords.filter { $0.sessionID == nil }
+        resolved += Self.groupLegacyOrphans(legacyOrphans)
+
         return resolved.sorted { $0.createdAt > $1.createdAt }
+    }
+
+    /// The `OutputProfile`(s) a session with `metadata`'s mode/quality/FPS could have
+    /// produced — mirrors exactly what `RecordingService.targetProfiles` computes
+    /// internally (that type must not be modified, so this is a separate, matching
+    /// implementation, not a shared one). Used only to tag a *just-imported* file
+    /// (requirement: no cross-file, cross-time guessing) — see `matchProfile`.
+    private static func expectedProfiles(for metadata: RecordingSessionMetadata) -> [OutputProfile] {
+        switch metadata.recordingMode {
+        case .single:
+            let dimensions = metadata.selectedQuality.dimensions
+            return [OutputProfile(
+                outputName: "Single",
+                resolution: OutputResolution(width: dimensions.width, height: dimensions.height),
+                fps: metadata.selectedFPS,
+                aspectRatio: .widescreen
+            )]
+        case .dual:
+            return [.longForm, .shortForm]
+        }
+    }
+
+    /// Matches a just-imported file's resolution against the (at most two) profiles a
+    /// session could have produced, by aspect ratio. Deterministic in practice — unlike
+    /// the Task 023 heuristic, this never searches beyond the current session's own,
+    /// already-known candidate set.
+    private static func matchProfile(resolution: CGSize?, among profiles: [OutputProfile]) -> OutputProfile? {
+        guard let resolution else { return profiles.first }
+        let isPortrait = resolution.height > resolution.width
+        return profiles.first(where: { ($0.aspectRatio == .vertical) == isPortrait }) ?? profiles.first
+    }
+
+    /// Task 023's original time/aspect-ratio heuristic, kept ONLY as a fallback for
+    /// recordings made before Task 024 introduced `sessionID` (requirement 7) — never
+    /// applied to anything that carries a `sessionID`.
+    private static func groupLegacyOrphans(_ records: [VideoRecord]) -> [ResolvedRecordingGroup] {
+        var candidates = records.sorted { $0.createdAt < $1.createdAt }
+        var groups: [ResolvedRecordingGroup] = []
+
+        while !candidates.isEmpty {
+            let record = candidates.removeFirst()
+            let isPortrait = record.resolution.height > record.resolution.width
+
+            if let pairIndex = candidates.firstIndex(where: {
+                abs($0.createdAt.timeIntervalSince(record.createdAt)) <= 10
+                    && ($0.resolution.height > $0.resolution.width) != isPortrait
+            }) {
+                let pair = candidates.remove(at: pairIndex)
+                let long = isPortrait ? pair : record
+                let short = isPortrait ? record : pair
+                groups.append(ResolvedRecordingGroup(
+                    id: "legacy-\(long.id)-\(short.id)",
+                    createdAt: min(long.createdAt, short.createdAt),
+                    recordingMode: .dual,
+                    duration: long.duration,
+                    long: .succeeded(long),
+                    short: .succeeded(short)
+                ))
+            } else {
+                groups.append(ResolvedRecordingGroup(
+                    id: "legacy-\(record.id)",
+                    createdAt: record.createdAt,
+                    recordingMode: .single,
+                    duration: record.duration,
+                    long: .succeeded(record),
+                    short: .none
+                ))
+            }
+        }
+        return groups
     }
 
     private func videosDirectory() throws -> URL {
@@ -179,14 +304,19 @@ actor InternalVideoLibraryService {
         let videoTrack = tracks.first { $0.mediaType == .video }
         let resolution = (try? await videoTrack?.load(.naturalSize)) ?? nil
 
+        let id = url.lastPathComponent
+        let metadata = await metadataService.load(videoRecordID: id)
+
         return VideoRecord(
-            id: url.lastPathComponent,
-            filename: url.lastPathComponent,
+            id: id,
+            filename: id,
             createdAt: createdAt,
             duration: duration,
             resolution: resolution ?? .zero,
             fileSize: fileSize,
-            localURL: url
+            localURL: url,
+            sessionID: metadata?.sessionID,
+            outputProfile: metadata?.outputProfile
         )
     }
 }
