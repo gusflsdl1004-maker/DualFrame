@@ -6,76 +6,92 @@
 import Combine
 import Foundation
 
-/// Loads and manages the internal video library for display, and exports recordings
-/// to Photos or external storage. Owns no file I/O itself — that lives in
-/// `InternalVideoLibraryService`, `PhotoLibraryExportService`, and
-/// `ExternalStorageExportService`.
+/// Loads and manages the internal video library for display, and runs the
+/// settings-driven export flow through `ExportCoordinator`. This view model only
+/// presents UI (destination picker, delete confirmation) when the coordinator asks
+/// for it — it makes no export decisions itself.
 @MainActor
 final class VideoLibraryViewModel: ObservableObject {
     @Published private(set) var records: [VideoRecord] = []
     @Published private(set) var errorMessage: String?
-    @Published private(set) var exportStatuses: [String: PhotoLibraryExportStatus] = [:]
-    @Published private(set) var externalExportStatuses: [String: ExternalStorageExportStatus] = [:]
-    @Published private(set) var externalExportErrorMessages: [String: String] = [:]
+    @Published private(set) var exportStates: [String: ExportState] = [:]
+
+    /// Non-nil while `ExportCoordinator` is waiting for the user to pick a destination.
+    @Published private(set) var pendingDestinationChoices: [StorageDestination]?
+    /// True while `ExportCoordinator` is waiting for delete confirmation.
+    @Published private(set) var isConfirmingDelete = false
 
     private let libraryService: InternalVideoLibraryService
-    private let exportService: PhotoLibraryExportService
-    private let externalExportService: ExternalStorageExportService
     private let externalStorageViewModel: ExternalStorageViewModel
+    private let exportCoordinator: ExportCoordinator
+
+    private var destinationContinuation: CheckedContinuation<StorageDestination?, Never>?
+    private var deleteConfirmationContinuation: CheckedContinuation<Bool, Never>?
 
     init(
         libraryService: InternalVideoLibraryService,
         externalStorageViewModel: ExternalStorageViewModel,
-        exportService: PhotoLibraryExportService = PhotoLibraryExportService(),
-        externalExportService: ExternalStorageExportService = ExternalStorageExportService()
+        exportCoordinator: ExportCoordinator? = nil
     ) {
         self.libraryService = libraryService
         self.externalStorageViewModel = externalStorageViewModel
-        self.exportService = exportService
-        self.externalExportService = externalExportService
+        self.exportCoordinator = exportCoordinator ?? ExportCoordinator(libraryService: libraryService)
     }
 
-    func exportStatus(for record: VideoRecord) -> PhotoLibraryExportStatus {
-        exportStatuses[record.id] ?? .idle
+    func exportState(for record: VideoRecord) -> ExportState {
+        exportStates[record.id] ?? .idle
     }
 
-    func externalExportStatus(for record: VideoRecord) -> ExternalStorageExportStatus {
-        externalExportStatuses[record.id] ?? .idle
-    }
+    /// Runs the settings-driven export flow for `record`. Always user-initiated —
+    /// never called automatically after a recording finishes.
+    func export(_ record: VideoRecord) async {
+        exportStates[record.id] = .exporting
 
-    /// Copies `record`'s video into Photos. Always user-initiated — never called
-    /// automatically after a recording finishes. The internal library file is untouched.
-    func exportToPhotos(_ record: VideoRecord) async {
-        exportStatuses[record.id] = .exporting
-        do {
-            try await exportService.exportVideo(at: record.localURL)
-            exportStatuses[record.id] = .success
-        } catch PhotoLibraryExportError.permissionDenied {
-            exportStatuses[record.id] = .failed(permissionDenied: true)
-        } catch {
-            exportStatuses[record.id] = .failed(permissionDenied: false)
+        let result = await exportCoordinator.export(
+            record,
+            externalDestinationURL: externalStorageViewModel.selectedURL,
+            chooseDestination: { [self] choices in await promptForDestination(choices) },
+            confirmDelete: { [self] in await promptForDeleteConfirmation() }
+        )
+
+        switch result {
+        case .success(let destination, let internalCopyDeleted):
+            exportStates[record.id] = .success(destination)
+            if internalCopyDeleted {
+                records.removeAll { $0.id == record.id }
+            }
+        case .cancelled:
+            exportStates[record.id] = .idle
+        case .failed(let reason):
+            exportStates[record.id] = .failed(reason)
         }
     }
 
-    /// Copies `record`'s video to the external storage location connected in
-    /// Settings. Always user-initiated. The internal library file is only read from —
-    /// never moved or deleted.
-    func exportToExternalStorage(_ record: VideoRecord) async {
-        guard let destinationURL = externalStorageViewModel.selectedURL else {
-            externalExportStatuses[record.id] = .failed
-            externalExportErrorMessages[record.id] = "Connect an external storage location in Settings first."
-            return
+    /// Called by the view once the user has tapped a destination (or cancelled, with `nil`).
+    func resolveDestinationChoice(_ destination: StorageDestination?) {
+        pendingDestinationChoices = nil
+        destinationContinuation?.resume(returning: destination)
+        destinationContinuation = nil
+    }
+
+    /// Called by the view once the user has answered the delete-confirmation prompt.
+    func resolveDeleteConfirmation(_ confirmed: Bool) {
+        isConfirmingDelete = false
+        deleteConfirmationContinuation?.resume(returning: confirmed)
+        deleteConfirmationContinuation = nil
+    }
+
+    private func promptForDestination(_ choices: [StorageDestination]) async -> StorageDestination? {
+        await withCheckedContinuation { continuation in
+            destinationContinuation = continuation
+            pendingDestinationChoices = choices
         }
+    }
 
-        externalExportStatuses[record.id] = .exporting
-        externalExportErrorMessages[record.id] = nil
-
-        do {
-            try await externalExportService.export(record: record, to: destinationURL)
-            externalExportStatuses[record.id] = .success
-        } catch {
-            externalExportStatuses[record.id] = .failed
-            externalExportErrorMessages[record.id] = "Export failed. Please try again."
+    private func promptForDeleteConfirmation() async -> Bool {
+        await withCheckedContinuation { continuation in
+            deleteConfirmationContinuation = continuation
+            isConfirmingDelete = true
         }
     }
 

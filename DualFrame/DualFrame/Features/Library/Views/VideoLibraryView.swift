@@ -6,9 +6,10 @@
 import SwiftUI
 
 /// Lists every recording stored in the internal library, newest first, and lets the
-/// user export any of them to Photos or to a connected external storage location.
-/// The internal library file is never deleted by exporting — only user-initiated
-/// deletion (swipe) removes it.
+/// user export any of them through the settings-driven `ExportCoordinator` flow.
+/// The internal library file is only removed if the user explicitly confirms
+/// deletion after a successful export (when "keep internal copy" is off) or swipes
+/// to delete it directly — exporting never removes it automatically.
 struct VideoLibraryView: View {
     @StateObject private var viewModel: VideoLibraryViewModel
 
@@ -25,11 +26,8 @@ struct VideoLibraryView: View {
                 ForEach(viewModel.records) { record in
                     VideoRecordRow(
                         record: record,
-                        photosExportStatus: viewModel.exportStatus(for: record),
-                        externalExportStatus: viewModel.externalExportStatus(for: record),
-                        externalExportErrorMessage: viewModel.externalExportErrorMessages[record.id],
-                        onExportToPhotos: { exportToPhotos(record) },
-                        onExportToExternalStorage: { exportToExternalStorage(record) }
+                        exportState: viewModel.exportState(for: record),
+                        onExport: { export(record) }
                     )
                 }
                 .onDelete(perform: delete)
@@ -44,6 +42,59 @@ struct VideoLibraryView: View {
         .task {
             await viewModel.refresh()
         }
+        .confirmationDialog(
+            "Choose Destination",
+            isPresented: destinationPickerBinding,
+            titleVisibility: .visible
+        ) {
+            ForEach(viewModel.pendingDestinationChoices ?? []) { destination in
+                Button(destination.title) {
+                    viewModel.resolveDestinationChoice(destination)
+                }
+            }
+            Button("Cancel", role: .cancel) {
+                viewModel.resolveDestinationChoice(nil)
+            }
+        }
+        .confirmationDialog(
+            "Remove the internal copy?",
+            isPresented: deleteConfirmationBinding,
+            titleVisibility: .visible
+        ) {
+            Button("Delete", role: .destructive) {
+                viewModel.resolveDeleteConfirmation(true)
+            }
+            Button("Keep", role: .cancel) {
+                viewModel.resolveDeleteConfirmation(false)
+            }
+        } message: {
+            Text("The video was exported successfully. Remove it from the internal library?")
+        }
+    }
+
+    /// Wraps `pendingDestinationChoices` so any dismissal — a button tap or the
+    /// user swiping the dialog away — always resolves the coordinator's prompt.
+    private var destinationPickerBinding: Binding<Bool> {
+        Binding(
+            get: { viewModel.pendingDestinationChoices != nil },
+            set: { isPresented in
+                if !isPresented {
+                    viewModel.resolveDestinationChoice(nil)
+                }
+            }
+        )
+    }
+
+    /// Same reasoning as `destinationPickerBinding`, for the delete-confirmation prompt.
+    private var deleteConfirmationBinding: Binding<Bool> {
+        Binding(
+            get: { viewModel.isConfirmingDelete },
+            set: { isPresented in
+                if !isPresented {
+                    viewModel.resolveDeleteConfirmation(false)
+                }
+            }
+        )
     }
 
     private func delete(at offsets: IndexSet) {
@@ -55,26 +106,17 @@ struct VideoLibraryView: View {
         }
     }
 
-    private func exportToPhotos(_ record: VideoRecord) {
+    private func export(_ record: VideoRecord) {
         Task {
-            await viewModel.exportToPhotos(record)
-        }
-    }
-
-    private func exportToExternalStorage(_ record: VideoRecord) {
-        Task {
-            await viewModel.exportToExternalStorage(record)
+            await viewModel.export(record)
         }
     }
 }
 
 private struct VideoRecordRow: View {
     let record: VideoRecord
-    let photosExportStatus: PhotoLibraryExportStatus
-    let externalExportStatus: ExternalStorageExportStatus
-    let externalExportErrorMessage: String?
-    let onExportToPhotos: () -> Void
-    let onExportToExternalStorage: () -> Void
+    let exportState: ExportState
+    let onExport: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -87,17 +129,16 @@ private struct VideoRecordRow: View {
                 .font(.caption2)
                 .foregroundStyle(.secondary)
 
-            photosExportControl
-            externalStorageExportControl
+            exportControl
         }
         .padding(.vertical, 4)
     }
 
     @ViewBuilder
-    private var photosExportControl: some View {
-        switch photosExportStatus {
+    private var exportControl: some View {
+        switch exportState {
         case .idle:
-            Button("Export to Photos", action: onExportToPhotos)
+            Button("Export", action: onExport)
                 .font(.caption.bold())
 
         case .exporting:
@@ -108,63 +149,27 @@ private struct VideoRecordRow: View {
             .font(.caption)
             .foregroundStyle(.secondary)
 
-        case .success:
-            Label("Photos: Success", systemImage: "checkmark.circle.fill")
+        case .success(let destination):
+            Label("Success (\(destination.title))", systemImage: "checkmark.circle.fill")
                 .font(.caption.bold())
                 .foregroundStyle(.green)
 
-        case .failed(let permissionDenied):
+        case .failed(let reason):
             VStack(alignment: .leading, spacing: 4) {
-                Label("Photos: Failed", systemImage: "xmark.circle.fill")
+                Label("Failed", systemImage: "xmark.circle.fill")
                     .font(.caption.bold())
                     .foregroundStyle(.red)
 
-                if permissionDenied {
+                if reason == .photosPermissionDenied {
                     Text("Photos access is required. Enable it in Settings to export.")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                     Button("Open Settings", action: openSettings)
                         .font(.caption2)
                 } else {
-                    Button("Retry", action: onExportToPhotos)
+                    Button("Retry", action: onExport)
                         .font(.caption2)
                 }
-            }
-        }
-    }
-
-    @ViewBuilder
-    private var externalStorageExportControl: some View {
-        switch externalExportStatus {
-        case .idle:
-            Button("Export to External Storage", action: onExportToExternalStorage)
-                .font(.caption.bold())
-
-        case .exporting:
-            HStack(spacing: 6) {
-                ProgressView()
-                Text("Exporting...")
-            }
-            .font(.caption)
-            .foregroundStyle(.secondary)
-
-        case .success:
-            Label("External: Success", systemImage: "checkmark.circle.fill")
-                .font(.caption.bold())
-                .foregroundStyle(.green)
-
-        case .failed:
-            VStack(alignment: .leading, spacing: 4) {
-                Label("External: Failed", systemImage: "xmark.circle.fill")
-                    .font(.caption.bold())
-                    .foregroundStyle(.red)
-                if let externalExportErrorMessage {
-                    Text(externalExportErrorMessage)
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                }
-                Button("Retry", action: onExportToExternalStorage)
-                    .font(.caption2)
             }
         }
     }
