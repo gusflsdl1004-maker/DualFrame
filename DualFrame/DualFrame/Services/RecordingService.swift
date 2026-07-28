@@ -185,12 +185,18 @@ actor RecordingService {
         await saveCheckpoint()
     }
 
-    /// Extension point for a future "Resume Recording" feature (requirement 8). Nothing
-    /// in this task calls this automatically or wires it to any UI — recording stays
-    /// paused until the user manually stops it, unless a later task adds a resume button.
+    /// Un-pauses a recording paused by `pauseRecording()`. Only ever called from
+    /// `RecordingViewModel.resumeRecording()`, itself only invoked when the user taps
+    /// the Resume button — never automatically (this task's requirement 1). `state`
+    /// was already `.recording` throughout the pause (Task 017's design), and nothing
+    /// about `sessionID`/`recordingStartTime`/`RecordingGroup` is touched here — this
+    /// method's only job is to let `append(_:isVideo:)` start accepting samples again
+    /// and to immediately re-save a checkpoint so recovery data reflects the resume
+    /// (requirement 4).
     func resumeRecording() async {
         guard state == .recording, isPaused else { return }
         isPaused = false
+        await saveCheckpoint()
     }
 
     func appendVideoSampleBuffer(_ sampleBuffer: CMSampleBuffer) async {

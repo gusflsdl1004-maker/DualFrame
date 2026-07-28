@@ -38,6 +38,15 @@ final class RecordingViewModel: ObservableObject {
         }
     }
 
+    /// `state` alone stays `.recording` throughout a pause (Task 017's design) — this
+    /// combines it with `interruptionStatus` so the UI can clearly distinguish
+    /// Recording / Paused / Resume-available (requirement 5), without changing what
+    /// `statusText`/`state` themselves mean anywhere else.
+    var displayStatusText: String {
+        guard state == .recording, interruptionStatus != .none else { return statusText }
+        return "PAUSED"
+    }
+
     var formattedDuration: String { Self.format(seconds: duration) }
 
     var formattedFileSize: String {
@@ -230,6 +239,18 @@ final class RecordingViewModel: ObservableObject {
         }
     }
 
+    /// Called only when the user taps the Resume button (requirement 1) — never
+    /// automatically, e.g. never from `handleInterruptionEnded()` below. Un-pauses the
+    /// writer(s) via `RecordingService`'s existing extension point and clears the
+    /// displayed interruption status so the UI returns to showing "RECORDING". Touches
+    /// nothing about the session — `sessionID`, `recordingStartTime`, and any
+    /// `RecordingGroup` all stay exactly as they were (requirement 3).
+    func resumeRecording() async {
+        guard interruptionStatus != .none else { return }
+        await service.resumeRecording()
+        interruptionStatus = .none
+    }
+
     /// Called by `RecordingInterruptionMonitor` when an interruption begins. Pauses the
     /// recording (if one is active) and preserves a checkpoint — never resumes anything.
     func handleInterruptionBegan(_ source: InterruptionSource) async {
@@ -239,7 +260,9 @@ final class RecordingViewModel: ObservableObject {
     }
 
     /// Called when the interruption ends. Only updates the displayed status — recording
-    /// stays paused; nothing here calls `resumeRecording()` (requirement 8, 11).
+    /// stays paused; nothing here calls `resumeRecording()` (requirement 8, 11 from
+    /// Task 017; this task's requirement 1 keeps that guarantee — only a user tap on
+    /// the Resume button ever calls `resumeRecording()` above).
     func handleInterruptionEnded() {
         guard interruptionStatus != .none else { return }
         interruptionStatus = .ended

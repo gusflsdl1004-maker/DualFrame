@@ -123,7 +123,7 @@ struct CameraPreviewView: View {
         VStack(alignment: .leading, spacing: 6) {
             HStack {
                 HStack(spacing: 6) {
-                    Text(recordingViewModel.statusText)
+                    Text(recordingViewModel.displayStatusText)
                     if let activeQuality {
                         Text("\(activeQuality.dimensions.width)×\(activeQuality.dimensions.height)")
                     }
@@ -209,19 +209,40 @@ struct CameraPreviewView: View {
         case .none:
             EmptyView()
         case .interrupted(let source):
-            Text("Recording paused — \(source.title)")
-                .font(.caption2)
-                .padding(.horizontal, 12)
-                .padding(.vertical, 6)
-                .background(.black.opacity(0.5), in: Capsule())
-                .foregroundStyle(.orange)
+            VStack(spacing: 6) {
+                Text("Recording paused — \(source.title)")
+                    .font(.caption2)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 6)
+                    .background(.black.opacity(0.5), in: Capsule())
+                    .foregroundStyle(.orange)
+                resumeButton
+            }
         case .ended:
-            Text("Interruption ended — recording is still paused. Stop to save what was captured.")
-                .font(.caption2)
+            VStack(spacing: 6) {
+                Text("Interruption ended — recording is still paused.")
+                    .font(.caption2)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 6)
+                    .background(.black.opacity(0.5), in: Capsule())
+                    .foregroundStyle(.orange)
+                resumeButton
+            }
+        }
+    }
+
+    /// Requirement 1: only ever shown while paused, and only ever acts when the user
+    /// taps it — nothing resumes a recording automatically.
+    private var resumeButton: some View {
+        Button {
+            Task { await recordingViewModel.resumeRecording() }
+        } label: {
+            Text("Resume Recording")
+                .font(.caption.bold())
                 .padding(.horizontal, 12)
                 .padding(.vertical, 6)
-                .background(.black.opacity(0.5), in: Capsule())
-                .foregroundStyle(.orange)
+                .background(Color.white, in: Capsule())
+                .foregroundStyle(.black)
         }
     }
 
