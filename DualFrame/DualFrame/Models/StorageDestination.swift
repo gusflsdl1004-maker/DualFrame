@@ -24,9 +24,4 @@ nonisolated enum StorageDestination: String, CaseIterable, Identifiable, Codable
         case .externalDrive: "External Drive"
         }
     }
-
-    /// External drive export doesn't exist yet — the option is shown but disabled.
-    var isAvailable: Bool {
-        self != .externalDrive
-    }
 }

@@ -10,6 +10,7 @@ import SwiftUI
 /// these values yet.
 struct StorageDestinationView: View {
     @StateObject private var viewModel = StorageSettingsViewModel()
+    @StateObject private var externalStorageViewModel = ExternalStorageViewModel()
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
@@ -25,6 +26,12 @@ struct StorageDestinationView: View {
                     Toggle("Ask every time", isOn: $viewModel.settings.askEveryTime)
                     Toggle("Keep internal copy", isOn: $viewModel.settings.keepInternalCopy)
                 }
+
+                Section {
+                    NavigationLink("Manage External Storage") {
+                        ExternalStorageView(viewModel: externalStorageViewModel)
+                    }
+                }
             }
             .navigationTitle("Storage")
             .toolbar {
@@ -36,13 +43,14 @@ struct StorageDestinationView: View {
     }
 
     private func destinationRow(_ destination: StorageDestination) -> some View {
-        Button {
+        let available = isAvailable(destination)
+        return Button {
             viewModel.settings.defaultDestination = destination
         } label: {
             HStack {
                 Text(destination.title)
-                    .foregroundStyle(destination.isAvailable ? .primary : .secondary)
-                if !destination.isAvailable {
+                    .foregroundStyle(available ? .primary : .secondary)
+                if !available {
                     Text("(Disabled)")
                         .font(.caption)
                         .foregroundStyle(.secondary)
@@ -54,7 +62,14 @@ struct StorageDestinationView: View {
                 }
             }
         }
-        .disabled(!destination.isAvailable)
+        .disabled(!available)
+    }
+
+    /// `externalDrive` is only selectable once a location has been connected via
+    /// "Manage External Storage" — every other destination is always available.
+    private func isAvailable(_ destination: StorageDestination) -> Bool {
+        guard destination == .externalDrive else { return true }
+        return externalStorageViewModel.device != nil
     }
 }
 
