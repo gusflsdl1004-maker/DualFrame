@@ -60,6 +60,9 @@ These are the priority order and constraints for all DualFrame engineering work.
 43. Dual recording is lower priority than single recording.
 44. If any new feature reduces the stability of existing single recording even slightly, stop that implementation immediately and revert to the previous stable state.
 45. After completing every task, explicitly check and report single-recording regression using a checklist.
+46. Before implementing a new feature (Task N), first verify whether previous tasks have regressed.
+47. Existing feature stability takes priority over new features; changes that break existing functionality are not allowed.
+48. After completing every task, perform a Regression Checklist and report both the features affected and the features confirmed unaffected.
 
 ## Report Templates
 
