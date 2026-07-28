@@ -16,6 +16,8 @@ struct CameraPreviewView: View {
     @State private var libraryService: InternalVideoLibraryService
     @State private var isLibraryPresented = false
     @State private var isSettingsPresented = false
+    @State private var activeQuality: RecordingQuality?
+    @State private var qualityFallbackOccurred = false
 
     init() {
         let libraryService = InternalVideoLibraryService()
@@ -45,6 +47,8 @@ struct CameraPreviewView: View {
             guard permissionViewModel.cameraStatus == .granted,
                   permissionViewModel.microphoneStatus == .granted else { return }
             try? await cameraService.start()
+            activeQuality = await cameraService.activeQuality
+            qualityFallbackOccurred = await cameraService.qualityFallbackOccurred
         }
         .onDisappear {
             Task {
@@ -67,32 +71,48 @@ struct CameraPreviewView: View {
     }
 
     private var statusBar: some View {
-        HStack {
-            Text(recordingViewModel.statusText)
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                HStack(spacing: 6) {
+                    Text(recordingViewModel.statusText)
+                    if let activeQuality {
+                        Text("\(activeQuality.dimensions.width)×\(activeQuality.dimensions.height)")
+                    }
+                }
                 .font(.caption.bold())
                 .padding(.horizontal, 12)
                 .padding(.vertical, 6)
                 .background(.black.opacity(0.5), in: Capsule())
                 .foregroundStyle(.white)
 
-            Spacer()
+                Spacer()
 
-            Button {
-                isLibraryPresented = true
-            } label: {
-                Image(systemName: "film")
-                    .padding(10)
-                    .background(.black.opacity(0.5), in: Circle())
-                    .foregroundStyle(.white)
+                Button {
+                    isLibraryPresented = true
+                } label: {
+                    Image(systemName: "film")
+                        .padding(10)
+                        .background(.black.opacity(0.5), in: Circle())
+                        .foregroundStyle(.white)
+                }
+
+                Button {
+                    isSettingsPresented = true
+                } label: {
+                    Image(systemName: "gearshape")
+                        .padding(10)
+                        .background(.black.opacity(0.5), in: Circle())
+                        .foregroundStyle(.white)
+                }
             }
 
-            Button {
-                isSettingsPresented = true
-            } label: {
-                Image(systemName: "gearshape")
-                    .padding(10)
-                    .background(.black.opacity(0.5), in: Circle())
-                    .foregroundStyle(.white)
+            if qualityFallbackOccurred, let activeQuality {
+                Text("Requested quality isn't supported on this device — using \(activeQuality.title) instead.")
+                    .font(.caption2)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 6)
+                    .background(.black.opacity(0.5), in: Capsule())
+                    .foregroundStyle(.yellow)
             }
         }
         .padding(.horizontal, 16)

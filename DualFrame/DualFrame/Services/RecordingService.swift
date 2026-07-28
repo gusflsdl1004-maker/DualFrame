@@ -35,9 +35,17 @@ actor RecordingService {
     private var audioInput: AVAssetWriterInput?
     private var outputURL: URL?
     private var isSessionStarted = false
+    private var videoDimensions = RecordingQuality.fullHD.dimensions
 
     init(libraryService: InternalVideoLibraryService) {
         self.libraryService = libraryService
+    }
+
+    /// Called by `CameraService` after it resolves the actual capture resolution
+    /// (which may differ from the user's raw preference if a fallback occurred), so
+    /// the asset writer always encodes at the resolution the session is really running at.
+    func updateVideoDimensions(width: Int, height: Int) {
+        videoDimensions = (width, height)
     }
 
     @discardableResult
@@ -135,8 +143,8 @@ actor RecordingService {
 
         let videoSettings: [String: Any] = [
             AVVideoCodecKey: AVVideoCodecType.h264,
-            AVVideoWidthKey: 1920,
-            AVVideoHeightKey: 1080
+            AVVideoWidthKey: videoDimensions.width,
+            AVVideoHeightKey: videoDimensions.height
         ]
         let videoWriterInput = AVAssetWriterInput(mediaType: .video, outputSettings: videoSettings)
         videoWriterInput.expectsMediaDataInRealTime = true

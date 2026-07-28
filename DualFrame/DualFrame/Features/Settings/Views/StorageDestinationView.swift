@@ -5,9 +5,9 @@
 
 import SwiftUI
 
-/// Lets the user choose a default export destination and related preferences.
-/// This screen only edits and persists `StorageSettings` — no export logic reads
-/// these values yet.
+/// The app's settings screen: default export destination and related preferences,
+/// plus (since Task 013) recording quality. This screen only edits and persists
+/// settings — it doesn't itself run export or recording logic.
 struct StorageDestinationView: View {
     @StateObject private var viewModel = StorageSettingsViewModel()
     @ObservedObject var externalStorageViewModel: ExternalStorageViewModel
@@ -32,8 +32,14 @@ struct StorageDestinationView: View {
                         ExternalStorageView(viewModel: externalStorageViewModel)
                     }
                 }
+
+                Section("Recording") {
+                    NavigationLink("Recording Quality") {
+                        RecordingQualityView()
+                    }
+                }
             }
-            .navigationTitle("Storage")
+            .navigationTitle("Settings")
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Done") { dismiss() }

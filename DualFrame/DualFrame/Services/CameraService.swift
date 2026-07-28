@@ -22,20 +22,34 @@ actor CameraService {
     // Marked `nonisolated(unsafe)` so `CameraPreviewRepresentable` can bind it without awaiting.
     nonisolated(unsafe) let session = AVCaptureSession()
 
+    /// The quality actually in effect after resolving the user's preference against
+    /// what the device supports (see `resolveSessionPreset`).
+    private(set) var activeQuality: RecordingQuality = .fullHD
+    /// True if `activeQuality` differs from the user's selected preference because
+    /// the requested quality wasn't supported.
+    private(set) var qualityFallbackOccurred = false
+
     private let videoOutput = AVCaptureVideoDataOutput()
     private let audioOutput = AVCaptureAudioDataOutput()
     private let sampleBufferQueue = DispatchQueue(label: "com.dualframe.camera.sampleBufferQueue")
     private let outputForwarder: SampleBufferOutputForwarder
+    private let recordingService: RecordingService
+    private let qualitySettingsService: RecordingQualitySettingsService
 
     private var isConfigured = false
 
-    init(recordingService: RecordingService) {
+    init(
+        recordingService: RecordingService,
+        qualitySettingsService: RecordingQualitySettingsService = RecordingQualitySettingsService()
+    ) {
+        self.recordingService = recordingService
+        self.qualitySettingsService = qualitySettingsService
         outputForwarder = SampleBufferOutputForwarder(recordingService: recordingService)
     }
 
-    func start() throws {
+    func start() async throws {
         if !isConfigured {
-            try configure()
+            try await configure()
         }
         guard !session.isRunning else { return }
         session.startRunning()
@@ -46,11 +60,9 @@ actor CameraService {
         session.stopRunning()
     }
 
-    private func configure() throws {
+    private func configure() async throws {
         session.beginConfiguration()
         defer { session.commitConfiguration() }
-
-        session.sessionPreset = .high
 
         guard let videoDevice = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .back) else {
             throw CameraServiceError.deviceUnavailable
@@ -60,6 +72,18 @@ actor CameraService {
             throw CameraServiceError.cannotAddInput
         }
         session.addInput(videoDeviceInput)
+
+        let requestedQuality = qualitySettingsService.load().selectedQuality
+        let resolved = resolveSessionPreset(for: requestedQuality)
+        session.sessionPreset = resolved.preset
+        activeQuality = resolved.resolvedQuality
+        qualityFallbackOccurred = resolved.fallbackOccurred
+        // RecordingService's AVAssetWriter must encode at the resolution the session
+        // is actually running at, not just the user's raw preference.
+        await recordingService.updateVideoDimensions(
+            width: resolved.resolvedQuality.dimensions.width,
+            height: resolved.resolvedQuality.dimensions.height
+        )
 
         if let audioDevice = AVCaptureDevice.default(for: .audio),
            let audioDeviceInput = try? AVCaptureDeviceInput(device: audioDevice),
@@ -79,6 +103,34 @@ actor CameraService {
         }
 
         isConfigured = true
+    }
+
+    /// Tries `quality`'s preset first, then degrades toward lower resolutions until
+    /// one the session reports as supported is found. `canSetSessionPreset` is checked
+    /// after the video input is added, since support depends on the connected camera.
+    private func resolveSessionPreset(
+        for quality: RecordingQuality
+    ) -> (preset: AVCaptureSession.Preset, resolvedQuality: RecordingQuality, fallbackOccurred: Bool) {
+        let orderedQualities: [RecordingQuality] = [.uhd4K, .fullHD, .hd]
+        guard let startIndex = orderedQualities.firstIndex(of: quality) else {
+            return (.high, .fullHD, true)
+        }
+
+        for candidate in orderedQualities[startIndex...] {
+            let preset = sessionPreset(for: candidate)
+            if session.canSetSessionPreset(preset) {
+                return (preset, candidate, candidate != quality)
+            }
+        }
+        return (.high, quality, true)
+    }
+
+    private func sessionPreset(for quality: RecordingQuality) -> AVCaptureSession.Preset {
+        switch quality {
+        case .hd: .hd1280x720
+        case .fullHD: .hd1920x1080
+        case .uhd4K: .hd4K3840x2160
+        }
     }
 }
 
