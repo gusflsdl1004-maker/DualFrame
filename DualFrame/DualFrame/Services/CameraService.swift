@@ -879,7 +879,15 @@ private nonisolated final class SampleBufferOutputForwarder: NSObject,
         videoConsumer = Task {
             var sinceFlush = 0
             for await sampleBuffer in videoStream {
-                await recordingService.appendVideoSampleBuffer(sampleBuffer)
+                // Task 053 item 6: the instant this buffer was handed to the actor.
+                // The gap between this and the actor actually starting is the queue
+                // wait — measured inside RecordingService.
+                #if DEBUG
+                let enqueuedAt = Date()
+                #else
+                let enqueuedAt: Date? = nil
+                #endif
+                await recordingService.appendVideoSampleBuffer(sampleBuffer, enqueuedAt: enqueuedAt)
                 sinceFlush += 1
                 if sinceFlush >= Self.flushInterval {
                     await performanceMonitor.framesProcessed(sinceFlush)

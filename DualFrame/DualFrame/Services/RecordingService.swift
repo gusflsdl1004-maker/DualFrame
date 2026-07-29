@@ -141,6 +141,45 @@ actor RecordingService {
         var lastAcceptedAt: Date?
         var maxStarvationGap: TimeInterval = 0
     }
+    /// Task 053: one measured stage — count, total and max, so the report can give
+    /// average, peak and share of the frame budget without keeping every sample.
+    private struct StageStat {
+        var count = 0
+        var total: TimeInterval = 0
+        var max: TimeInterval = 0
+
+        mutating func record(_ duration: TimeInterval) {
+            count += 1
+            total += duration
+            max = Swift.max(max, duration)
+        }
+
+        var averageMs: Double { count > 0 ? total / Double(count) * 1000 : 0 }
+        var maxMs: Double { max * 1000 }
+    }
+
+    /// Task 053 items 1-6, each timed independently so they can be compared rather than
+    /// inferred from one aggregate. Debug-only.
+    private struct StageBreakdown {
+        /// 1. Whole `appendVideoSampleBuffer` call.
+        var appendTotal = StageStat()
+        /// 2. `VideoFrameCropper.croppedPixelBuffer` end to end (short-form only).
+        var crop = StageStat()
+        /// 4a. Pixel-buffer pool allocation inside the cropper.
+        var cropPool = StageStat()
+        /// 4b. CoreImage render into that buffer.
+        var cropRender = StageStat()
+        /// 3. `AVAssetWriterInput.append` / `AVAssetWriterInputPixelBufferAdaptor.append`.
+        var writerAppend = StageStat()
+        /// 5. This instrumentation's own cost — measured so it can be ruled in or out
+        /// as a contributor rather than assumed negligible.
+        var debugOverhead = StageStat()
+        /// 6. Time queued waiting to enter this actor.
+        var actorWait = StageStat()
+    }
+
+    private var debugStages = StageBreakdown()
+    private var debugVideoFramesTimed = 0
     private var debugTimings: [OutputProfile: ProfileTimingStats] = [:]
     /// Wall-clock time `append(_:isVideo:)` occupied the actor, across all writers —
     /// the figure that matters for whether the actor itself is the bottleneck.
@@ -244,6 +283,8 @@ actor RecordingService {
         debugFirstBufferTime = nil
         // Task 048: timings are per-recording, never carried across sessions.
         debugTimings = [:]
+        debugStages = StageBreakdown()
+        debugVideoFramesTimed = 0
         debugActorHoldTotal = 0
         debugActorHoldMax = 0
         debugActorHoldSamples = 0
@@ -307,11 +348,33 @@ actor RecordingService {
         await saveCheckpoint()
     }
 
-    func appendVideoSampleBuffer(_ sampleBuffer: CMSampleBuffer) async {
+    /// `enqueuedAt` is Task 053 item 6: the instant the forwarder handed this buffer to
+    /// the actor. Comparing it with the instant this method actually begins gives the
+    /// time the buffer spent *queued for the actor* — invisible until now, and the one
+    /// cost that a `total time inside append` measurement can never reveal.
+    /// Unused (and never passed) outside Debug builds.
+    func appendVideoSampleBuffer(_ sampleBuffer: CMSampleBuffer, enqueuedAt: Date? = nil) async {
         #if DEBUG
+        let entryTime = Date()
+        if let enqueuedAt {
+            debugStages.actorWait.record(entryTime.timeIntervalSince(enqueuedAt))
+        }
+        let debugStart = Date()
         logVideoSampleBufferStage(sampleBuffer)
+        debugStages.debugOverhead.record(Date().timeIntervalSince(debugStart))
         #endif
+
         await append(sampleBuffer, isVideo: true)
+
+        #if DEBUG
+        // Item 1: the whole call, so the per-stage figures below can be checked against
+        // it — anything unaccounted for is time this instrumentation does not yet see.
+        debugStages.appendTotal.record(Date().timeIntervalSince(entryTime))
+        debugVideoFramesTimed += 1
+        if debugVideoFramesTimed % 120 == 0 {
+            logStageBreakdown(label: "@\(debugVideoFramesTimed)")
+        }
+        #endif
     }
 
     func appendAudioSampleBuffer(_ sampleBuffer: CMSampleBuffer) async {
@@ -322,6 +385,8 @@ actor RecordingService {
     /// Task 048: records one write duration and the gap since this writer last
     /// accepted a frame (its starvation interval).
     private func recordDebugWrite(profile: OutputProfile, duration: TimeInterval) {
+        // Task 053 item 3: the writer append alone, across every profile.
+        debugStages.writerAppend.record(duration)
         var stats = debugTimings[profile] ?? ProfileTimingStats()
         stats.appendedFrames += 1
         stats.writeTotal += duration
@@ -332,6 +397,66 @@ actor RecordingService {
         }
         stats.lastAcceptedAt = now
         debugTimings[profile] = stats
+    }
+
+    /// Task 053 items 7/8: per-stage average, peak and share of the 60fps frame budget,
+    /// with the single worst stage named explicitly.
+    ///
+    /// How to read it. `budget` is one frame at the active rate (16.67ms at 60fps).
+    /// `appendTotal` is the whole call, so it is the figure that has to fit; the stages
+    /// under it are its parts. `actorWait` sits *outside* `appendTotal` — it is time the
+    /// buffer spent queued before the call even began, so a large `actorWait` with a
+    /// small `appendTotal` means the actor is saturated by other work rather than this
+    /// frame being slow. `unaccounted` is `appendTotal` minus the stages measured
+    /// inside it: if that dominates, the cost is somewhere this instrumentation still
+    /// does not look, and the next step is to widen it rather than optimise a stage.
+    private func logStageBreakdown(label: String) {
+        let budgetMs = 1000.0 / Double(activeFPS.rawValue)
+        let s = debugStages
+        let totalAvg = s.appendTotal.averageMs
+
+        func line(_ name: String, _ stat: StageStat, insideTotal: Bool = true) -> String {
+            let share = totalAvg > 0 && insideTotal ? stat.averageMs / totalAvg * 100 : 0
+            let ofBudget = stat.averageMs / budgetMs * 100
+            return String(
+                format: "[Task053-Stage] %@ %-14@ avg=%7.3fms max=%8.3fms n=%5d  ofTotal=%5.1f%%  ofBudget=%5.1f%%",
+                label, name as NSString, stat.averageMs, stat.maxMs, stat.count, share, ofBudget
+            )
+        }
+
+        let measuredInside = s.crop.averageMs + s.writerAppend.averageMs + s.debugOverhead.averageMs
+        let unaccounted = Swift.max(0, totalAvg - measuredInside)
+
+        print(String(
+            format: "[Task053-Stage] %@ ===== budget=%.2fms (%dfps)  appendTotal avg=%.3fms -> sustainable %.1ffps =====",
+            label, budgetMs, activeFPS.rawValue, totalAvg, totalAvg > 0 ? 1000 / totalAvg : 0
+        ))
+        print(line("1 appendTotal", s.appendTotal))
+        print(line("3 writerAppend", s.writerAppend))
+        print(line("2 crop", s.crop))
+        print(line("4a cropPool", s.cropPool))
+        print(line("4b cropRender", s.cropRender))
+        print(line("5 debugOverhead", s.debugOverhead))
+        print(line("6 actorWait", s.actorWait, insideTotal: false))
+        print(String(
+            format: "[Task053-Stage] %@ %-14@ avg=%7.3fms                        ofTotal=%5.1f%%",
+            label, "unaccounted" as NSString, unaccounted, totalAvg > 0 ? unaccounted / totalAvg * 100 : 0
+        ))
+
+        // Item 8: name the worst stage outright, so the next decision needs no arithmetic.
+        let candidates: [(String, Double)] = [
+            ("writerAppend", s.writerAppend.averageMs),
+            ("crop", s.crop.averageMs),
+            ("debugOverhead", s.debugOverhead.averageMs),
+            ("actorWait", s.actorWait.averageMs),
+            ("unaccounted", unaccounted)
+        ]
+        if let worst = candidates.max(by: { $0.1 < $1.1 }) {
+            print(String(
+                format: "[Task053-Stage] %@ WORST=%@ avg=%.3fms (%.0f%% of the %.2fms budget)",
+                label, worst.0, worst.1, worst.1 / budgetMs * 100, budgetMs
+            ))
+        }
     }
 
     /// Task 048: per-writer bottleneck breakdown. Printed periodically during the
@@ -468,6 +593,7 @@ actor RecordingService {
         // Task 048: the whole-recording totals, printed before any writer is finished
         // so the numbers describe the recording itself rather than teardown.
         logTimingBreakdown(label: "FINAL")
+        logStageBreakdown(label: "FINAL")
         #endif
 
         var anySucceeded = false
@@ -864,6 +990,11 @@ actor RecordingService {
                         debugTimings[profile, default: ProfileTimingStats()].cropMax,
                         cropDuration
                     )
+                    // Task 053 items 2/4: the crop as a whole, plus its two internal
+                    // phases read straight from the cropper.
+                    debugStages.crop.record(cropDuration)
+                    debugStages.cropPool.record(frameCropper.lastPoolDuration)
+                    debugStages.cropRender.record(frameCropper.lastRenderDuration)
                     #endif
 
                     if let croppedBuffer {
