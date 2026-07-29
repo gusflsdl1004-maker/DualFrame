@@ -27,6 +27,12 @@ struct RecordingFPSView: View {
             }
         }
         .navigationTitle("녹화 프레임레이트")
+        #if DEBUG
+        // Task 049: prints the real AVCaptureDevice.formats search behind each
+        // "(지원 안 함)" verdict, so a wrong one can be read off device data rather
+        // than reasoned about.
+        .task { capabilityService.logCapabilityDump() }
+        #endif
     }
 
     private func fpsRow(_ fps: RecordingFPS) -> some View {

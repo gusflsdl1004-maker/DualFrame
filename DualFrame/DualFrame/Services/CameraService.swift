@@ -644,44 +644,25 @@ actor CameraService {
     /// user gets the resolution and frame rate they asked for and loses the extra lens
     /// buttons for that session. `zoomOptions` already derives itself from whichever
     /// device is bound, so the UI follows automatically.
+    /// Task 049: delegates to `DeviceCapabilityService`, which is now the single
+    /// implementation of both "which camera" and "can it do this format". This method
+    /// previously carried its own private copy of that search, and the Settings screens
+    /// carried a third, narrower one — which is exactly how Settings and capture came
+    /// to disagree about 4K60.
     private nonisolated static func bestAvailableDevice(
         for position: AVCaptureDevice.Position,
         quality: RecordingQuality,
         fps: RecordingFPS
     ) -> AVCaptureDevice? {
-        let preferredTypes: [AVCaptureDevice.DeviceType] = [
-            .builtInTripleCamera,
-            .builtInDualWideCamera,
-            .builtInDualCamera,
-            .builtInWideAngleCamera
-        ]
-        // `AVCaptureDevice.DiscoverySession.devices` is not guaranteed to respect
-        // `deviceTypes`' ordering, so preference order is applied explicitly here.
-        let discovery = AVCaptureDevice.DiscoverySession(deviceTypes: preferredTypes, mediaType: .video, position: position)
-        let orderedDevices = preferredTypes.compactMap { type in
-            discovery.devices.first(where: { $0.deviceType == type })
-        }
-
-        if let exactMatch = orderedDevices.first(where: { supportsExactly(quality: quality, fps: fps, device: $0) }) {
-            return exactMatch
-        }
-        return orderedDevices.first ?? discovery.devices.first
+        DeviceCapabilityService.bestDevice(position: position, quality: quality, fps: fps)
     }
 
-    /// Whether `device` has a format at exactly `quality`'s dimensions whose supported
-    /// frame-rate ranges cover `fps` — the same pairing `selectFormat(quality:fps:device:)`
-    /// looks for, asked of a device before it is bound rather than after.
     private nonisolated static func supportsExactly(
         quality: RecordingQuality,
         fps: RecordingFPS,
         device: AVCaptureDevice
     ) -> Bool {
-        let requestedRate = Double(fps.rawValue)
-        return formats(on: device, matching: quality).contains { format in
-            format.videoSupportedFrameRateRanges.contains {
-                requestedRate >= $0.minFrameRate && requestedRate <= $0.maxFrameRate
-            }
-        }
+        DeviceCapabilityService.supports(quality: quality, fps: fps, device: device)
     }
 
     /// Task 044 requirement 3: the raw `videoZoomFactor` that corresponds to the
@@ -820,13 +801,10 @@ actor CameraService {
 
     /// Task 039 requirement 2: the actual query against device capabilities — matches
     /// `AVCaptureDevice.Format.formatDescription`'s pixel dimensions against `quality`,
-    /// not a session-preset abstraction.
+    /// not a session-preset abstraction. Task 049: now the shared implementation, so
+    /// `selectFormat` and the Settings screens can never diverge.
     private nonisolated static func formats(on device: AVCaptureDevice, matching quality: RecordingQuality) -> [AVCaptureDevice.Format] {
-        let target = quality.dimensions
-        return device.formats.filter { format in
-            let dimensions = CMVideoFormatDescriptionGetDimensions(format.formatDescription)
-            return Int(dimensions.width) == target.width && Int(dimensions.height) == target.height
-        }
+        DeviceCapabilityService.formats(on: device, matching: quality)
     }
 }
 

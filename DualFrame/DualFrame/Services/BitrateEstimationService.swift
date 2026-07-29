@@ -5,42 +5,65 @@
 
 import Foundation
 
-/// Task 041: estimates the H.264 encoder bitrate `RecordingService`'s `AVAssetWriter`
-/// would use for a given resolution/FPS.
+/// The video bitrate one writer is configured with, per resolution and frame rate.
 ///
-/// `RecordingService.makeWriterContext` sets only `AVVideoCodecKey`/`AVVideoWidthKey`/
-/// `AVVideoHeightKey` on its video settings — no explicit `AVVideoAverageBitRateKey` —
-/// so AVFoundation picks a bitrate internally that this app has no API to read back
-/// before a recording starts. This is a deliberate **estimate** using the standard
-/// "bits per pixel" video-industry approximation
-/// (`bitrate = width × height × fps × bitsPerPixel`), not a literal reading of what
-/// AVFoundation will actually use. See the Task 041 report's Known Issues for how to
-/// calibrate `bitsPerPixel` against a real recording's actual file size.
+/// Task 049: this is no longer an *estimate*. `RecordingService.makeWriterContext` now
+/// sets `AVVideoAverageBitRateKey` from exactly these values, so this type is the
+/// single definition of the recording bitrate — used both to configure the encoder and
+/// to compute "예상 촬영 가능" in `RecordingCapacityViewModel`. Previously the writer
+/// set no bitrate at all and let AVFoundation pick one internally, which caused two
+/// separate problems: 4K was encoded at whatever default the encoder chose (the
+/// reported quality loss), and the remaining-time estimate was derived from a number
+/// nothing actually used.
+///
+/// Bitrate is `pixels × fps × bitsPerPixel`, with `bitsPerPixel` tiered by resolution —
+/// higher resolutions tolerate a lower ratio because neighbouring pixels are more
+/// redundant. The tiers land on these H.264 targets, which sit in the range YouTube
+/// recommends for upload and Apple's own Camera app produces:
+///
+///     HD   (1280×720)   30fps ≈   8 Mbps    60fps ≈  16 Mbps
+///     FHD  (1920×1080)  30fps ≈  16 Mbps    60fps ≈  32 Mbps
+///     4K   (3840×2160)  30fps ≈  50 Mbps    60fps ≈ 100 Mbps
+///
+/// Short-form (1080×1920) has the same pixel count as FHD and so lands in the same
+/// tier, which is correct — it is a full-quality vertical output, not a thumbnail.
 nonisolated struct BitrateEstimationService {
-    /// A moderate "reasonably good quality" H.264 compression estimate. Real-world
-    /// consumer H.264 video typically falls in the 0.1–0.2 bits-per-pixel range;
-    /// 0.15 is the midpoint.
-    private let bitsPerPixel: Double
-
     /// Mirrors `RecordingService.makeWriterContext`'s literal `AVEncoderBitRateKey`
-    /// value for the audio track (64 kbps AAC mono) — duplicated here since that
-    /// constant lives inside the forbidden `RecordingService.swift`. If it's ever
-    /// changed there, this should be updated to match.
+    /// value for the audio track (64 kbps AAC mono).
     private let audioBitrateBps: Double
 
-    init(bitsPerPixel: Double = 0.15, audioBitrateBps: Double = 64_000) {
-        self.bitsPerPixel = bitsPerPixel
+    init(audioBitrateBps: Double = 64_000) {
         self.audioBitrateBps = audioBitrateBps
     }
 
-    /// Requirement 2: estimated video-only bitrate for one writer at `width`×`height`
-    /// pixels and `fps`.
-    func estimatedVideoBitrateBps(width: Int, height: Int, fps: RecordingFPS) -> Double {
-        Double(width) * Double(height) * Double(fps.rawValue) * bitsPerPixel
+    /// Bits per pixel per frame for a given frame size. Tiered rather than constant —
+    /// a single ratio cannot serve 720p and 4K well at the same time.
+    private func bitsPerPixel(width: Int, height: Int) -> Double {
+        switch width * height {
+        case ...(1280 * 720): 0.29
+        case ...(1920 * 1080): 0.26
+        default: 0.20
+        }
     }
 
-    /// Video + one audio track's estimated bitrate for a single writer.
+    /// The video bitrate a writer at `width`×`height` and `fps` is configured with.
+    func videoBitrateBps(width: Int, height: Int, fps: RecordingFPS) -> Double {
+        Double(width * height) * Double(fps.rawValue) * bitsPerPixel(width: width, height: height)
+    }
+
+    /// Integer form, for `AVVideoAverageBitRateKey`.
+    func videoBitrate(width: Int, height: Int, fps: RecordingFPS) -> Int {
+        Int(videoBitrateBps(width: width, height: height, fps: fps))
+    }
+
+    /// Retained name from Task 041 so existing call sites keep working; now returns the
+    /// configured bitrate rather than an approximation of an unknown one.
+    func estimatedVideoBitrateBps(width: Int, height: Int, fps: RecordingFPS) -> Double {
+        videoBitrateBps(width: width, height: height, fps: fps)
+    }
+
+    /// Video + one audio track, for a single writer.
     func estimatedWriterBitrateBps(width: Int, height: Int, fps: RecordingFPS) -> Double {
-        estimatedVideoBitrateBps(width: width, height: height, fps: fps) + audioBitrateBps
+        videoBitrateBps(width: width, height: height, fps: fps) + audioBitrateBps
     }
 }

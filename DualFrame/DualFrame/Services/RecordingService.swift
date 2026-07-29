@@ -86,6 +86,9 @@ actor RecordingService {
     private(set) var writerStatuses: [OutputProfile: DualWriterStatus] = [:]
 
     private let validator = RecordingValidator()
+    /// Task 049: the single definition of the recording bitrate, shared with
+    /// `RecordingCapacityViewModel`'s remaining-time estimate.
+    private let bitrateService = BitrateEstimationService()
     private let libraryService: InternalVideoLibraryService
     /// `nonisolated` because these are just references to other actors — safe to hand
     /// out (actors are inherently `Sendable`) without crossing this actor's isolation.
@@ -646,16 +649,32 @@ actor RecordingService {
         // See `effectiveWriterFormat(for:)`.
         let format = effectiveWriterFormat(for: profile)
 
+        // Task 049 requirement 2: an explicit bitrate. With no
+        // `AVVideoAverageBitRateKey` the H.264 encoder picked its own default, which at
+        // 4K is well below what the resolution needs — the reported quality loss. The
+        // value comes from `BitrateEstimationService`, the same source
+        // `RecordingCapacityViewModel` uses for "예상 촬영 가능", so the encoder and the
+        // remaining-time estimate can no longer disagree.
+        let averageBitrate = bitrateService.videoBitrate(
+            width: format.resolution.width,
+            height: format.resolution.height,
+            fps: format.fps
+        )
         let videoSettings: [String: Any] = [
             AVVideoCodecKey: AVVideoCodecType.h264,
             AVVideoWidthKey: format.resolution.width,
             AVVideoHeightKey: format.resolution.height,
-            // Task 044 requirement 1: tells the encoder what source rate to expect.
-            // Without it the H.264 encoder assumes a default (30fps) when choosing
-            // keyframe placement and rate control, which can end up reflected in the
-            // written file's nominal frame rate even when 60fps of buffers arrive.
             AVVideoCompressionPropertiesKey: [
-                AVVideoExpectedSourceFrameRateKey: format.fps.rawValue
+                AVVideoAverageBitRateKey: averageBitrate,
+                // Task 044 requirement 1: tells the encoder what source rate to expect.
+                // Without it the H.264 encoder assumes a default (30fps) when choosing
+                // keyframe placement and rate control, which can end up reflected in
+                // the written file's nominal frame rate even when 60fps of buffers
+                // arrive.
+                AVVideoExpectedSourceFrameRateKey: format.fps.rawValue,
+                // One keyframe per second: standard for real-time capture, and it
+                // bounds how much is lost if a file is truncated by a crash.
+                AVVideoMaxKeyFrameIntervalDurationKey: 1
             ]
         ]
         #if DEBUG
@@ -668,7 +687,7 @@ actor RecordingService {
         // real-device log makes the fix unambiguous. In `.dual` mode this line prints
         // twice: Long-form (expected 3840x2160 at 4K) and Short-form (intentionally
         // 1080x1920 — a vertical crop target, not a downscale bug).
-        print("[Task044-Debug] STAGE 6 WRITER   profile=\(profile.outputName) AVVideoWidthKey=\(format.resolution.width) AVVideoHeightKey=\(format.resolution.height) AVVideoExpectedSourceFrameRateKey=\(format.fps.rawValue) | RecordingService.activeQuality=\(activeQuality.title) RecordingService.activeFPS=\(activeFPS.rawValue) | profileConstant=\(profile.resolution.width)x\(profile.resolution.height)@\(profile.fps.rawValue)")
+        print("[Task044-Debug] STAGE 6 WRITER   profile=\(profile.outputName) AVVideoWidthKey=\(format.resolution.width) AVVideoHeightKey=\(format.resolution.height) AVVideoExpectedSourceFrameRateKey=\(format.fps.rawValue) AVVideoAverageBitRateKey=\(averageBitrate) (\(String(format: "%.1f", Double(averageBitrate) / 1_000_000))Mbps) | RecordingService.activeQuality=\(activeQuality.title) RecordingService.activeFPS=\(activeFPS.rawValue) | profileConstant=\(profile.resolution.width)x\(profile.resolution.height)@\(profile.fps.rawValue)")
         #endif
         let videoWriterInput = AVAssetWriterInput(mediaType: .video, outputSettings: videoSettings)
         videoWriterInput.expectsMediaDataInRealTime = true
