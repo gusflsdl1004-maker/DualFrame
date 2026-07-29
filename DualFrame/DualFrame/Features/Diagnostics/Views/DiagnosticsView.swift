@@ -20,6 +20,10 @@ struct DiagnosticsView: View {
     /// the store when it builds each writer, so the next recording picks this up.
     @State private var encoderSettings = VideoEncoderSettingsService().load()
     private let encoderSettingsService = VideoEncoderSettingsService()
+    /// Task 068: CoreImage ↔ VideoToolbox crop. Pinned by `RecordingService` when the
+    /// writers are built, so changing it here applies from the next recording.
+    @State private var cropBackend = CropBackendSettingsService().load().backend
+    private let cropBackendSettingsService = CropBackendSettingsService()
 
     var body: some View {
         List {
@@ -64,6 +68,23 @@ struct DiagnosticsView: View {
                 Text("H.264 Level 5.1은 4K에서 초당 30프레임이 한계입니다(4K 1프레임 = 32,400 매크로블록, Level 5.1 = 983,040 MB/s). iPhone의 하드웨어 H.264 인코더는 Level 5.1을 넘지 않으므로 4K60은 HEVC가 필요합니다. 비트레이트는 설정 → 녹화 화질에서 '절반'을 고르면 비교할 수 있습니다.")
             }
 
+            Section {
+                Picker("Short crop 구현", selection: $cropBackend) {
+                    ForEach(CropBackend.allCases) { backend in
+                        Text(backend.title).tag(backend)
+                    }
+                }
+                .pickerStyle(.inline)
+                .labelsHidden()
+                Text(cropBackend.detail)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } header: {
+                Text("Short crop 실험 (Task 068)")
+            } footer: {
+                Text("Long만 저장에는 영향이 없습니다(crop을 하지 않음). Long + Short에서만 차이가 납니다. VideoToolbox 선택 시 Short 영상의 색·밝기와 선명도를 반드시 눈으로 확인하세요 — 빌드가 판정할 수 없는 항목입니다. 이상하면 CoreImage로 되돌리면 즉시 원복됩니다.")
+            }
+
             // Task 062: the two conditions side by side, which is what the comparison
             // actually needs — scrolling between two detail screens loses the diff.
             Section {
@@ -99,6 +120,9 @@ struct DiagnosticsView: View {
         }
         .onChange(of: encoderSettings) { _, newValue in
             encoderSettingsService.save(newValue)
+        }
+        .onChange(of: cropBackend) { _, newValue in
+            cropBackendSettingsService.save(CropBackendSettings(backend: newValue))
         }
         .task {
             await viewModel.refresh()

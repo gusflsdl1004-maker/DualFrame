@@ -38,6 +38,11 @@ struct DiagnosticsDetailView: View {
                     if let preset = diagnostics.bitratePreset {
                         LabeledContent("비트레이트 프리셋", value: preset.title)
                     }
+                    // Task 068: which crop implementation ran. Absent on Long-only
+                    // recordings is expected — nothing was cropped.
+                    if let backend = diagnostics.cropBackend {
+                        LabeledContent("Short crop 구현", value: backend.title)
+                    }
                     // Task 065 item 1: what the selection decided, before the file
                     // existed. If this says `hvc1` but 저장된 포맷 below says `avc1`,
                     // something overrode the codec after we asked for it; if this
@@ -237,7 +242,8 @@ struct DiagnosticsDetailView: View {
             peakThermalState: "fair",
             thermalStateAtEnd: "fair",
             dropSamples: ["[Task067-Drop] reason=FrameWasLate pts=12.3456s uptime=8421.117 thermal=fair backlog=1 attachments: DroppedFrameReason=FrameWasLate"],
-            dropAttachmentKeys: ["DroppedFrameReason"]
+            dropAttachmentKeys: ["DroppedFrameReason"],
+            cropBackend: .videoToolbox
         ))
     }
 }

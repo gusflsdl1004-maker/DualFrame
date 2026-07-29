@@ -102,6 +102,10 @@ nonisolated struct RecordingDiagnostics: Codable, Equatable, Identifiable {
     /// Every attachment key seen on any dropped buffer during the recording. CoreMedia
     /// declares only two; this reports what AVFoundation actually attached.
     let dropAttachmentKeys: [String]?
+    /// Task 068: which crop implementation produced this recording's short-form output.
+    /// `nil` for a Long-only recording (nothing cropped) and for records written before
+    /// Task 068.
+    let cropBackend: CropBackend?
 
     /// Arrival rate implied by the frames that actually reached the writer.
     var measuredArrivalFPS: Double {

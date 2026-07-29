@@ -85,6 +85,11 @@ struct DiagnosticsComparisonView: View {
                     comparisonRow("코덱 설정",
                                   longOnly?.videoCodecPreference?.shortTitle ?? "—",
                                   longAndShort?.videoCodecPreference?.shortTitle ?? "—")
+                    // Task 068: Long Only never crops, so its column is "—" by
+                    // construction. The value that matters is the right-hand one.
+                    comparisonRow("Short crop 구현",
+                                  longOnly?.cropBackend?.shortTitle ?? "—",
+                                  longAndShort?.cropBackend?.shortTitle ?? "—")
                     comparisonRow("저장된 코덱/레벨",
                                   codecAndLevel(longOnly?.savedVideoFormat),
                                   codecAndLevel(longAndShort?.savedVideoFormat))

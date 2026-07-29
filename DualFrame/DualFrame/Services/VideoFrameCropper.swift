@@ -14,11 +14,17 @@ import CoreVideo
 ///
 /// `nonisolated` to opt out of this project's default main-actor isolation
 /// (`SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor`) — this must be callable synchronously
-/// from `RecordingService`'s actor-isolated `append`, without an extra `await` hop. Its
-/// mutable state (the cached pixel buffer pool) is only ever touched from that single
-/// call site, one call at a time, since `RecordingService` is an actor and never calls
-/// this concurrently with itself.
-nonisolated final class VideoFrameCropper {
+/// from `RecordingService`'s append path, without an extra `await` hop.
+///
+/// Its mutable state (the cached pool and the two timing properties) is only ever
+/// touched one call at a time. Task 068 corrects the reason given here: since Task 058
+/// the call no longer happens *on* the actor at all — it happens inside a
+/// `withTaskGroup` child, on the cooperative pool. What actually serialises it is that
+/// only the short-form profile crops, and `append` awaits its whole group before
+/// returning while the single stream consumer awaits `append` per frame. So there is
+/// exactly one crop in flight at any moment. If a second cropping output is ever added,
+/// that guarantee disappears and this state needs real protection.
+nonisolated final class VideoFrameCropper: FrameCropping {
     /// Task 056 item 2: **`cacheIntermediates: false` is the fix.**
     ///
     /// A default `CIContext` caches intermediate results, and those cache entries hold

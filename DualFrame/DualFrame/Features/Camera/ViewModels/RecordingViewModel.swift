@@ -354,7 +354,11 @@ final class RecordingViewModel: ObservableObject {
             peakThermalState: await service.performanceMonitor.peakThermalState.reportName,
             thermalStateAtEnd: await service.performanceMonitor.thermalStateAtEnd.reportName,
             dropSamples: await service.performanceMonitor.dropSamples,
-            dropAttachmentKeys: await service.performanceMonitor.dropAttachmentKeys.sorted()
+            dropAttachmentKeys: await service.performanceMonitor.dropAttachmentKeys.sorted(),
+            // Task 068: read from the service, which pinned it when the writers were
+            // built — not from the settings store, which the user may have toggled
+            // between this recording ending and the diagnostics being written.
+            cropBackend: await service.activeCropBackend
         )
         await diagnosticsService.save(diagnostics)
     }

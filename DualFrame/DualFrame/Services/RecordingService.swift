@@ -134,7 +134,17 @@ actor RecordingService {
     nonisolated let diagnosticsLogService = RecordingDiagnosticsLogService()
     /// Only ever invoked for the short-form output's video (see `append`) — never for
     /// long-form or `.single` mode.
-    private let frameCropper = VideoFrameCropper()
+    ///
+    /// Task 068: both implementations are held for the life of the actor and selected
+    /// per recording, so switching backends never allocates a session or a pool on the
+    /// append path. `frameCropper` is resolved once in `setUpWriters()` and stays fixed
+    /// for the whole recording — a mid-recording change would make the diagnostics
+    /// unattributable, which is the trap Task 055 fell into.
+    private let coreImageCropper = VideoFrameCropper()
+    private let videoToolboxCropper = VTPixelTransferCropper()
+    private let cropBackendSettingsService = CropBackendSettingsService()
+    private(set) var activeCropBackend: CropBackend = .coreImage
+    private var frameCropper: FrameCropping { activeCropBackend == .videoToolbox ? videoToolboxCropper : coreImageCropper }
 
     private var writerContexts: [OutputProfile: WriterContext] = [:]
     private(set) var activeQuality: RecordingQuality = .fullHD
@@ -936,6 +946,9 @@ actor RecordingService {
         savedVideoFormatsByProfile = [:]
         savedFrameRatesByProfile = [:]
         lastSavedVideoFormat = ""
+        // Task 068: pinned for the whole recording, before any writer is built — the
+        // adaptor's pixel format depends on it, so it must not change underneath.
+        activeCropBackend = cropBackendSettingsService.load().backend
 
         for profile in targetProfiles {
             do {
@@ -1154,11 +1167,26 @@ actor RecordingService {
             // (For short-form these are still 1080x1920 — see `effectiveWriterFormat`.)
             let targetSize = CGSize(width: format.resolution.width, height: format.resolution.height)
             cropConfiguration = CropConfiguration(targetSize: targetSize, strategy: .center)
-            let sourceAttributes: [String: Any] = [
-                kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,
-                kCVPixelBufferWidthKey as String: Int(targetSize.width),
-                kCVPixelBufferHeightKey as String: Int(targetSize.height)
-            ]
+            // Task 068: the adaptor's declared source format has to match whatever the
+            // selected cropper actually produces.
+            //
+            // CoreImage renders 32BGRA, so that path keeps the exact attributes it has
+            // always had — unchanged, so it stays a clean rollback target.
+            //
+            // The VideoToolbox path produces buffers in the *camera's* pixel format,
+            // which is not knowable here: no frame has arrived yet when the writer is
+            // built. Passing `nil` lets the adaptor accept whatever it is handed. The
+            // attributes only ever described a pool this code does not use
+            // (`adaptor.pixelBufferPool` is never read — both croppers own their pool),
+            // so dropping them costs nothing and avoids hardcoding a format that Task
+            // 067 measured as 420v on one device but is not guaranteed on another.
+            let sourceAttributes: [String: Any]? = activeCropBackend == .videoToolbox
+                ? nil
+                : [
+                    kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,
+                    kCVPixelBufferWidthKey as String: Int(targetSize.width),
+                    kCVPixelBufferHeightKey as String: Int(targetSize.height)
+                ]
             pixelBufferAdaptor = AVAssetWriterInputPixelBufferAdaptor(
                 assetWriterInput: videoWriterInput,
                 sourcePixelBufferAttributes: sourceAttributes
@@ -1378,7 +1406,7 @@ actor RecordingService {
         input: AVAssetWriterInput,
         cropConfiguration: CropConfiguration?,
         adaptor: AVAssetWriterInputPixelBufferAdaptor?,
-        cropper: VideoFrameCropper
+        cropper: FrameCropping
     ) -> WriterAppendResult {
         let start = Date()
         let presentationTime = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
