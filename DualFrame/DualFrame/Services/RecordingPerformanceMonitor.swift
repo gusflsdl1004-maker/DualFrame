@@ -5,6 +5,7 @@
 
 import Foundation
 import Darwin
+import Synchronization
 
 /// Task 066 item 1: the four names the requested log format uses. Kept next to the
 /// monitor rather than in a view, because the same strings go into the log line, the
@@ -91,6 +92,9 @@ actor RecordingPerformanceMonitor {
         droppedBeforeConsumerCount = 0
         deliveredVideoFrameCount = 0
         dropReasonCounts.removeAll()
+        dropSamples.removeAll()
+        dropAttachmentKeys.removeAll()
+        remainingDropSampleBudget.store(Self.maxDropSamples, ordering: .relaxed)
         anomalies.removeAll()
         snapshot = RecordingPerformanceSnapshot()
         peakMemoryUsageBytes = 0
@@ -135,6 +139,41 @@ actor RecordingPerformanceMonitor {
 
     func recordDropReason(_ reason: String) {
         dropReasonCounts[reason, default: 0] += 1
+    }
+
+    // MARK: - Task 067: per-drop detail
+
+    /// Task 067: the first few drops in full, not all of them.
+    ///
+    /// At 4K60 drops arrive tens of times a second. Recording every one would cost more
+    /// on the capture queue than the drops it is trying to explain — this project has
+    /// already had instrumentation become the bottleneck once (the Task 057 `print`
+    /// story), so the expensive part is bounded up front. The first drops are also the
+    /// informative ones: they happen before thermal state and backlog have drifted.
+    static let maxDropSamples = 8
+    /// The remaining sample budget, readable and decrementable **synchronously** from the
+    /// capture queue.
+    ///
+    /// It lives here rather than as a local counter on the forwarder so that
+    /// `startMonitoring()` resets it — a per-forwarder counter would be spent by the
+    /// first recording and every later recording would silently collect nothing.
+    /// `nonisolated` + atomic because the capture callback cannot `await` this actor
+    /// just to decide whether to sample.
+    nonisolated let remainingDropSampleBudget = Atomic<Int>(maxDropSamples)
+    private(set) var dropSamples: [String] = []
+    /// Every attachment key seen on any dropped buffer, across the whole recording.
+    ///
+    /// This is the part that actually answers "which attachments exist". CoreMedia
+    /// declares only `DroppedFrameReason` and `DroppedFrameReasonInfo`, but AVFoundation
+    /// is free to attach undocumented keys, and a union of observed keys finds those
+    /// without anyone having to guess a constant name.
+    private(set) var dropAttachmentKeys: Set<String> = []
+
+    func recordDropDetail(_ sample: String?, attachmentKeys: [String]) {
+        if let sample, dropSamples.count < Self.maxDropSamples {
+            dropSamples.append(sample)
+        }
+        dropAttachmentKeys.formUnion(attachmentKeys)
     }
 
     // MARK: - Task 066: thermal state

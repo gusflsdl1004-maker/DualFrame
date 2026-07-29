@@ -96,6 +96,12 @@ nonisolated struct RecordingDiagnostics: Codable, Equatable, Identifiable {
     let thermalStateAtStart: String?
     let peakThermalState: String?
     let thermalStateAtEnd: String?
+    /// Task 067: the first few dropped frames in full — reason, PTS, `systemUptime`,
+    /// thermal state, our in-flight backlog, and every attachment on the buffer.
+    let dropSamples: [String]?
+    /// Every attachment key seen on any dropped buffer during the recording. CoreMedia
+    /// declares only two; this reports what AVFoundation actually attached.
+    let dropAttachmentKeys: [String]?
 
     /// Arrival rate implied by the frames that actually reached the writer.
     var measuredArrivalFPS: Double {

@@ -100,6 +100,8 @@ struct DiagnosticsDetailView: View {
 
             dropReasonSection
 
+            dropDetailSection
+
             writerStatsSection
 
             Section("복구") {
@@ -121,6 +123,34 @@ struct DiagnosticsDetailView: View {
 
     private var formattedMemory: String {
         ByteCountFormatter.string(fromByteCount: Int64(diagnostics.peakMemoryUsageBytes), countStyle: .memory)
+    }
+
+    /// Task 067: the first few drops in full, plus the union of attachment keys seen.
+    ///
+    /// The key list is the part worth reading first — it is the empirical answer to
+    /// "which attachments does AVFoundation actually put on a dropped buffer", which no
+    /// header can give, since CoreMedia declares only two and implementations may attach
+    /// more. `backlog` in each sample is our own in-flight count at that instant: if it
+    /// is 0 or 1 while frames are being dropped as late, the delay is not ours.
+    @ViewBuilder
+    private var dropDetailSection: some View {
+        if let keys = diagnostics.dropAttachmentKeys, !keys.isEmpty {
+            Section("드롭 버퍼 attachment 키 (실제 관측)") {
+                ForEach(keys, id: \.self) { key in
+                    Text(key)
+                        .font(.caption.monospaced())
+                }
+            }
+        }
+        if let samples = diagnostics.dropSamples, !samples.isEmpty {
+            Section("드롭 상세 (처음 \(samples.count)건)") {
+                ForEach(Array(samples.enumerated()), id: \.offset) { _, sample in
+                    Text(sample)
+                        .font(.caption2.monospaced())
+                        .textSelection(.enabled)
+                }
+            }
+        }
     }
 
     /// Task 060 item 1: why AVFoundation discarded frames, from its own attachment.
@@ -205,7 +235,9 @@ struct DiagnosticsDetailView: View {
             savedFrameRatesByProfile: ["Long-form": 59.94],
             thermalStateAtStart: "nominal",
             peakThermalState: "fair",
-            thermalStateAtEnd: "fair"
+            thermalStateAtEnd: "fair",
+            dropSamples: ["[Task067-Drop] reason=FrameWasLate pts=12.3456s uptime=8421.117 thermal=fair backlog=1 attachments: DroppedFrameReason=FrameWasLate"],
+            dropAttachmentKeys: ["DroppedFrameReason"]
         ))
     }
 }

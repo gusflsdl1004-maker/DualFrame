@@ -352,7 +352,9 @@ final class RecordingViewModel: ObservableObject {
             // post-recording state, not the one the recording actually ran under.
             thermalStateAtStart: await service.performanceMonitor.thermalStateAtStart.reportName,
             peakThermalState: await service.performanceMonitor.peakThermalState.reportName,
-            thermalStateAtEnd: await service.performanceMonitor.thermalStateAtEnd.reportName
+            thermalStateAtEnd: await service.performanceMonitor.thermalStateAtEnd.reportName,
+            dropSamples: await service.performanceMonitor.dropSamples,
+            dropAttachmentKeys: await service.performanceMonitor.dropAttachmentKeys.sorted()
         )
         await diagnosticsService.save(diagnostics)
     }

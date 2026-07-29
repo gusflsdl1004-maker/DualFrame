@@ -4,6 +4,7 @@
 //
 
 import AVFoundation
+import Synchronization
 
 enum CameraServiceError: Error {
     case deviceUnavailable
@@ -908,6 +909,18 @@ private nonisolated final class SampleBufferOutputForwarder: NSObject,
     private let recordingService: RecordingService
     private let performanceMonitor: RecordingPerformanceMonitor
 
+    /// Task 067: how many video buffers this code is holding right now — yielded to the
+    /// stream but not yet released by the consumer. Read inside `didDrop` to answer
+    /// "was our side backed up at the moment AVFoundation gave up on a frame".
+    ///
+    /// Atomic rather than the Debug-only `videoYieldedTotal`/`videoReleasedTotal` pair,
+    /// for two reasons: this has to work in Release (that is where the symptom is), and
+    /// those two counters are written from different threads and sampled at different
+    /// instants, which is exactly what produced the bogus `inFlight = -1` readings noted
+    /// in Task 057. One atomic, relaxed ordering — a counter with no other invariant
+    /// riding on it, so relaxed is sufficient and costs essentially nothing per frame.
+    private let inFlightVideoBuffers = Atomic<Int>(0)
+
     private let videoContinuation: AsyncStream<TimedBuffer>.Continuation
     private let audioContinuation: AsyncStream<CMSampleBuffer>.Continuation
     /// `var` because the consumers capture `self` (for the Debug delivery stats), so
@@ -1037,6 +1050,9 @@ private nonisolated final class SampleBufferOutputForwarder: NSObject,
                 #else
                 await recordingService.appendVideoSampleBuffer(timed.buffer)
                 #endif
+                // Task 067: the consumer is done with this buffer. Paired with the
+                // increment on the capture queue, the difference is the live backlog.
+                self.inFlightVideoBuffers.wrappingSubtract(1, ordering: .relaxed)
                 sinceFlush += 1
                 if sinceFlush >= Self.flushInterval {
                     await performanceMonitor.framesProcessed(sinceFlush)
@@ -1145,6 +1161,7 @@ private nonisolated final class SampleBufferOutputForwarder: NSObject,
                 let monitor = performanceMonitor
                 Task { await monitor.recordDroppedBeforeConsumer() }
             }
+            trackInFlight(result)
 
             let execution = Date().timeIntervalSince(entry)
             executionTotal += execution
@@ -1169,6 +1186,7 @@ private nonisolated final class SampleBufferOutputForwarder: NSObject,
                 let monitor = performanceMonitor
                 Task { await monitor.recordDroppedBeforeConsumer() }
             }
+            trackInFlight(result)
             #endif
         } else if output is AVCaptureAudioDataOutput {
             audioContinuation.yield(sampleBuffer)
@@ -1221,6 +1239,53 @@ private nonisolated final class SampleBufferOutputForwarder: NSObject,
     }
     #endif
 
+    /// Task 067: `+1` only when the buffer actually entered the stream.
+    ///
+    /// `.dropped` is net zero either way its semantics are read. If it means the new
+    /// element was rejected, nothing entered. If it means the oldest was evicted to make
+    /// room (which is what `.bufferingNewest` does), then one entered and one left
+    /// without ever reaching the consumer to be decremented. Both are `+0`.
+    private func trackInFlight(_ result: AsyncStream<TimedBuffer>.Continuation.YieldResult) {
+        if case .enqueued = result {
+            inFlightVideoBuffers.wrappingAdd(1, ordering: .relaxed)
+        }
+    }
+
+    /// Task 067: everything observable about one dropped frame.
+    ///
+    /// The three constants the task named — `…ReasonInfo_CaptureQueueDepth`,
+    /// `_FrameNumber`, `_Timestamp` — **do not exist in CoreMedia.** The SDK declares
+    /// exactly two dropped-frame attachment keys (`DroppedFrameReason`,
+    /// `DroppedFrameReasonInfo`) and one ReasonInfo value (`_CameraModeSwitch`).
+    ///
+    /// So rather than probe for names that cannot resolve, this copies the buffer's
+    /// entire attachment dictionary and prints whatever is actually on it. That is
+    /// strictly more informative: it also catches any undocumented key AVFoundation
+    /// attaches, which is what the named constants were reaching for.
+    private func dropDetail(_ sampleBuffer: CMSampleBuffer, reason: String) -> (line: String, keys: [String]) {
+        let pts = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
+        let attachments = CMCopyDictionaryOfAttachments(
+            allocator: kCFAllocatorDefault,
+            target: sampleBuffer,
+            attachmentMode: kCMAttachmentMode_ShouldPropagate
+        ) as? [String: Any] ?? [:]
+
+        let keys = attachments.keys.sorted()
+        let rendered = keys.isEmpty
+            ? "(none)"
+            : keys.map { "\($0)=\(attachments[$0].map { "\($0)" } ?? "nil")" }.joined(separator: " ")
+
+        let line = """
+        [Task067-Drop] reason=\(reason) \
+        pts=\(pts.isValid ? String(format: "%.4fs", pts.seconds) : "invalid") \
+        uptime=\(String(format: "%.3f", ProcessInfo.processInfo.systemUptime)) \
+        thermal=\(ProcessInfo.processInfo.thermalState.reportName) \
+        backlog=\(inFlightVideoBuffers.load(ordering: .relaxed)) \
+        attachments: \(rendered)
+        """
+        return (line, keys)
+    }
+
     /// AVFoundation calls this instead of `didOutput` when it has to drop a sample —
     /// e.g. because the pipeline (recording write, in our case) couldn't keep up.
     /// Task 060 item 1: why AVFoundation discarded this frame, straight from the
@@ -1260,6 +1325,34 @@ private nonisolated final class SampleBufferOutputForwarder: NSObject,
             let reason = Self.dropReason(of: sampleBuffer)
             Task { await performanceMonitor.recordDropReason(reason) }
             Task { await performanceMonitor.recordDroppedVideoFrame() }
+
+            // Task 067: the full dump is bounded to the first few drops. At 4K60 drops
+            // arrive tens of times a second, and copying an attachment dictionary on the
+            // capture queue that often would slow the very callback whose lateness is
+            // under investigation — the measurement would create the symptom.
+            //
+            // The budget lives on the monitor so `startMonitoring()` resets it for every
+            // recording; claiming a slot is one atomic decrement, no `await`.
+            let claimed = performanceMonitor.remainingDropSampleBudget
+                .wrappingSubtract(1, ordering: .relaxed).oldValue > 0
+            if claimed {
+                let detail = dropDetail(sampleBuffer, reason: reason)
+                Task { await performanceMonitor.recordDropDetail(detail.line, attachmentKeys: detail.keys) }
+                #if DEBUG
+                debugLog(detail.line)
+                #endif
+            } else {
+                // Past the sample budget, still collect the *keys* — cheap relative to
+                // rendering values, and the union across the whole recording is what
+                // proves which attachments exist at all.
+                let attachments = CMCopyDictionaryOfAttachments(
+                    allocator: kCFAllocatorDefault,
+                    target: sampleBuffer,
+                    attachmentMode: kCMAttachmentMode_ShouldPropagate
+                ) as? [String: Any] ?? [:]
+                let keys = Array(attachments.keys)
+                Task { await performanceMonitor.recordDropDetail(nil, attachmentKeys: keys) }
+            }
         } else if output is AVCaptureAudioDataOutput {
             Task { await performanceMonitor.recordDroppedAudioBuffer() }
         }
