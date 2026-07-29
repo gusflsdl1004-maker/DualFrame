@@ -75,6 +75,7 @@ actor RecordingPerformanceMonitor {
         completedFrameCount = 0
         droppedBeforeConsumerCount = 0
         deliveredVideoFrameCount = 0
+        dropReasonCounts.removeAll()
         anomalies.removeAll()
         snapshot = RecordingPerformanceSnapshot()
         peakMemoryUsageBytes = 0
@@ -102,6 +103,14 @@ actor RecordingPerformanceMonitor {
     private(set) var droppedBeforeConsumerCount = 0
     /// Frames that actually reached `RecordingService`.
     private(set) var deliveredVideoFrameCount = 0
+
+    /// Task 060 item 1: tally of `kCMSampleBufferAttachmentKey_DroppedFrameReason`
+    /// values, so the reason AVFoundation gives is reported rather than guessed at.
+    private(set) var dropReasonCounts: [String: Int] = [:]
+
+    func recordDropReason(_ reason: String) {
+        dropReasonCounts[reason, default: 0] += 1
+    }
 
     func recordDroppedBeforeConsumer() {
         droppedBeforeConsumerCount += 1

@@ -319,7 +319,8 @@ final class RecordingViewModel: ObservableObject {
             deliveredVideoFrames: await service.performanceMonitor.deliveredVideoFrameCount,
             droppedBeforeConsumer: await service.performanceMonitor.droppedBeforeConsumerCount,
             savedNominalFrameRate: await service.lastSavedNominalFrameRate,
-            writerStats: await service.lastWriterAppendStats
+            writerStats: await service.lastWriterAppendStats,
+            droppedFrameReasons: await service.performanceMonitor.dropReasonCounts
         )
         await diagnosticsService.save(diagnostics)
     }

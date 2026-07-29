@@ -57,6 +57,9 @@ nonisolated struct RecordingDiagnostics: Codable, Equatable, Identifiable {
     /// this task still decode unchanged (synthesised Decodable treats a missing key as
     /// nil) — no migration.
     let writerStats: [WriterAppendStats]?
+    /// Task 060 item 1: AVFoundation's own reason for each frame it discarded before
+    /// the delegate ran, keyed by reason name. Optional so older records still decode.
+    let droppedFrameReasons: [String: Int]?
 
     /// Arrival rate implied by the frames that actually reached the writer.
     var measuredArrivalFPS: Double {

@@ -31,6 +31,8 @@ struct DiagnosticsDetailView: View {
                 LabeledContent("남은 저장 공간", value: formattedStorage)
             }
 
+            dropReasonSection
+
             writerStatsSection
 
             Section("복구") {
@@ -52,6 +54,20 @@ struct DiagnosticsDetailView: View {
 
     private var formattedMemory: String {
         ByteCountFormatter.string(fromByteCount: Int64(diagnostics.peakMemoryUsageBytes), countStyle: .memory)
+    }
+
+    /// Task 060 item 1: why AVFoundation discarded frames, from its own attachment.
+    /// OutOfBuffers points at buffer retention; FrameWasLate at the delegate queue;
+    /// Discontinuity at the capture being interrupted.
+    @ViewBuilder
+    private var dropReasonSection: some View {
+        if let reasons = diagnostics.droppedFrameReasons, !reasons.isEmpty {
+            Section("카메라 프레임 드롭 사유") {
+                ForEach(reasons.sorted(by: { $0.value > $1.value }), id: \.key) { reason, count in
+                    LabeledContent(reason, value: "\(count)")
+                }
+            }
+        }
     }
 
     /// Task 059 items 1/2/4: the per-writer census, in Release.
@@ -99,7 +115,8 @@ struct DiagnosticsDetailView: View {
             deliveredVideoFrames: 7_500,
             droppedBeforeConsumer: 0,
             savedNominalFrameRate: 59.94,
-            writerStats: nil
+            writerStats: nil,
+            droppedFrameReasons: ["OutOfBuffers": 291]
         ))
     }
 }

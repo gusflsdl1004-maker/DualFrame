@@ -1179,6 +1179,30 @@ private nonisolated final class SampleBufferOutputForwarder: NSObject,
 
     /// AVFoundation calls this instead of `didOutput` when it has to drop a sample —
     /// e.g. because the pipeline (recording write, in our case) couldn't keep up.
+    /// Task 060 item 1: why AVFoundation discarded this frame, straight from the
+    /// buffer's own attachment rather than inferred.
+    ///
+    /// The three reasons mean very different things:
+    ///   FrameWasLate   - the delegate had not returned in time. Our delegate only
+    ///                    yields, so this would point at the callback queue.
+    ///   OutOfBuffers   - the capture pool had no free buffer. This is the one that
+    ///                    implicates whoever is still holding them.
+    ///   Discontinuity  - the capture itself was interrupted (thermal, resource loss).
+    /// Recorded in every configuration, since the 38.7fps is a Release symptom.
+    private nonisolated static func dropReason(of sampleBuffer: CMSampleBuffer) -> String {
+        guard let reason = CMGetAttachment(
+            sampleBuffer,
+            key: kCMSampleBufferAttachmentKey_DroppedFrameReason,
+            attachmentModeOut: nil
+        ) as? String else {
+            return "Unknown"
+        }
+        if reason == (kCMSampleBufferDroppedFrameReason_FrameWasLate as String) { return "FrameWasLate" }
+        if reason == (kCMSampleBufferDroppedFrameReason_OutOfBuffers as String) { return "OutOfBuffers" }
+        if reason == (kCMSampleBufferDroppedFrameReason_Discontinuity as String) { return "Discontinuity" }
+        return reason
+    }
+
     func captureOutput(
         _ output: AVCaptureOutput,
         didDrop sampleBuffer: CMSampleBuffer,
@@ -1189,6 +1213,8 @@ private nonisolated final class SampleBufferOutputForwarder: NSObject,
             #if DEBUG
             lateDropCount += 1
             #endif
+            let reason = Self.dropReason(of: sampleBuffer)
+            Task { await performanceMonitor.recordDropReason(reason) }
             Task { await performanceMonitor.recordDroppedVideoFrame() }
         } else if output is AVCaptureAudioDataOutput {
             Task { await performanceMonitor.recordDroppedAudioBuffer() }
