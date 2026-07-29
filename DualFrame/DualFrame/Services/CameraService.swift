@@ -170,6 +170,15 @@ actor CameraService {
         guard let device = videoDevice else { return }
         await applyDeviceSpecificSettings(device: device)
         await recordingService.updateRecordingFormat(quality: activeQuality, fps: activeFPS)
+        #if DEBUG
+        // Task 043 follow-up: printed right after this actor's own activeQuality/
+        // activeFPS and RecordingService's copy are both updated for this recording,
+        // alongside the actual AVCaptureDevice.activeFormat.formatDescription — so all
+        // four values can be diffed against each other, and against a real-device
+        // exported file's metadata, before trusting the 4K fix.
+        let dims = CMVideoFormatDescriptionGetDimensions(device.activeFormat.formatDescription)
+        print("[Task043-4K-Debug] CameraService.activeQuality=\(activeQuality.title) (\(activeQuality.dimensions.width)x\(activeQuality.dimensions.height)) CameraService.activeFPS=\(activeFPS.rawValue) AVCaptureDevice.activeFormat.formatDescription=\(device.activeFormat.formatDescription) parsedDimensions=\(dims.width)x\(dims.height)")
+        #endif
     }
 
     private func configure() async throws {

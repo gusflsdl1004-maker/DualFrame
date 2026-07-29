@@ -427,6 +427,13 @@ actor RecordingService {
             AVVideoWidthKey: profile.resolution.width,
             AVVideoHeightKey: profile.resolution.height
         ]
+        #if DEBUG
+        // Task 043 follow-up: printed from the exact dictionary handed to
+        // AVAssetWriterInput — not re-derived from activeQuality — so this is the
+        // literal value the writer was actually configured with, for comparing
+        // against a real-device exported file's metadata before trusting the 4K fix.
+        print("[Task043-4K-Debug] RecordingService.activeQuality=\(activeQuality.title) (\(activeQuality.dimensions.width)x\(activeQuality.dimensions.height)) RecordingService.activeFPS=\(activeFPS.rawValue) profile=\(profile.outputName) AVVideoWidthKey=\(profile.resolution.width) AVVideoHeightKey=\(profile.resolution.height)")
+        #endif
         let videoWriterInput = AVAssetWriterInput(mediaType: .video, outputSettings: videoSettings)
         videoWriterInput.expectsMediaDataInRealTime = true
         // Task 022 requirement 7: applied identically to every profile — long-form,
