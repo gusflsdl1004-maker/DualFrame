@@ -661,46 +661,23 @@ struct CameraPreviewView: View {
         }
     }
 
+    /// Task 051 requirement 6: the "녹화 이어하기" button is gone. The banner now only
+    /// *informs* — it tells the user the recording paused and why, and that stopping
+    /// will save what was captured so far.
+    ///
+    /// Removing resume does not risk footage: an interrupted recording stays paused
+    /// with its writers intact, and Stop still finalises and validates everything
+    /// captured up to the interruption (CLAUDE.md priority 1). What is lost is only the
+    /// ability to append *more* to that same file after a phone call.
     @ViewBuilder
     private var interruptionBanner: some View {
         switch recordingViewModel.interruptionStatus {
         case .none:
             EmptyView()
         case .interrupted(let source):
-            VStack(spacing: 6) {
-                Text("녹화 일시정지됨 — \(source.title)")
-                    .font(.caption2)
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 6)
-                    .background(.black.opacity(0.5), in: Capsule())
-                    .foregroundStyle(.orange)
-                resumeButton
-            }
+            warningBanner("녹화 일시정지됨 — \(source.title). 정지하면 지금까지 촬영된 영상이 저장됩니다.", color: .orange)
         case .ended:
-            VStack(spacing: 6) {
-                Text("중단 상황이 끝났습니다 — 녹화는 계속 일시정지 상태입니다.")
-                    .font(.caption2)
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 6)
-                    .background(.black.opacity(0.5), in: Capsule())
-                    .foregroundStyle(.orange)
-                resumeButton
-            }
-        }
-    }
-
-    /// Requirement 1: only ever shown while paused, and only ever acts when the user
-    /// taps it — nothing resumes a recording automatically.
-    private var resumeButton: some View {
-        Button {
-            Task { await recordingViewModel.resumeRecording() }
-        } label: {
-            Text(AppStrings.Camera.resumeRecording)
-                .font(.caption.bold())
-                .padding(.horizontal, 16)
-                .padding(.vertical, 10)
-                .background(Color.white, in: Capsule())
-                .foregroundStyle(.black)
+            warningBanner("중단 상황이 끝났습니다. 정지하면 지금까지 촬영된 영상이 저장됩니다.", color: .orange)
         }
     }
 

@@ -33,7 +33,6 @@ nonisolated enum AppStrings {
     enum Camera {
         static let startRecording = "녹화 시작"
         static let stopRecording = "녹화 중지"
-        static let resumeRecording = "녹화 이어하기"
     }
 
     /// Was duplicated as an identical `switch` in three separate files

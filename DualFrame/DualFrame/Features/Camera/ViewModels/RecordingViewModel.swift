@@ -261,18 +261,6 @@ final class RecordingViewModel: ObservableObject {
         }
     }
 
-    /// Called only when the user taps the Resume button (requirement 1) — never
-    /// automatically, e.g. never from `handleInterruptionEnded()` below. Un-pauses the
-    /// writer(s) via `RecordingService`'s existing extension point and clears the
-    /// displayed interruption status so the UI returns to showing "RECORDING". Touches
-    /// nothing about the session — `sessionID`, `recordingStartTime`, and any
-    /// `RecordingGroup` all stay exactly as they were (requirement 3).
-    func resumeRecording() async {
-        guard interruptionStatus != .none else { return }
-        await service.resumeRecording()
-        interruptionStatus = .none
-    }
-
     /// Called by `RecordingInterruptionMonitor` when an interruption begins. Pauses the
     /// recording (if one is active) and preserves a checkpoint — never resumes anything.
     func handleInterruptionBegan(_ source: InterruptionSource) async {
@@ -281,10 +269,17 @@ final class RecordingViewModel: ObservableObject {
         await service.pauseRecording()
     }
 
-    /// Called when the interruption ends. Only updates the displayed status — recording
-    /// stays paused; nothing here calls `resumeRecording()` (requirement 8, 11 from
-    /// Task 017; this task's requirement 1 keeps that guarantee — only a user tap on
-    /// the Resume button ever calls `resumeRecording()` above).
+    /// Called when the interruption ends. Only updates the displayed status — the
+    /// recording stays paused.
+    ///
+    /// Task 051 requirement 6: the user-facing resume path is removed, so this view
+    /// model no longer exposes `resumeRecording()` at all. `RecordingService` keeps its
+    /// own `resumeRecording()` as an engine capability — it is what a future crash- or
+    /// interruption-recovery feature would build on (CLAUDE.md rules 21-24 require that
+    /// path stay open), it just has no UI attached to it now.
+    ///
+    /// Nothing here ever resumes automatically, which was Task 017's requirement 8/11
+    /// and still holds — more strongly than before, since there is now no caller at all.
     func handleInterruptionEnded() {
         guard interruptionStatus != .none else { return }
         interruptionStatus = .ended
