@@ -30,6 +30,21 @@ nonisolated enum RecordingState: Equatable, Codable {
 /// and `.shortForm`, that share the same `recordingStartTime` and session-start
 /// timestamp but otherwise fail, finish, and validate independently (requirements 4-7).
 actor RecordingService {
+    #if DEBUG
+    /// Task 057: diagnostics must never stall the recording path.
+    ///
+    /// `debugLog()` writes to the debug connection synchronously. On the actor, a burst of
+    /// them (logStageBreakdown alone emits ten) blocks every append behind it — and the
+    /// consumer waits on that actor still holding a capture-pool buffer, which is
+    /// exactly the ~928ms bufferLifetime and the late drops that followed. The
+    /// measurement was causing the stall it measured.
+    ///
+    /// Building the string stays here (cheap); only the write is handed off.
+    nonisolated func debugLog(_ message: String) {
+        Task.detached(priority: .utility) { print(message) }
+    }
+    #endif
+
     /// Everything tied to one active `AVAssetWriter` session: the writer, its inputs,
     /// output location, whether its session has started, and whether it has failed.
     /// `hasFailed` is per-writer (Task 019 requirement 6) — a failure here never
@@ -427,18 +442,18 @@ actor RecordingService {
         let measuredInside = s.crop.averageMs + s.writerAppend.averageMs + s.debugOverhead.averageMs
         let unaccounted = Swift.max(0, totalAvg - measuredInside)
 
-        print(String(
+        debugLog(String(
             format: "[Task053-Stage] %@ ===== budget=%.2fms (%dfps)  appendTotal avg=%.3fms -> sustainable %.1ffps =====",
             label, budgetMs, activeFPS.rawValue, totalAvg, totalAvg > 0 ? 1000 / totalAvg : 0
         ))
-        print(line("1 appendTotal", s.appendTotal))
-        print(line("3 writerAppend", s.writerAppend))
-        print(line("2 crop", s.crop))
-        print(line("4a cropPool", s.cropPool))
-        print(line("4b cropRender", s.cropRender))
-        print(line("5 debugOverhead", s.debugOverhead))
-        print(line("6 actorWait", s.actorWait, insideTotal: false))
-        print(String(
+        debugLog(line("1 appendTotal", s.appendTotal))
+        debugLog(line("3 writerAppend", s.writerAppend))
+        debugLog(line("2 crop", s.crop))
+        debugLog(line("4a cropPool", s.cropPool))
+        debugLog(line("4b cropRender", s.cropRender))
+        debugLog(line("5 debugOverhead", s.debugOverhead))
+        debugLog(line("6 actorWait", s.actorWait, insideTotal: false))
+        debugLog(String(
             format: "[Task053-Stage] %@ %-14@ avg=%7.3fms                        ofTotal=%5.1f%%",
             label, "unaccounted" as NSString, unaccounted, totalAvg > 0 ? unaccounted / totalAvg * 100 : 0
         ))
@@ -452,7 +467,7 @@ actor RecordingService {
             ("unaccounted", unaccounted)
         ]
         if let worst = candidates.max(by: { $0.1 < $1.1 }) {
-            print(String(
+            debugLog(String(
                 format: "[Task053-Stage] %@ WORST=%@ avg=%.3fms (%.0f%% of the %.2fms budget)",
                 label, worst.0, worst.1, worst.1 / budgetMs * 100, budgetMs
             ))
@@ -471,7 +486,7 @@ actor RecordingService {
     private func logTimingBreakdown(label: String) {
         let frameBudgetMs = 1000.0 / Double(activeFPS.rawValue)
         let avgHold = debugActorHoldSamples > 0 ? debugActorHoldTotal / Double(debugActorHoldSamples) * 1000 : 0
-        print(String(
+        debugLog(String(
             format: "[Task048-Perf] %@ actorHold avg=%.2fms max=%.2fms budget=%.2fms samples=%d",
             label, avgHold, debugActorHoldMax * 1000, frameBudgetMs, debugActorHoldSamples
         ))
@@ -479,7 +494,7 @@ actor RecordingService {
         for (profile, stats) in debugTimings.sorted(by: { $0.key.outputName < $1.key.outputName }) {
             let avgCrop = stats.appendedFrames > 0 ? stats.cropTotal / Double(stats.appendedFrames) * 1000 : 0
             let avgWrite = stats.appendedFrames > 0 ? stats.writeTotal / Double(stats.appendedFrames) * 1000 : 0
-            print(String(
+            debugLog(String(
                 format: "[Task048-Perf] %@ %@ frames=%d crop avg=%.2fms max=%.2fms | write avg=%.2fms max=%.2fms | notReady=%d maxGap=%.0fms",
                 label, profile.outputName, stats.appendedFrames,
                 avgCrop, stats.cropMax * 1000,
@@ -500,13 +515,13 @@ actor RecordingService {
               let naturalSize = try? await track.load(.naturalSize),
               let nominalFrameRate = try? await track.load(.nominalFrameRate),
               let transform = try? await track.load(.preferredTransform) else {
-            print("[Task044-Debug] STAGE 7 FILE     profile=\(profile.outputName) — could not read video track metadata")
+            debugLog("[Task044-Debug] STAGE 7 FILE     profile=\(profile.outputName) — could not read video track metadata")
             return
         }
         // naturalSize is pre-transform; a portrait recording carries its rotation in
         // preferredTransform, so the visually-presented size is reported too.
         let presentedSize = naturalSize.applying(transform)
-        print("[Task044-Debug] STAGE 7 FILE     profile=\(profile.outputName) naturalSize=\(Int(naturalSize.width))x\(Int(naturalSize.height)) presentedSize=\(Int(abs(presentedSize.width)))x\(Int(abs(presentedSize.height))) nominalFrameRate=\(String(format: "%.2f", nominalFrameRate))fps url=\(url.lastPathComponent)")
+        debugLog("[Task044-Debug] STAGE 7 FILE     profile=\(profile.outputName) naturalSize=\(Int(naturalSize.width))x\(Int(naturalSize.height)) presentedSize=\(Int(abs(presentedSize.width)))x\(Int(abs(presentedSize.height))) nominalFrameRate=\(String(format: "%.2f", nominalFrameRate))fps url=\(url.lastPathComponent)")
 
         // Task 051 requirement 3: the bitrate the file *actually* came out at, next to
         // the one the writer was configured with. This is the measurement that settles
@@ -527,7 +542,7 @@ actor RecordingService {
         let duration = (try? await asset.load(.duration).seconds) ?? 0
         let wholeFileRate = duration > 0 ? Double(fileBytes) * 8 / duration : 0
 
-        print(String(
+        debugLog(String(
             format: "[Task051-Bitrate] profile=%@ preset=%@ configured=%.1fMbps actualVideoTrack=%.1fMbps wholeFile=%.1fMbps ratio=%.2f duration=%.1fs size=%.1fMB",
             profile.outputName,
             bitrateService.currentPreset.title,
@@ -562,7 +577,7 @@ actor RecordingService {
 
         if debugVideoBufferCount == 1 {
             debugFirstBufferTime = presentationTime
-            print("[Task044-Debug] STAGE 5 BUFFER#1  CMSampleBuffer=\(formatDimensions.map { "\($0.width)x\($0.height)" } ?? "nil") CVPixelBuffer=\(pixelWidth)x\(pixelHeight) writerExpects=\(activeQuality.dimensions.width)x\(activeQuality.dimensions.height) @\(activeFPS.rawValue)fps")
+            debugLog("[Task044-Debug] STAGE 5 BUFFER#1  CMSampleBuffer=\(formatDimensions.map { "\($0.width)x\($0.height)" } ?? "nil") CVPixelBuffer=\(pixelWidth)x\(pixelHeight) writerExpects=\(activeQuality.dimensions.width)x\(activeQuality.dimensions.height) @\(activeFPS.rawValue)fps")
             return
         }
 
@@ -571,7 +586,7 @@ actor RecordingService {
         let elapsed = presentationTime.seconds - firstTime.seconds
         guard elapsed > 0 else { return }
         let measuredFPS = Double(debugVideoBufferCount - 1) / elapsed
-        print("[Task044-Debug] STAGE 5 BUFFER#\(debugVideoBufferCount) measuredArrivalFPS=\(String(format: "%.2f", measuredFPS)) over \(String(format: "%.1f", elapsed))s CMSampleBuffer=\(formatDimensions.map { "\($0.width)x\($0.height)" } ?? "nil") CVPixelBuffer=\(pixelWidth)x\(pixelHeight)")
+        debugLog("[Task044-Debug] STAGE 5 BUFFER#\(debugVideoBufferCount) measuredArrivalFPS=\(String(format: "%.2f", measuredFPS)) over \(String(format: "%.1f", elapsed))s CMSampleBuffer=\(formatDimensions.map { "\($0.width)x\($0.height)" } ?? "nil") CVPixelBuffer=\(pixelWidth)x\(pixelHeight)")
         // Task 048: printed on the same cadence as the arrival-rate sample, so the
         // measured FPS and the cost breakdown that explains it sit together.
         logTimingBreakdown(label: "@\(debugVideoBufferCount)")
@@ -649,7 +664,7 @@ actor RecordingService {
                     detail: "\(profile.outputName): appended=\(context.appendedVideoFrames) skipped=\(context.skippedVideoFrames) error=\(reason)"
                 )
                 #if DEBUG
-                print("[Task044-Debug] STAGE 7 FAIL     profile=\(profile.outputName) writerStatus=\(context.writer.status.rawValue) appendedVideoFrames=\(context.appendedVideoFrames) skippedVideoFrames=\(context.skippedVideoFrames) writer.error=\(reason)")
+                debugLog("[Task044-Debug] STAGE 7 FAIL     profile=\(profile.outputName) writerStatus=\(context.writer.status.rawValue) appendedVideoFrames=\(context.appendedVideoFrames) skippedVideoFrames=\(context.skippedVideoFrames) writer.error=\(reason)")
                 #endif
                 continue
             }
@@ -660,7 +675,7 @@ actor RecordingService {
             lastValidationResult = result
 
             #if DEBUG
-            print("[Task044-Debug] STAGE 6b FRAMES  profile=\(profile.outputName) appendedVideoFrames=\(context.appendedVideoFrames) skippedVideoFrames=\(context.skippedVideoFrames)")
+            debugLog("[Task044-Debug] STAGE 6b FRAMES  profile=\(profile.outputName) appendedVideoFrames=\(context.appendedVideoFrames) skippedVideoFrames=\(context.skippedVideoFrames)")
             await logFinishedFileStage(profile: profile, url: context.outputURL)
             #endif
 
@@ -844,7 +859,7 @@ actor RecordingService {
         // real-device log makes the fix unambiguous. In `.dual` mode this line prints
         // twice: Long-form (expected 3840x2160 at 4K) and Short-form (intentionally
         // 1080x1920 — a vertical crop target, not a downscale bug).
-        print("[Task044-Debug] STAGE 6 WRITER   profile=\(profile.outputName) AVVideoWidthKey=\(format.resolution.width) AVVideoHeightKey=\(format.resolution.height) AVVideoExpectedSourceFrameRateKey=\(format.fps.rawValue) AVVideoAverageBitRateKey=\(averageBitrate) (\(String(format: "%.1f", Double(averageBitrate) / 1_000_000))Mbps) | RecordingService.activeQuality=\(activeQuality.title) RecordingService.activeFPS=\(activeFPS.rawValue) | profileConstant=\(profile.resolution.width)x\(profile.resolution.height)@\(profile.fps.rawValue)")
+        debugLog("[Task044-Debug] STAGE 6 WRITER   profile=\(profile.outputName) AVVideoWidthKey=\(format.resolution.width) AVVideoHeightKey=\(format.resolution.height) AVVideoExpectedSourceFrameRateKey=\(format.fps.rawValue) AVVideoAverageBitRateKey=\(averageBitrate) (\(String(format: "%.1f", Double(averageBitrate) / 1_000_000))Mbps) | RecordingService.activeQuality=\(activeQuality.title) RecordingService.activeFPS=\(activeFPS.rawValue) | profileConstant=\(profile.resolution.width)x\(profile.resolution.height)@\(profile.fps.rawValue)")
         #endif
         let videoWriterInput = AVAssetWriterInput(mediaType: .video, outputSettings: videoSettings)
         videoWriterInput.expectsMediaDataInRealTime = true

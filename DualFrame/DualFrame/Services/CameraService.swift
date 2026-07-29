@@ -61,6 +61,15 @@ actor CameraService {
     /// — always just `["1"]` for a single-lens device (e.g. iPhone SE).
     private(set) var zoomOptions: [CameraZoomOption] = [CameraZoomOption(id: "wide", factor: 1.0, label: "1")]
 
+
+    #if DEBUG
+    /// Task 057: hands the write off so a diagnostic can never stall camera
+    /// configuration or the recording path. See `RecordingService.debugLog`.
+    nonisolated func debugLog(_ message: String) {
+        Task.detached(priority: .utility) { print(message) }
+    }
+    #endif
+
     private let videoOutput = AVCaptureVideoDataOutput()
     private let audioOutput = AVCaptureAudioDataOutput()
     private let sampleBufferQueue = DispatchQueue(label: "com.dualframe.camera.sampleBufferQueue")
@@ -219,7 +228,7 @@ actor CameraService {
             .map { "\($0.minFrameRate)-\($0.maxFrameRate)" }
             .joined(separator: ",")
 
-        print("""
+        debugLog("""
         [Task044-Debug] STAGE 1 SETTINGS  requestedQuality=\(qualitySettingsService.load().selectedQuality.title) requestedFPS=\(fpsSettingsService.load().selectedFPS.rawValue)
         [Task044-Debug] STAGE 2 RESOLVED  CameraService.activeQuality=\(activeQuality.title) (\(activeQuality.dimensions.width)x\(activeQuality.dimensions.height)) CameraService.activeFPS=\(activeFPS.rawValue) qualityFallback=\(qualityFallbackOccurred) fpsFallback=\(fpsFallbackOccurred)
         [Task044-Debug] STAGE 3 DEVICE    activeFormat=\(formatDimensions.width)x\(formatDimensions.height) supportedFrameRateRanges=[\(supportedRanges)] activeVideoMinFrameDuration=\(minDuration.value)/\(minDuration.timescale) (=\(String(format: "%.2f", minFPS))fps) activeVideoMaxFrameDuration=\(maxDuration.value)/\(maxDuration.timescale) (=\(String(format: "%.2f", maxFPS))fps)
@@ -232,7 +241,7 @@ actor CameraService {
             // iOS — AVCaptureDevice.activeVideoMin/MaxFrameDuration (STAGE 3 above) is
             // the only frame-duration control on this platform, so there is no
             // separate connection-level rate that could be overriding it.
-            print("[Task044-Debug] STAGE 4 CONNECTION isActive=\(connection.isActive) isEnabled=\(connection.isEnabled) isVideoMirrored=\(connection.isVideoMirrored) (frame duration is device-level only on iOS)")
+            debugLog("[Task044-Debug] STAGE 4 CONNECTION isActive=\(connection.isActive) isEnabled=\(connection.isEnabled) isVideoMirrored=\(connection.isVideoMirrored) (frame duration is device-level only on iOS)")
         }
     }
     #endif
@@ -299,7 +308,7 @@ actor CameraService {
         // Task 051 item 2: dumped at launch, not only when the FPS settings screen is
         // opened — a normal run now captures the full device/format survey.
         DeviceCapabilityService().logCapabilityDump()
-        print("[Task049-Caps]   ACTUALLY-BOUND deviceType=\(device.deviceType.rawValue) uniqueID=\(device.uniqueID)")
+        debugLog("[Task049-Caps]   ACTUALLY-BOUND deviceType=\(device.deviceType.rawValue) uniqueID=\(device.uniqueID)")
         #endif
     }
 
@@ -626,7 +635,7 @@ actor CameraService {
         #if DEBUG
         let constituents = device.constituentDevices.map(\.deviceType.rawValue).joined(separator: ",")
         let switchOvers = device.virtualDeviceSwitchOverVideoZoomFactors.map { "\($0)" }.joined(separator: ",")
-        print("""
+        debugLog("""
         [Task044-Debug] ZOOM deviceType=\(device.deviceType.rawValue) constituentDevices=[\(constituents)] virtualDeviceSwitchOverVideoZoomFactors=[\(switchOvers)]
         [Task044-Debug] ZOOM minAvailable=\(minZoomFactor) maxAvailable=\(maxZoomFactor) baseZoomFactor(1x)=\(baseZoomFactor) buttons=\(zoomOptions.map { "\($0.label)x@\($0.factor)" }.joined(separator: " "))
         """)
@@ -846,6 +855,12 @@ private nonisolated final class SampleBufferOutputForwarder: NSObject,
         let capturedAt: Date
         /// 2. immediately before `yield`.
         let yieldedAt: Date
+        /// Task 057 item 2: assigned on the capture queue and carried *by value*, so
+        /// the consumer can derive in-flight depth without reading a counter the
+        /// capture thread is concurrently mutating. Reading `videoYieldedTotal` across
+        /// threads is what produced `inFlight=-1` / `released > yielded`: the two
+        /// counters were sampled at different instants, not a real double release.
+        let sequence: Int
         #endif
     }
 
@@ -858,6 +873,17 @@ private nonisolated final class SampleBufferOutputForwarder: NSObject,
     /// they can only be created after `super.init()`.
     private var videoConsumer: Task<Void, Never>?
     private var audioConsumer: Task<Void, Never>?
+
+
+    #if DEBUG
+    /// Task 057: same reasoning as `RecordingService.debugLog` — `debugLog()` writes
+    /// synchronously to the debug connection. The `[Task054-Capture]` line runs on the
+    /// capture delegate queue, so blocking there delays AVFoundation's own callback and
+    /// makes it discard the next frame. Diagnostics must never do that.
+    private nonisolated func debugLog(_ message: String) {
+        Task.detached(priority: .utility) { print(message) }
+    }
+    #endif
 
     private static let flushInterval = 30
 
@@ -910,6 +936,11 @@ private nonisolated final class SampleBufferOutputForwarder: NSObject,
     /// entry until the moment we drop the last reference to it.
     private var lifetimeTotal: TimeInterval = 0
     private var lifetimeMax: TimeInterval = 0
+    private var consumerInFlightMax = 0
+    /// Item 1: frames whose buffer stayed alive far longer than a frame interval, which
+    /// is the population worth explaining — the average hides them.
+    private var slowBufferCount = 0
+    private var slowBufferWorstMs: Double = 0
     #endif
 
     /// Kept so the configuration dump can report what AVFoundation was actually
@@ -952,12 +983,12 @@ private nonisolated final class SampleBufferOutputForwarder: NSObject,
                 await recordingService.appendVideoSampleBuffer(timed.buffer, enqueuedAt: beforeAppend)
                 // The consumer's reference to `timed` goes away at the end of this
                 // iteration, returning the pixel buffer to the capture pool.
-                self.videoReleasedTotal += 1
                 self.recordDelivery(
                     capturedAt: timed.capturedAt,
                     yieldedAt: timed.yieldedAt,
                     receivedAt: receivedAt,
-                    beforeAppend: beforeAppend
+                    beforeAppend: beforeAppend,
+                    sequence: timed.sequence
                 )
                 #else
                 await recordingService.appendVideoSampleBuffer(timed.buffer)
@@ -986,8 +1017,14 @@ private nonisolated final class SampleBufferOutputForwarder: NSObject,
 
     #if DEBUG
     /// Task 054 stages 2->3->4, accumulated on the consumer only.
-    private func recordDelivery(capturedAt: Date, yieldedAt: Date, receivedAt: Date, beforeAppend: Date) {
+    private func recordDelivery(capturedAt: Date, yieldedAt: Date, receivedAt: Date, beforeAppend: Date, sequence: Int) {
         deliveryCount += 1
+        // Item 2: derived from values that both belong to this frame, so it can never
+        // go negative. `sequence` counts frames handed to the stream, `deliveryCount`
+        // counts frames drained; the difference is what is in flight or was dropped by
+        // the stream between them.
+        let inFlight = sequence - deliveryCount
+        consumerInFlightMax = max(consumerInFlightMax, inFlight)
         let streamLatency = receivedAt.timeIntervalSince(yieldedAt)
         let preAppend = beforeAppend.timeIntervalSince(receivedAt)
         let endToEnd = beforeAppend.timeIntervalSince(capturedAt)
@@ -1000,22 +1037,27 @@ private nonisolated final class SampleBufferOutputForwarder: NSObject,
         let lifetime = Date().timeIntervalSince(capturedAt)
         lifetimeTotal += lifetime
         lifetimeMax = max(lifetimeMax, lifetime)
+        if lifetime > 0.100 {
+            slowBufferCount += 1
+            slowBufferWorstMs = max(slowBufferWorstMs, lifetime * 1000)
+        }
 
         guard deliveryCount % 120 == 0 else { return }
         let n = Double(deliveryCount)
-        print(String(
+        debugLog(String(
             format: "[Task054-Delivery] n=%d  yield->consumer avg=%.3fms max=%.3fms | consumer->append avg=%.3fms | captureEntry->append avg=%.3fms max=%.3fms",
             deliveryCount,
             streamLatencyTotal / n * 1000, streamLatencyMax * 1000,
             preAppendTotal / n * 1000,
             endToEndTotal / n * 1000, endToEndMax * 1000
         ))
-        print(String(
-            format: "[Task055-Pool] bufferDepth=%d  inFlight=%d max=%d  bufferLifetime avg=%.3fms max=%.3fms  yielded=%d released=%d",
+        debugLog(String(
+            format: "[Task055-Pool] bufferDepth=%d  inFlight=%d max=%d  bufferLifetime avg=%.3fms max=%.3fms  delivered=%d  slow(>100ms)=%d worst=%.1fms",
             Self.videoBufferDepth,
-            videoYieldedTotal - videoReleasedTotal, inFlightMax,
+            inFlight, consumerInFlightMax,
             lifetimeTotal / n * 1000, lifetimeMax * 1000,
-            videoYieldedTotal, videoReleasedTotal
+            deliveryCount,
+            slowBufferCount, slowBufferWorstMs
         ))
     }
     #endif
@@ -1045,9 +1087,14 @@ private nonisolated final class SampleBufferOutputForwarder: NSObject,
             let yieldAt = Date()
             yieldDelayTotal += yieldAt.timeIntervalSince(entry)
             logPoolOnce(sampleBuffer)
-            let result = videoContinuation.yield(TimedBuffer(buffer: sampleBuffer, capturedAt: entry, yieldedAt: yieldAt))
-            if case .dropped = result { yieldDropped += 1 } else { videoYieldedTotal += 1 }
-            inFlightMax = max(inFlightMax, videoYieldedTotal - videoReleasedTotal)
+            videoYieldedTotal += 1
+            let result = videoContinuation.yield(TimedBuffer(
+                buffer: sampleBuffer,
+                capturedAt: entry,
+                yieldedAt: yieldAt,
+                sequence: videoYieldedTotal
+            ))
+            if case .dropped = result { yieldDropped += 1 }
 
             let execution = Date().timeIntervalSince(entry)
             executionTotal += execution
@@ -1056,7 +1103,7 @@ private nonisolated final class SampleBufferOutputForwarder: NSObject,
             if callbackCount % 120 == 0 {
                 let n = Double(callbackCount - 1)
                 let intervalAvg = n > 0 ? intervalTotal / n * 1000 : 0
-                print(String(
+                debugLog(String(
                     format: "[Task054-Capture] callbacks=%d  interval avg=%.3fms max=%.3fms (=> %.1ffps) | execution avg=%.3fms max=%.3fms | entry->yield avg=%.3fms | yieldDropped=%d lateDropped=%d",
                     callbackCount,
                     intervalAvg, intervalMax * 1000,
@@ -1083,7 +1130,7 @@ private nonisolated final class SampleBufferOutputForwarder: NSObject,
         guard !didLogPool else { return }
         didLogPool = true
         guard let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else {
-            print("[Task055-Pool] no CVImageBuffer on the sample buffer")
+            debugLog("[Task055-Pool] no CVImageBuffer on the sample buffer")
             return
         }
         // There is no public API to read AVCaptureVideoDataOutput's pool directly, so
@@ -1099,7 +1146,7 @@ private nonisolated final class SampleBufferOutputForwarder: NSObject,
             UInt8((format >> 24) & 0xFF), UInt8((format >> 16) & 0xFF),
             UInt8((format >> 8) & 0xFF), UInt8(format & 0xFF)
         ], encoding: .ascii) ?? "\(format)"
-        print("[Task055-Pool] captureBuffer=\(width)x\(height) pixelFormat=\(formatString) ioSurfaceBacked=\(hasIOSurface)")
+        debugLog("[Task055-Pool] captureBuffer=\(width)x\(height) pixelFormat=\(formatString) ioSurfaceBacked=\(hasIOSurface)")
     }
 
     /// The output's real configuration, printed once. `alwaysDiscardsLateVideoFrames`
@@ -1111,7 +1158,7 @@ private nonisolated final class SampleBufferOutputForwarder: NSObject,
         guard !didLogConfiguration else { return }
         didLogConfiguration = true
         guard let videoDataOutput = output as? AVCaptureVideoDataOutput else { return }
-        print("""
+        debugLog("""
         [Task054-Config] alwaysDiscardsLateVideoFrames=\(videoDataOutput.alwaysDiscardsLateVideoFrames)
         [Task054-Config] sampleBufferCallbackQueue=\(callbackQueueLabel)
         [Task054-Config] videoSettings=\(videoDataOutput.videoSettings ?? [:])
