@@ -2,7 +2,7 @@
 
 > 이 문서만 읽고 작업을 이어갈 수 있도록 작성되었습니다.
 > 개발 규칙·보고 양식은 `CLAUDE.md`를 따릅니다(여기서 중복하지 않음).
-> 최종 갱신: Task 064 (`678980c`)
+> 최종 갱신: Task 065 (`75f54eb`)
 
 ---
 
@@ -55,6 +55,7 @@
 | 062 | **Long Only vs Long+Short 비교 화면** |
 | 063 | **video/audio delegate 큐 분리** + `alwaysDiscardsLateVideoFrames`를 런타임 전환 가능하게 |
 | 064 | **인코더 경로**: H.264 4K60이 하드웨어 사양 밖임을 확인, 코덱 자동 선택 + B-frame 비활성 |
+| 065 | 코덱 결정 기록 + 듀얼 readback이 서로 덮어쓰던 버그 수정 |
 
 ---
 
@@ -92,11 +93,13 @@ RecordingService (actor)
 - **"Long vs Long+Short 비교"** 화면 (두 조건 2열, 상단에 캡처 설정 필터)
 - **캡처 실험 스위치**: `늦은 프레임 버림`(기본) ↔ `늦은 프레임 대기`. 다음 녹화부터 적용되고, 어떤 설정이었는지가 각 기록에 저장됨
 - **인코더 실험 스위치**: 코덱(자동/H.264/HEVC), 키프레임 간격(1/2/4초). 비트레이트는 설정 → 녹화 화질의 프리셋(절반/표준/고화질/최고화질)
+- **코덱 결정 기록** (065) — `Long-form: auto 3840x2160@60 → hvc1`. writer를 만드는 시점의 판단
 - **저장된 코덱/프로필/레벨** — 파일의 format description에서 직접 파싱. `AVVideoCodecKey`는 요청값일 뿐이고 **레벨은 VideoToolbox가 정하므로**, 인코더가 실제로 어느 레벨로 돌았는지는 이 값으로만 확인 가능
+- 위 두 가지는 **다른 질문에 답한다**: 요청한 것 vs 나온 것. 어긋나면 그 자체가 단서
 
 ---
 
-## 4. 최근 수정 사항 (058~064)
+## 4. 최근 수정 사항 (058~065)
 
 - **058**: writer 직렬 루프 → TaskGroup 병렬. **fps 변화 없었음**(중요한 음성 결과)
 - **059~061**: 측정값을 Debug→Release로 이동. Release가 진짜 증상이 있는 곳이기 때문
@@ -105,6 +108,7 @@ RecordingService (actor)
   - video·audio가 **같은 serial DispatchQueue**를 쓰고 있었음. AVFoundation은 큐 단위로 delegate 콜백을 직렬화하므로, 오디오 콜백이 도는 동안 도착한 비디오 프레임은 대기해야 했고 그게 바로 `FrameWasLate` 조건. Task 052는 AsyncStream만 분리했고 그 아래 큐는 공유 상태로 남아 있었음. 이제 output별 전용 큐 + 명시적 `.userInitiated` QoS
   - `alwaysDiscardsLateVideoFrames`가 상수 → **설정**. Task 055가 `false`로 하드코딩한 뒤 **모든 측정이 `false` 상태에서만 이뤄져 비교 자체가 없었음**. 기본값을 AVFoundation 기본(`discard`)으로 되돌리고, 진단 화면에서 전환 가능하게 함. 어떤 설정이었는지가 각 녹화의 `RecordingDiagnostics`에 함께 저장됨
 - **064**: 조사 대상을 캡처 경로 → **인코더 경로**로 전환. 아래 5·6절이 이 결과로 바뀜
+- **065**: 코덱 검증 전용. 결정 기록 + `canApply` 가드 + **듀얼 readback 버그 수정**(아래 7절 참조)
 
 ---
 
@@ -154,11 +158,18 @@ Apple의 하드웨어 H.264 인코더는 iPhone에서 **Level 5.1을 넘지 않�
 
 ### 확정된 수치 (Release, 실기기)
 ```
-Long Only        저장 50fps
-Long + Short     저장 36.6fps,  도착 38.7fps,  lateDropped 291
+Long Only        저장 50fps  → 063 이후 40fps
+Long + Short     저장 36.6fps → 063 이후 35fps,  도착 38.7fps,  lateDropped 291
 writer 수락률    Long 99.6% / Short 99.8%
 평균 append      Long 1.75ms / Short 0.66ms
 ```
+
+> **⚠ 듀얼 모드 "저장 FPS"는 Task 065 이전까지 신뢰할 수 없다.**
+> `writerContexts.keys`는 Dictionary라 순회 순서가 정의되지 않는데,
+> `lastSavedNominalFrameRate`/`lastSavedVideoFormat`을 매 반복마다 무조건 대입하고
+> 있었다. 즉 듀얼에서는 **마지막에 끝난 writer의 값**이 남았고, 그게 Long인지
+> Short인지는 실행마다 달랐다. 36.6fps가 4K Long이 아니라 1080×1920 Short의
+> 수치였을 수 있다. 065에서 profile별로 기록하도록 수정 — **이후 측정만 유효.**
 
 ### 확정된 수치 (Debug, 실기기)
 ```
@@ -181,23 +192,29 @@ bufferDepth=2 시 inFlight max 1~3, yielded == released (누수 없음)
 - 047b: GeometryReader 안 `.ignoresSafeArea()`로 HUD가 화면 밖으로 잘림 (ZStack으로 수정)
 - 052: AsyncStream만 분리하고 그 아래 **DispatchQueue는 공유로 남겨둠** — 절반만 고친 분리였음 (063에서 완료)
 - 055: `alwaysDiscardsLateVideoFrames=false`를 **검증 없이** 하드코딩. 이후 모든 측정이 이 값에서만 이뤄져 비교 불가 상태를 8개 Task 동안 유지 (063에서 설정으로 전환)
+- 019~064: 듀얼 모드에서 `lastSavedNominalFrameRate`/`lastSavedVideoFormat`이 **비결정적으로 덮어써짐**. Dictionary 순회 순서에 의존. 판단 근거로 쓰던 수치 자체가 어느 writer의 것인지 불명이었다 (065에서 profile별 기록으로 수정)
 - **가장 큰 것 — 053~063 (11개 Task)**: 인코더 설정을 한 번도 의심하지 않고 캡처 경로만 팠다. `AVVideoCodecKey: .h264`는 처음부터 코드에 있었고, H.264 레벨 한계는 **계산으로 즉시 확인 가능한 사실**이었다. 교훈: 파이프라인 조사는 **양 끝을 먼저 확인**할 것. 소스(카메라 공급)는 Task 054에서 60.4fps로 확인했지만 싱크(인코더 사양)는 확인하지 않았다
 
 ---
 
 ## 8. 다음 작업 우선순위
 
-### 먼저: Task 064 측정 — 1회로 판정된다
+### 먼저: Task 065 측정 — 1회로 판정된다
 
 Release, 4K60, Long만 저장, 10초. **코덱 = 자동(기본값)이면 별도 설정 없이 바로.**
 
-진단 → 해당 기록 → **인코더 → 저장된 포맷**을 본다.
+진단 → 해당 기록 → **인코더** 섹션. 두 줄을 함께 본다.
 
-| 저장된 포맷 | 저장 FPS | 판정 |
-|---|---|---|
-| `hvc1 … level=5.1` | **~60fps** | **원인 확정.** H.264 레벨 한계였음. 종료 |
-| `hvc1 … level=5.1` | 여전히 ~40fps | 코덱이 아님 → 발열/지속 처리량으로 이동 |
-| `avc1 …` | — | `.auto` 판정 로직 버그. 코드 확인 |
+- **코덱 결정** (요청): `Long-form: auto 3840x2160@60 → hvc1`
+- **저장된 포맷** (결과): `hvc1 profile=1 tier=Main level=5.1`
+
+| 결정 | 저장된 포맷 | 저장 FPS | 판정 |
+|---|---|---|---|
+| `→ hvc1` | `hvc1` | **~60fps** | **원인 확정.** H.264 레벨 한계였음. 종료 |
+| `→ hvc1` | `hvc1` | 여전히 ~40fps | 코덱이 아님 → 발열/지속 처리량으로 이동 |
+| `→ hvc1` | `avc1` | — | 우리가 요청한 뒤 누군가 코덱을 바꿈. VideoToolbox 레벨에서 조사 |
+| `→ avc1` | `avc1` | — | **결정 줄의 `@fps`를 볼 것.** `@30`이면 FPS 폴백이 먼저 일어난 것이고 `.auto`는 정상(4K30은 H.264 사양 안). 이때는 코덱이 아니라 **4K60 포맷 선택**이 문제 |
+| `⚠︎ 적용 불가` 포함 | — | — | 이 기기가 해당 코덱 설정을 거부. 표시된 폴백 코덱으로 진행됨 |
 
 ### 그 다음 (위에서 확정되지 않은 경우에만)
 
