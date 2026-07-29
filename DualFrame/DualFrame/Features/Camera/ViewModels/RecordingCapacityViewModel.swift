@@ -93,15 +93,24 @@ final class RecordingCapacityViewModel: ObservableObject {
             return bitrateService.estimatedWriterBitrateBps(width: dimensions.width, height: dimensions.height, fps: activeFPS)
 
         case .both:
+            // Task 046: the long-form writer follows the user's actual quality/FPS
+            // (see `RecordingService.effectiveWriterFormat(for:)`), so this must too —
+            // it previously used `OutputProfile.longForm`'s hardcoded 1080p30
+            // constant and therefore under-reported a 4K/60 recording's disk usage by
+            // roughly 8x, making "예상 촬영 가능" wildly optimistic.
+            guard let activeQuality, let activeFPS else { return 0 }
+            let dimensions = activeQuality.dimensions
             let longBitrate = bitrateService.estimatedWriterBitrateBps(
-                width: OutputProfile.longForm.resolution.width,
-                height: OutputProfile.longForm.resolution.height,
-                fps: OutputProfile.longForm.fps
+                width: dimensions.width,
+                height: dimensions.height,
+                fps: activeFPS
             )
+            // Short-form keeps its fixed vertical delivery size but shares the
+            // session's frame rate, matching `effectiveWriterFormat(for:)`.
             let shortBitrate = bitrateService.estimatedWriterBitrateBps(
                 width: OutputProfile.shortForm.resolution.width,
                 height: OutputProfile.shortForm.resolution.height,
-                fps: OutputProfile.shortForm.fps
+                fps: activeFPS
             )
             return longBitrate + shortBitrate
         }

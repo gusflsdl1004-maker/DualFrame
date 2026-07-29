@@ -453,9 +453,20 @@ actor RecordingService {
     }
 
     /// The `OutputProfile`s this recording should target, given the current `mode`.
-    /// `.single` always yields exactly one ad-hoc profile built from the user's
-    /// `activeQuality`/`activeFPS` — never `.longForm`, which has fixed dimensions that
-    /// would silently override the user's quality/FPS choice (requirement 9).
+    /// `.single` yields one ad-hoc profile built from the user's `activeQuality`/
+    /// `activeFPS`; `.dual` yields the two canonical constants.
+    ///
+    /// Task 046: `.dual` deliberately still returns the *unmodified* `.longForm`/
+    /// `.shortForm` constants, because these values are load-bearing **identities**,
+    /// not just data — they key `writerContexts`/`writerStatuses`, they select the
+    /// crop path (`profile == .shortForm` in `makeWriterContext`), and
+    /// `RecordingViewModel` looks up `statuses[.longForm]`/`statuses[.shortForm]` for
+    /// both the dual status rows and `RecordingGroup` membership. Rebuilding them with
+    /// different resolution/fps would change their `Equatable` identity and silently
+    /// break every one of those lookups (short-form would stop being cropped).
+    ///
+    /// The resolution/frame rate a writer is actually built with is therefore resolved
+    /// separately, in `effectiveWriterFormat(for:)`.
     private var targetProfiles: [OutputProfile] {
         switch mode {
         case .single:
@@ -473,6 +484,35 @@ actor RecordingService {
             fps: activeFPS,
             aspectRatio: .widescreen
         )
+    }
+
+    /// Task 046: the resolution and frame rate a writer for `profile` is actually
+    /// created with — **the fix for "4K/60 selected, 1080p/30 recorded" in `.dual`
+    /// mode.**
+    ///
+    /// Root cause: `OutputProfile.longForm` is a hardcoded constant
+    /// (1920x1080 @ .fps30). In `.dual` mode `targetProfiles` returned that constant
+    /// and `makeWriterContext` read `profile.resolution`/`profile.fps` straight from
+    /// it, so the user's quality/FPS choice was discarded entirely — the capture
+    /// device was correctly running at 3840x2160 (confirmed by STAGE 5's sample
+    /// buffers) while the writer was unconditionally built for 1080p30. `.single`
+    /// mode never had this bug because `singleModeProfile()` already derived its
+    /// values from `activeQuality`/`activeFPS`.
+    ///
+    /// Long-form (and single) now follow `activeQuality`/`activeFPS`, so the writer
+    /// matches what the camera is actually delivering.
+    ///
+    /// Short-form deliberately keeps its fixed 1080x1920 vertical delivery size: it is
+    /// produced by centre-cropping the 16:9 source, so at 4K the crop is only ~1215
+    /// points wide — targeting 2160x3840 would upscale, costing storage and encode
+    /// time for no real detail. Its frame rate *does* follow `activeFPS` so both
+    /// outputs of one session share timing (CLAUDE.md rule 41).
+    private func effectiveWriterFormat(for profile: OutputProfile) -> (resolution: OutputResolution, fps: RecordingFPS) {
+        if profile == .shortForm {
+            return (OutputProfile.shortForm.resolution, activeFPS)
+        }
+        let dimensions = activeQuality.dimensions
+        return (OutputResolution(width: dimensions.width, height: dimensions.height), activeFPS)
     }
 
     /// Creates a `WriterContext` per target profile, independently — one profile's
@@ -496,23 +536,34 @@ actor RecordingService {
         let url = Self.makeOutputURL()
         let writer = try AVAssetWriter(url: url, fileType: .mov)
 
+        // Task 046: resolved from `activeQuality`/`activeFPS` rather than read off
+        // `profile`, whose `.longForm`/`.shortForm` constants are hardcoded 1080p30.
+        // See `effectiveWriterFormat(for:)`.
+        let format = effectiveWriterFormat(for: profile)
+
         let videoSettings: [String: Any] = [
             AVVideoCodecKey: AVVideoCodecType.h264,
-            AVVideoWidthKey: profile.resolution.width,
-            AVVideoHeightKey: profile.resolution.height,
+            AVVideoWidthKey: format.resolution.width,
+            AVVideoHeightKey: format.resolution.height,
             // Task 044 requirement 1: tells the encoder what source rate to expect.
             // Without it the H.264 encoder assumes a default (30fps) when choosing
             // keyframe placement and rate control, which can end up reflected in the
             // written file's nominal frame rate even when 60fps of buffers arrive.
             AVVideoCompressionPropertiesKey: [
-                AVVideoExpectedSourceFrameRateKey: profile.fps.rawValue
+                AVVideoExpectedSourceFrameRateKey: format.fps.rawValue
             ]
         ]
         #if DEBUG
         // Task 044 requirement 1/2: the "Writer" stage — printed from the exact
         // dictionary handed to AVAssetWriterInput, not re-derived from activeQuality,
         // so this is literally what the writer was configured with.
-        print("[Task044-Debug] STAGE 6 WRITER   profile=\(profile.outputName) AVVideoWidthKey=\(profile.resolution.width) AVVideoHeightKey=\(profile.resolution.height) AVVideoExpectedSourceFrameRateKey=\(profile.fps.rawValue) | RecordingService.activeQuality=\(activeQuality.title) RecordingService.activeFPS=\(activeFPS.rawValue)")
+        //
+        // Task 046: `profileConstant` shows the hardcoded value the writer used to be
+        // built from, next to what it is now actually built with — so the next
+        // real-device log makes the fix unambiguous. In `.dual` mode this line prints
+        // twice: Long-form (expected 3840x2160 at 4K) and Short-form (intentionally
+        // 1080x1920 — a vertical crop target, not a downscale bug).
+        print("[Task044-Debug] STAGE 6 WRITER   profile=\(profile.outputName) AVVideoWidthKey=\(format.resolution.width) AVVideoHeightKey=\(format.resolution.height) AVVideoExpectedSourceFrameRateKey=\(format.fps.rawValue) | RecordingService.activeQuality=\(activeQuality.title) RecordingService.activeFPS=\(activeFPS.rawValue) | profileConstant=\(profile.resolution.width)x\(profile.resolution.height)@\(profile.fps.rawValue)")
         #endif
         let videoWriterInput = AVAssetWriterInput(mediaType: .video, outputSettings: videoSettings)
         videoWriterInput.expectsMediaDataInRealTime = true
@@ -543,7 +594,10 @@ actor RecordingService {
         var cropConfiguration: CropConfiguration?
         var pixelBufferAdaptor: AVAssetWriterInputPixelBufferAdaptor?
         if profile == .shortForm {
-            let targetSize = CGSize(width: profile.resolution.width, height: profile.resolution.height)
+            // Task 046: uses the same resolved `format` the writer input above was
+            // built with, so the crop target and the encoder can never disagree.
+            // (For short-form these are still 1080x1920 — see `effectiveWriterFormat`.)
+            let targetSize = CGSize(width: format.resolution.width, height: format.resolution.height)
             cropConfiguration = CropConfiguration(targetSize: targetSize, strategy: .center)
             let sourceAttributes: [String: Any] = [
                 kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,
