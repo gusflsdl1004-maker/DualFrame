@@ -19,7 +19,22 @@ import CoreVideo
 /// call site, one call at a time, since `RecordingService` is an actor and never calls
 /// this concurrently with itself.
 nonisolated final class VideoFrameCropper {
-    private let context = CIContext()
+    /// Task 056 item 2: **`cacheIntermediates: false` is the fix.**
+    ///
+    /// A default `CIContext` caches intermediate results, and those cache entries hold
+    /// on to the `CVPixelBuffer` behind the `CIImage` they were derived from — here,
+    /// the buffer the capture output just handed us. At 60fps that means a growing set
+    /// of capture-pool slots retained by CoreImage rather than returned, which starves
+    /// `AVCaptureVideoDataOutput`'s pool and makes it drop frames before the delegate
+    /// ever runs. The cache buys nothing for this workload: every frame is different,
+    /// so no intermediate is ever reused.
+    ///
+    /// `.priorityRequestLow: false` keeps the render at normal GPU priority — this is
+    /// real-time capture, not a background export.
+    private let context = CIContext(options: [
+        .cacheIntermediates: false,
+        .priorityRequestLow: false
+    ])
     private let calculator = CropCalculator()
     private var cachedPool: CVPixelBufferPool?
     private var cachedPoolSize: CGSize?
@@ -42,6 +57,17 @@ nonisolated final class VideoFrameCropper {
     /// render failure); the caller treats that like a single dropped frame rather than
     /// a writer failure — one bad frame must never end the whole recording.
     func croppedPixelBuffer(from pixelBuffer: CVPixelBuffer, configuration: CropConfiguration) -> CVPixelBuffer? {
+        // Task 056 item 2: the `CIImage` chain below retains the source pixel buffer,
+        // and its intermediates are autoreleased. This runs inside a `Task`, not a
+        // dispatch work item, so there is no enclosing pool draining per frame — an
+        // explicit one returns the capture buffer on this frame instead of whenever the
+        // task next happens to suspend.
+        autoreleasepool {
+            cropped(from: pixelBuffer, configuration: configuration)
+        }
+    }
+
+    private func cropped(from pixelBuffer: CVPixelBuffer, configuration: CropConfiguration) -> CVPixelBuffer? {
         let sourceSize = CGSize(
             width: CVPixelBufferGetWidth(pixelBuffer),
             height: CVPixelBufferGetHeight(pixelBuffer)
