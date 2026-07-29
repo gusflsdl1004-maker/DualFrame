@@ -315,7 +315,10 @@ final class RecordingViewModel: ObservableObject {
             peakMemoryUsageBytes: peakMemory,
             availableStorageBytes: availableStorage,
             checkpointCount: checkpointCount,
-            recoveryStatus: recoveryStatus
+            recoveryStatus: recoveryStatus,
+            deliveredVideoFrames: await service.performanceMonitor.deliveredVideoFrameCount,
+            droppedBeforeConsumer: await service.performanceMonitor.droppedBeforeConsumerCount,
+            savedNominalFrameRate: await service.lastSavedNominalFrameRate
         )
         await diagnosticsService.save(diagnostics)
     }

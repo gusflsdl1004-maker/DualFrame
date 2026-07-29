@@ -131,6 +131,10 @@ actor RecordingService {
     /// How many times a checkpoint was actually saved during the current/last
     /// recording — surfaced in the diagnostics report.
     private(set) var checkpointSaveCount = 0
+    /// Task 057 item 3: `nominalFrameRate` read back from the file that was just
+    /// written, in every configuration — this is the number that decides whether 60fps
+    /// was actually achieved, and it has to be available in Release.
+    private(set) var lastSavedNominalFrameRate: Float = 0
 
     #if DEBUG
     /// Task 044: counters backing `logVideoSampleBufferStage(_:)` only — never read
@@ -673,6 +677,11 @@ actor RecordingService {
             let result = await validator.validate(fileURL: context.outputURL, expectsAudioTrack: expectsAudioTrack)
             writerStatuses[profile]?.validationResult = result
             lastValidationResult = result
+
+            if let track = try? await AVURLAsset(url: context.outputURL).loadTracks(withMediaType: .video).first,
+               let rate = try? await track.load(.nominalFrameRate) {
+                lastSavedNominalFrameRate = rate
+            }
 
             #if DEBUG
             debugLog("[Task044-Debug] STAGE 6b FRAMES  profile=\(profile.outputName) appendedVideoFrames=\(context.appendedVideoFrames) skippedVideoFrames=\(context.skippedVideoFrames)")

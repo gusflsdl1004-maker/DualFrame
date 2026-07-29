@@ -18,6 +18,13 @@ struct DiagnosticsDetailView: View {
             }
 
             Section("성능") {
+                // Task 057 item 3: the four figures that decide whether 60fps was
+                // actually achieved, available in Release — this screen ships.
+                LabeledContent("저장된 파일 FPS", value: String(format: "%.2f fps", diagnostics.savedNominalFrameRate))
+                LabeledContent("실제 도착 FPS", value: String(format: "%.1f fps", diagnostics.measuredArrivalFPS))
+                LabeledContent("전달된 프레임", value: "\(diagnostics.deliveredVideoFrames)")
+                LabeledContent("late drop (카메라)", value: "\(diagnostics.droppedVideoFrames)")
+                LabeledContent("stream drop (소비자)", value: "\(diagnostics.droppedBeforeConsumer)")
                 LabeledContent("드롭된 프레임", value: "\(diagnostics.droppedVideoFrames + diagnostics.droppedAudioBuffers)")
                 LabeledContent("쓰기 지연 시간", value: formattedWriteLatency)
                 LabeledContent("메모리 사용량", value: formattedMemory)
@@ -65,7 +72,10 @@ struct DiagnosticsDetailView: View {
             peakMemoryUsageBytes: 180_000_000,
             availableStorageBytes: 12_000_000_000,
             checkpointCount: 24,
-            recoveryStatus: .completedNormally
+            recoveryStatus: .completedNormally,
+            deliveredVideoFrames: 7_500,
+            droppedBeforeConsumer: 0,
+            savedNominalFrameRate: 59.94
         ))
     }
 }

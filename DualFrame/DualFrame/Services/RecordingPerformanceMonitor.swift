@@ -73,6 +73,8 @@ actor RecordingPerformanceMonitor {
         writeLatencies.removeAll()
         spawnedFrameCount = 0
         completedFrameCount = 0
+        droppedBeforeConsumerCount = 0
+        deliveredVideoFrameCount = 0
         anomalies.removeAll()
         snapshot = RecordingPerformanceSnapshot()
         peakMemoryUsageBytes = 0
@@ -93,6 +95,17 @@ actor RecordingPerformanceMonitor {
     }
 
     // MARK: - Event reporting (called from the capture/recording pipeline)
+
+    /// Task 057 item 3: frames the delivery stream refused because the consumer was
+    /// behind. Distinct from `recordDroppedVideoFrame`, which is AVFoundation dropping
+    /// before the delegate. Counted in every configuration so Release can be judged.
+    private(set) var droppedBeforeConsumerCount = 0
+    /// Frames that actually reached `RecordingService`.
+    private(set) var deliveredVideoFrameCount = 0
+
+    func recordDroppedBeforeConsumer() {
+        droppedBeforeConsumerCount += 1
+    }
 
     func recordDroppedVideoFrame() {
         droppedVideoFrameCount += 1
@@ -128,6 +141,7 @@ actor RecordingPerformanceMonitor {
     func framesProcessed(_ count: Int) {
         spawnedFrameCount += count
         completedFrameCount += count
+        deliveredVideoFrameCount += count
     }
 
     func frameSpawned() {

@@ -1094,7 +1094,13 @@ private nonisolated final class SampleBufferOutputForwarder: NSObject,
                 yieldedAt: yieldAt,
                 sequence: videoYieldedTotal
             ))
-            if case .dropped = result { yieldDropped += 1 }
+            if case .dropped = result {
+                yieldDropped += 1
+                // Task 057 item 3: recorded in every configuration so Release can be
+                // judged; Debug keeps the local counter for the periodic line.
+                let monitor = performanceMonitor
+                Task { await monitor.recordDroppedBeforeConsumer() }
+            }
 
             let execution = Date().timeIntervalSince(entry)
             executionTotal += execution
@@ -1114,7 +1120,11 @@ private nonisolated final class SampleBufferOutputForwarder: NSObject,
                 ))
             }
             #else
-            videoContinuation.yield(TimedBuffer(buffer: sampleBuffer))
+            let result = videoContinuation.yield(TimedBuffer(buffer: sampleBuffer))
+            if case .dropped = result {
+                let monitor = performanceMonitor
+                Task { await monitor.recordDroppedBeforeConsumer() }
+            }
             #endif
         } else if output is AVCaptureAudioDataOutput {
             audioContinuation.yield(sampleBuffer)

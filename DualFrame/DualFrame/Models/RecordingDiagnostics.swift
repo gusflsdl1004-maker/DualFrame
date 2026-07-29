@@ -39,4 +39,23 @@ nonisolated struct RecordingDiagnostics: Codable, Equatable, Identifiable {
     let availableStorageBytes: Int64
     let checkpointCount: Int
     let recoveryStatus: DiagnosticsRecoveryStatus
+    /// Task 057 item 3: the four figures needed to judge real performance, recorded in
+    /// **every** configuration rather than only Debug — Release is where the answer
+    /// actually matters, and printing them there would reintroduce the very stall
+    /// Task 057 removed. All are plain counters read once at the end of a recording.
+    ///
+    /// Frames that reached the writer. Divided by `recordingDuration` this is the
+    /// arrival rate, i.e. the Release equivalent of `measuredArrivalFPS`.
+    let deliveredVideoFrames: Int
+    /// Frames the delivery stream discarded because the consumer was behind
+    /// (`yieldDropped`). `droppedVideoFrames` above is AVFoundation's own late drop.
+    let droppedBeforeConsumer: Int
+    /// `nominalFrameRate` read back from the saved file — the number that finally
+    /// decides whether 60fps was achieved.
+    let savedNominalFrameRate: Float
+
+    /// Arrival rate implied by the frames that actually reached the writer.
+    var measuredArrivalFPS: Double {
+        recordingDuration > 0 ? Double(deliveredVideoFrames) / recordingDuration : 0
+    }
 }
