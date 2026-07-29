@@ -380,6 +380,15 @@ actor RecordingService {
             writerStatuses[profile]?.state = .recording
         }
         await performanceMonitor.startMonitoring()
+        // Task 066 item 1: the device's thermal state at the moment recording starts.
+        // Emitted to both sinks on purpose — `debugLog` for a Debug console run, and the
+        // in-app log ring buffer because the recordings that matter are Release runs with
+        // Xcode detached, where a `print` reaches nobody.
+        let thermalLine = await performanceMonitor.thermalLogLine
+        logEvent(thermalLine)
+        #if DEBUG
+        debugLog(thermalLine)
+        #endif
         await saveCheckpoint()
         startCheckpointing()
         return state
@@ -650,6 +659,26 @@ actor RecordingService {
         setState(.stopping)
         stopCheckpointing()
         await performanceMonitor.stopMonitoring()
+
+        // Task 066 item 3: the drop-reason tally for the recording that just ended,
+        // emitted right after `stopMonitoring()` so the counts are final and before any
+        // writer teardown so they describe the recording rather than the teardown.
+        //
+        // The counts themselves come from `captureOutput(_:didDrop:from:)` via
+        // `RecordingPerformanceMonitor.recordDropReason`, which has been aggregating
+        // AVFoundation's own `kCMSampleBufferAttachmentKey_DroppedFrameReason` since
+        // Task 060 — item 2 needed no new collection, only this output.
+        let dropReport = await performanceMonitor.dropReportLines
+        logEvent("[Task066-Drop]", detail: await performanceMonitor.dropReportSummary)
+        logEvent(
+            "[Task066-Thermal] end",
+            detail: "start=\(await performanceMonitor.thermalStateAtStart.reportName) "
+                + "peak=\(await performanceMonitor.peakThermalState.reportName) "
+                + "end=\(await performanceMonitor.thermalStateAtEnd.reportName)"
+        )
+        #if DEBUG
+        debugLog(dropReport)
+        #endif
 
         #if DEBUG
         // Task 048: the whole-recording totals, printed before any writer is finished

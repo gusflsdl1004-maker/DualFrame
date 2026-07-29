@@ -6,6 +6,21 @@
 import Foundation
 import Darwin
 
+/// Task 066 item 1: the four names the requested log format uses. Kept next to the
+/// monitor rather than in a view, because the same strings go into the log line, the
+/// diagnostics record, and the screen — one spelling, one place.
+nonisolated extension ProcessInfo.ThermalState {
+    var reportName: String {
+        switch self {
+        case .nominal: "nominal"
+        case .fair: "fair"
+        case .serious: "serious"
+        case .critical: "critical"
+        @unknown default: "unknown"
+        }
+    }
+}
+
 /// A category of abnormal condition the monitor can detect.
 nonisolated enum RecordingAnomalyType: String {
     case highMemoryUsage
@@ -80,6 +95,13 @@ actor RecordingPerformanceMonitor {
         snapshot = RecordingPerformanceSnapshot()
         peakMemoryUsageBytes = 0
 
+        // Task 066 item 1. `thermalState` is a cheap cached property read, not a sensor
+        // poll, so taking it here adds nothing measurable to recording start.
+        let startState = ProcessInfo.processInfo.thermalState
+        thermalStateAtStart = startState
+        peakThermalState = startState
+        thermalStateAtEnd = startState
+
         monitoringTask?.cancel()
         monitoringTask = Task { [weak self] in
             while let self, !Task.isCancelled {
@@ -93,6 +115,9 @@ actor RecordingPerformanceMonitor {
         monitoringTask?.cancel()
         monitoringTask = nil
         refreshSnapshot()
+        // Task 066: after the final snapshot, so `refreshThermalState` inside it has
+        // already folded this reading into the peak.
+        thermalStateAtEnd = ProcessInfo.processInfo.thermalState
     }
 
     // MARK: - Event reporting (called from the capture/recording pipeline)
@@ -110,6 +135,49 @@ actor RecordingPerformanceMonitor {
 
     func recordDropReason(_ reason: String) {
         dropReasonCounts[reason, default: 0] += 1
+    }
+
+    // MARK: - Task 066: thermal state
+
+    /// Read once at `startMonitoring()`.
+    private(set) var thermalStateAtStart: ProcessInfo.ThermalState = .nominal
+    /// The worst state seen across the 2-second poll that already runs. This is the one
+    /// that answers the actual question — a recording that starts `nominal` and ends
+    /// `serious` was throttled partway through, and the starting value alone cannot show
+    /// that.
+    private(set) var peakThermalState: ProcessInfo.ThermalState = .nominal
+    /// Read at `stopMonitoring()`.
+    private(set) var thermalStateAtEnd: ProcessInfo.ThermalState = .nominal
+
+    /// Exactly the format Task 066 item 1 asks for.
+    var thermalLogLine: String {
+        "[Task066-Thermal] state=\(ProcessInfo.processInfo.thermalState.reportName)"
+    }
+
+    /// Exactly the format Task 066 item 3 asks for. Reasons that never occurred are
+    /// still printed as `=0`, so a missing line can never be mistaken for a zero count.
+    var dropReportLines: String {
+        """
+        [Task066-Drop]
+        FrameWasLate=\(dropReasonCounts["FrameWasLate"] ?? 0)
+        OutOfBuffers=\(dropReasonCounts["OutOfBuffers"] ?? 0)
+        Discontinuity=\(dropReasonCounts["Discontinuity"] ?? 0)
+        """
+    }
+
+    /// Compact form for the in-app log ring buffer and the diagnostics screen, where a
+    /// four-line block does not fit.
+    var dropReportSummary: String {
+        "FrameWasLate=\(dropReasonCounts["FrameWasLate"] ?? 0) "
+            + "OutOfBuffers=\(dropReasonCounts["OutOfBuffers"] ?? 0) "
+            + "Discontinuity=\(dropReasonCounts["Discontinuity"] ?? 0)"
+    }
+
+    private func refreshThermalState() {
+        let current = ProcessInfo.processInfo.thermalState
+        if current.rawValue > peakThermalState.rawValue {
+            peakThermalState = current
+        }
     }
 
     func recordDroppedBeforeConsumer() {
@@ -205,6 +273,9 @@ actor RecordingPerformanceMonitor {
     // MARK: - Private
 
     private func refreshSnapshot() {
+        // Task 066: folded into the poll that already runs every 2 seconds rather than
+        // adding a second timer.
+        refreshThermalState()
         let duration = recordingStartTime.map { Date().timeIntervalSince($0) } ?? snapshot.duration
         let memory = Self.currentMemoryUsageBytes()
         let averageLatency = writeLatencies.isEmpty ? 0 : writeLatencies.reduce(0, +) / Double(writeLatencies.count)

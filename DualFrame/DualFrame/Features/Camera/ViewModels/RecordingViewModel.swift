@@ -346,7 +346,13 @@ final class RecordingViewModel: ObservableObject {
             savedVideoFormat: await service.lastSavedVideoFormat,
             encoderDecisions: await service.encoderDecisions,
             savedVideoFormatsByProfile: await service.savedVideoFormatsByProfile,
-            savedFrameRatesByProfile: await service.savedFrameRatesByProfile
+            savedFrameRatesByProfile: await service.savedFrameRatesByProfile,
+            // Task 066 item 1: read from the monitor rather than sampled here — by the
+            // time this runs the recording is over, so `ProcessInfo` would report the
+            // post-recording state, not the one the recording actually ran under.
+            thermalStateAtStart: await service.performanceMonitor.thermalStateAtStart.reportName,
+            peakThermalState: await service.performanceMonitor.peakThermalState.reportName,
+            thermalStateAtEnd: await service.performanceMonitor.thermalStateAtEnd.reportName
         )
         await diagnosticsService.save(diagnostics)
     }

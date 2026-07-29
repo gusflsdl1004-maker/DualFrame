@@ -87,6 +87,15 @@ nonisolated struct RecordingDiagnostics: Codable, Equatable, Identifiable {
     /// codec and rate are visible rather than silently replacing the long-form's.
     let savedVideoFormatsByProfile: [String: String]?
     let savedFrameRatesByProfile: [String: Float]?
+    /// Task 066 item 1: `nominal` / `fair` / `serious` / `critical`.
+    ///
+    /// Three readings rather than one. The starting state alone cannot show throttling:
+    /// a recording that begins `nominal` and ends `serious` was throttled partway
+    /// through, and that is exactly the shape a thermal explanation for the frame rate
+    /// would take. Optional so older records still decode.
+    let thermalStateAtStart: String?
+    let peakThermalState: String?
+    let thermalStateAtEnd: String?
 
     /// Arrival rate implied by the frames that actually reached the writer.
     var measuredArrivalFPS: Double {

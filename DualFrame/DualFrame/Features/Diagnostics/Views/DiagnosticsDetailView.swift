@@ -82,6 +82,22 @@ struct DiagnosticsDetailView: View {
                 LabeledContent("남은 저장 공간", value: formattedStorage)
             }
 
+            // Task 066 item 1: shown above the drop reasons on purpose — if the thermal
+            // state climbed during the recording, the drop counts below have to be read
+            // in that light rather than as a code problem.
+            if let start = diagnostics.thermalStateAtStart {
+                Section("발열 상태") {
+                    LabeledContent("시작", value: start)
+                    if let peak = diagnostics.peakThermalState {
+                        LabeledContent("최고", value: peak)
+                            .foregroundStyle(peak == "nominal" ? Color.primary : Color.orange)
+                    }
+                    if let end = diagnostics.thermalStateAtEnd {
+                        LabeledContent("종료", value: end)
+                    }
+                }
+            }
+
             dropReasonSection
 
             writerStatsSection
@@ -186,7 +202,10 @@ struct DiagnosticsDetailView: View {
             savedVideoFormat: "hvc1 profile=1 tier=Main level=5.1",
             encoderDecisions: ["Long-form: auto 3840x2160@60 → hvc1"],
             savedVideoFormatsByProfile: ["Long-form": "hvc1 profile=1 tier=Main level=5.1"],
-            savedFrameRatesByProfile: ["Long-form": 59.94]
+            savedFrameRatesByProfile: ["Long-form": 59.94],
+            thermalStateAtStart: "nominal",
+            peakThermalState: "fair",
+            thermalStateAtEnd: "fair"
         ))
     }
 }
