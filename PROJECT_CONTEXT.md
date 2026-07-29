@@ -2,7 +2,7 @@
 
 > 이 문서만 읽고 작업을 이어갈 수 있도록 작성되었습니다.
 > 개발 규칙·보고 양식은 `CLAUDE.md`를 따릅니다(여기서 중복하지 않음).
-> 최종 갱신: Task 062 (`756c216`)
+> 최종 갱신: Task 063 (`bc2aa11`)
 
 ---
 
@@ -53,6 +53,7 @@
 | 060 | `kCMSampleBufferAttachmentKey_DroppedFrameReason` 집계 (Release) |
 | 061 | Short 전용 경로 전수 열거 + crop 실측을 Release로 |
 | 062 | **Long Only vs Long+Short 비교 화면** |
+| 063 | **video/audio delegate 큐 분리** + `alwaysDiscardsLateVideoFrames`를 런타임 전환 가능하게 |
 
 ---
 
@@ -61,11 +62,11 @@
 ### 아키텍처
 ```
 AVCaptureSession
- ├─ videoOutput (AVCaptureVideoDataOutput)  ─┐
- ├─ audioOutput (AVCaptureAudioDataOutput)  ─┤
- └─ previewLayer는 session에 직접 바인딩      │ (data output 풀 사용 안 함)
-                                             ↓
-SampleBufferOutputForwarder (nonisolated class, 캡처 큐)
+ ├─ videoOutput → videoSampleBufferQueue (serial, .userInitiated)  ─┐
+ ├─ audioOutput → audioSampleBufferQueue (serial, .userInitiated)  ─┤  ← 063: 큐 분리
+ └─ previewLayer는 session에 직접 바인딩                             │ (data output 풀 사용 안 함)
+                                                                    ↓
+SampleBufferOutputForwarder (nonisolated class, 각 캡처 큐)
  ├─ videoStream  AsyncStream, bufferingNewest(2) → 단일 consumer
  └─ audioStream  AsyncStream, bufferingNewest(24) → 단일 consumer
                                              ↓
@@ -87,15 +88,19 @@ RecordingService (actor)
 - late drop(카메라) / stream drop(소비자)
 - **카메라 프레임 드롭 사유** (FrameWasLate / OutOfBuffers / Discontinuity)
 - writer별: 시도·성공·notReady·수락률·평균 append·crop(render/pool)
-- **"Long vs Long+Short 비교"** 화면 (두 조건 2열)
+- **"Long vs Long+Short 비교"** 화면 (두 조건 2열, 상단에 캡처 설정 필터)
+- **캡처 실험 스위치**: `늦은 프레임 버림`(기본) ↔ `늦은 프레임 대기`. 다음 녹화부터 적용되고, 어떤 설정이었는지가 각 기록에 저장됨
 
 ---
 
-## 4. 최근 수정 사항 (058~062)
+## 4. 최근 수정 사항 (058~063)
 
 - **058**: writer 직렬 루프 → TaskGroup 병렬. **fps 변화 없었음**(중요한 음성 결과)
 - **059~061**: 측정값을 Debug→Release로 이동. Release가 진짜 증상이 있는 곳이기 때문
 - **062**: 두 조건 비교 화면. 조건은 `writerStats.count`로 판별(1=Long Only, 2=Long+Short)
+- **063**: 계측이 아닌 **병목 제거** 2건
+  - video·audio가 **같은 serial DispatchQueue**를 쓰고 있었음. AVFoundation은 큐 단위로 delegate 콜백을 직렬화하므로, 오디오 콜백이 도는 동안 도착한 비디오 프레임은 대기해야 했고 그게 바로 `FrameWasLate` 조건. Task 052는 AsyncStream만 분리했고 그 아래 큐는 공유 상태로 남아 있었음. 이제 output별 전용 큐 + 명시적 `.userInitiated` QoS
+  - `alwaysDiscardsLateVideoFrames`가 상수 → **설정**. Task 055가 `false`로 하드코딩한 뒤 **모든 측정이 `false` 상태에서만 이뤄져 비교 자체가 없었음**. 기본값을 AVFoundation 기본(`discard`)으로 되돌리고, 진단 화면에서 전환 가능하게 함. 어떤 설정이었는지가 각 녹화의 `RecordingDiagnostics`에 함께 저장됨
 
 ---
 
@@ -157,20 +162,42 @@ bufferDepth=2 시 inFlight max 1~3, yielded == released (누수 없음)
 - 021: 기본 `CIContext`가 소스 버퍼 retain (056에서 캐시 비활성)
 - 048~056: debug `print()`가 actor/캡처 큐를 막음 (057에서 비동기화). **단 Release 재현으로 이건 주원인이 아님이 확인됨**
 - 047b: GeometryReader 안 `.ignoresSafeArea()`로 HUD가 화면 밖으로 잘림 (ZStack으로 수정)
+- 052: AsyncStream만 분리하고 그 아래 **DispatchQueue는 공유로 남겨둠** — 절반만 고친 분리였음 (063에서 완료)
+- 055: `alwaysDiscardsLateVideoFrames=false`를 **검증 없이** 하드코딩. 이후 모든 측정이 이 값에서만 이뤄져 비교 불가 상태를 8개 Task 동안 유지 (063에서 설정으로 전환)
 
 ---
 
 ## 8. 다음 작업 우선순위
 
-1. **Release 빌드로 두 조건 각각 10초 이상 녹화** → 설정 → 진단 → "Long vs Long+Short 비교" 화면 확인
-   - 두 녹화 길이를 비슷하게 맞출 것(누적 카운트 비교가 왜곡됨)
-2. **드롭 사유 분포에 따라 분기**:
-   - `OutOfBuffers`가 듀얼에서만 → crop이 소스 버퍼를 붙잡는 것. crop 최적화
-   - `OutOfBuffers`가 양쪽 다 → 버퍼 보유 구조. **`alwaysDiscardsLateVideoFrames`를 `true`로 되돌려 비교**(Task 055 변경이 큐잉으로 풀을 더 먹는 가설의 직접 검증)
-   - `FrameWasLate` → delegate 큐 점유 계측(Task 060 item 2, 의도적으로 보류해둠)
-   - `Discontinuity` → 발열/리소스. 코드 문제 아님. 장시간 발열 측정으로 전환
-3. **crop 실측값이 7.3ms 한계비용을 설명하는지** 확인
-4. 위가 정리된 뒤에야 비트레이트 하향(Task 049에서 4K60을 ~100Mbps로 올림) 재검토
+### 먼저: Task 063 측정 (4회 녹화)
+
+Release 빌드, 4K60, **각 10초 이상 · 길이를 서로 비슷하게** (누적 카운트 비교가 왜곡됨).
+
+| # | 설정 → 진단 → "늦은 프레임 처리" | 저장 방식 |
+|---|---|---|
+| 1 | `늦은 프레임 버림` (기본) | Long만 |
+| 2 | `늦은 프레임 버림` | Long + Short |
+| 3 | `늦은 프레임 대기` | Long만 |
+| 4 | `늦은 프레임 대기` | Long + Short |
+
+확인: 진단 → "Long vs Long+Short 비교" → 상단 필터를 `discard` / `queue`로 전환하며 대조.
+
+두 가지를 동시에 답한다.
+- **큐 분리 효과**: 1·2를 Task 062 이전 수치(50 / 36.6fps)와 비교. 오르면 `FrameWasLate`가 실제 원인이었던 것
+- **discard vs queue**: 1↔3, 2↔4 비교. Task 055가 검증 없이 바꾼 값의 첫 실측
+
+### 그 다음: 드롭 사유 분포에 따라 분기
+
+- `OutOfBuffers`가 듀얼에서만 → crop이 소스 버퍼를 붙잡는 것. crop 최적화
+- `OutOfBuffers`가 양쪽 다 → 버퍼 보유 구조. `queue` 모드에서 더 심해지는지로 확인 가능(이제 한 빌드에서 비교됨)
+- `FrameWasLate`가 큐 분리 후에도 남음 → delegate 큐 점유 계측(Task 060 item 2, 아직 보류)
+- `Discontinuity` → 발열/리소스. 코드 문제 아님. 장시간 발열 측정으로 전환
+
+### 이후
+
+1. **crop 실측값이 7.3ms 한계비용을 설명하는지** 확인
+2. 위가 정리된 뒤에야 비트레이트 하향(Task 049에서 4K60을 ~100Mbps로 올림) 재검토
+3. **아직 손대지 않은 후보**: 4K 프리뷰 레이어. 세션에 바인딩된 `AVCaptureVideoPreviewLayer`는 data output 풀을 쓰지 않지만 매 프레임을 렌더 서버에서 축소한다 — "우리 코드 밖 18ms"에 들어맞는 유일한 남은 소비자. 제거할 수는 없으므로(뷰파인더) 측정 방법부터 설계해야 함
 
 ---
 
