@@ -72,12 +72,48 @@ actor CameraService {
 
     private let videoOutput = AVCaptureVideoDataOutput()
     private let audioOutput = AVCaptureAudioDataOutput()
-    private let sampleBufferQueue = DispatchQueue(label: "com.dualframe.camera.sampleBufferQueue")
+    /// Task 063 item 5 (`FrameWasLate` → delegate queue backlog): **video and audio no
+    /// longer share one queue.**
+    ///
+    /// Both outputs were previously given the same serial `DispatchQueue`. AVFoundation
+    /// serialises delegate callbacks per queue, so every audio callback — and at 4K60
+    /// there are tens of them a second — occupied the same queue the video callback has
+    /// to run on. A video frame that becomes ready while an audio block is executing has
+    /// to wait for it, and "the delegate has not returned yet" is precisely the
+    /// condition AVFoundation reports as `FrameWasLate`. Against a 16.67ms budget there
+    /// is no room for that wait.
+    ///
+    /// Task 052 split the *AsyncStreams* so a slow video consumer could not block audio
+    /// delivery, but the dispatch queue underneath them stayed shared — the two
+    /// delegates still ran one at a time. This finishes that split at the layer where
+    /// AVFoundation actually measures lateness. Apple's own capture samples use a
+    /// dedicated queue per output for the same reason.
+    ///
+    /// The explicit `.userInitiated` QoS is the second half: a queue created without one
+    /// gets `.unspecified` and infers its priority from whoever submits to it, which
+    /// leaves the video callback's priority up to AVFoundation's internals and lets it
+    /// be preempted by ordinary default-priority work. Feeding a live 60fps recorder is
+    /// user-initiated by definition.
+    ///
+    /// Serial (not concurrent) on purpose: the delegate must still see frames in order,
+    /// and `AVCaptureVideoDataOutput` requires a serial queue.
+    private let videoSampleBufferQueue = DispatchQueue(
+        label: "com.dualframe.camera.videoSampleBufferQueue",
+        qos: .userInitiated
+    )
+    private let audioSampleBufferQueue = DispatchQueue(
+        label: "com.dualframe.camera.audioSampleBufferQueue",
+        qos: .userInitiated
+    )
     private let outputForwarder: SampleBufferOutputForwarder
     private let recordingService: RecordingService
     private let qualitySettingsService: RecordingQualitySettingsService
     private let fpsSettingsService: RecordingFPSSettingsService
     private let positionSettingsService: CameraPositionSettingsService
+    /// Task 063 item 4: read fresh on every `applyFullSizeBufferDelivery()` — which runs
+    /// before each recording — so flipping the switch in 진단 takes effect on the very
+    /// next recording without restarting the app or rebuilding the session.
+    private let lateFrameHandlingSettingsService: LateFrameHandlingSettingsService
     /// Task 022: the only source of orientation/mirroring decisions — this type never
     /// computes either itself (requirement 2).
     private let orientationManager: OrientationManager
@@ -110,18 +146,20 @@ actor CameraService {
         orientationManager: OrientationManager,
         qualitySettingsService: RecordingQualitySettingsService = RecordingQualitySettingsService(),
         fpsSettingsService: RecordingFPSSettingsService = RecordingFPSSettingsService(),
-        positionSettingsService: CameraPositionSettingsService = CameraPositionSettingsService()
+        positionSettingsService: CameraPositionSettingsService = CameraPositionSettingsService(),
+        lateFrameHandlingSettingsService: LateFrameHandlingSettingsService = LateFrameHandlingSettingsService()
     ) {
         self.recordingService = recordingService
         self.orientationManager = orientationManager
         self.qualitySettingsService = qualitySettingsService
         self.fpsSettingsService = fpsSettingsService
         self.positionSettingsService = positionSettingsService
+        self.lateFrameHandlingSettingsService = lateFrameHandlingSettingsService
         outputForwarder = SampleBufferOutputForwarder(
             recordingService: recordingService,
             performanceMonitor: recordingService.performanceMonitor,
             videoOutput: videoOutput,
-            callbackQueueLabel: sampleBufferQueue.label
+            callbackQueueLabel: videoSampleBufferQueue.label
         )
     }
 
@@ -288,14 +326,14 @@ actor CameraService {
             logStartupEvent("Audio Unavailable")
         }
 
-        videoOutput.setSampleBufferDelegate(outputForwarder, queue: sampleBufferQueue)
+        videoOutput.setSampleBufferDelegate(outputForwarder, queue: videoSampleBufferQueue)
         guard session.canAddOutput(videoOutput) else {
             throw CameraServiceError.cannotAddOutput
         }
         session.addOutput(videoOutput)
         applyFullSizeBufferDelivery()
 
-        audioOutput.setSampleBufferDelegate(outputForwarder, queue: sampleBufferQueue)
+        audioOutput.setSampleBufferDelegate(outputForwarder, queue: audioSampleBufferQueue)
         if session.canAddOutput(audioOutput) {
             session.addOutput(audioOutput)
         }
@@ -335,16 +373,19 @@ actor CameraService {
         }
         videoOutput.automaticallyConfiguresOutputBufferDimensions = false
 
-        // Task 055 item 1: previously never set, so it defaulted to `true` and
-        // AVFoundation discarded any frame that became ready while a pool buffer was
-        // unavailable — the `lateDropped` count that climbed 38 -> 126 -> 412 -> 662.
+        // Task 063 item 4: no longer a constant. Task 055 hardcoded this to `false`
+        // (queue late frames instead of discarding them) on the theory that discarding
+        // was what produced the climbing `lateDropped` count. Every measurement taken
+        // since was taken with `false`, so the record contains no comparison — the
+        // hypothesis was never actually tested.
         //
-        // Setting this to `false` only changes what AVFoundation does when it cannot
-        // hand a frame over: queue it instead of discarding it. On its own that would
-        // be *worse*, because the frames would pile up. It is only safe together with
-        // the buffer-depth change below, which is what stops us holding the pool
-        // hostage in the first place.
-        videoOutput.alwaysDiscardsLateVideoFrames = false
+        // It now comes from `LateFrameHandlingSettings`, whose default is back to
+        // AVFoundation's own (`discard`), and the value in force is written into the
+        // session's diagnostics so a result can never be read against the wrong setting.
+        // Re-read here rather than cached, because this method runs from
+        // `applyFormatAndFrameRate` before every recording.
+        let handling = lateFrameHandlingSettingsService.load().mode
+        videoOutput.alwaysDiscardsLateVideoFrames = handling.alwaysDiscardsLateVideoFrames
     }
 
     /// Task 029: writes to the same shared `RecordingDiagnosticsLogService` instance
@@ -902,9 +943,12 @@ private nonisolated final class SampleBufferOutputForwarder: NSObject,
     private static let videoBufferDepth = 2
 
     #if DEBUG
-    /// Delegate-side stats. Written only inside `captureOutput`, which AVFoundation
-    /// serialises on `sampleBufferCallbackQueue`, so there is exactly one writer and no
-    /// cross-thread access — the consumer never reads these.
+    /// Delegate-side stats. Written only inside `captureOutput`'s *video* branch, which
+    /// AVFoundation serialises on the video callback queue, so there is exactly one
+    /// writer and no cross-thread access — the consumer never reads these.
+    /// Task 063: audio callbacks now arrive on a separate queue and so can run
+    /// concurrently with the video ones, but the audio branch touches none of these —
+    /// it only yields to `audioContinuation`, which is itself thread-safe.
     private nonisolated(unsafe) var lastCallbackEntry: Date?
     private nonisolated(unsafe) var callbackCount = 0
     private nonisolated(unsafe) var intervalTotal: TimeInterval = 0

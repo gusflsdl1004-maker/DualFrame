@@ -19,24 +19,51 @@ import SwiftUI
 struct DiagnosticsComparisonView: View {
     let sessions: [RecordingDiagnostics]
 
+    /// Task 063 item 4: which capture setting to compare *within*. `nil` means "newest
+    /// of each, whatever it was set to" — the pre-Task-063 behaviour, and still the
+    /// right default for someone who is not running the A/B.
+    ///
+    /// Filtering here rather than adding a third and fourth column keeps the screen
+    /// two-column while still giving the full 2×2: pick `discard`, read the pair, pick
+    /// `queue`, read the other pair.
+    @State private var handlingFilter: LateFrameHandling?
+
+    private var filteredSessions: [RecordingDiagnostics] {
+        guard let handlingFilter else { return sessions }
+        return sessions.filter { $0.lateFrameHandling == handlingFilter }
+    }
+
     /// Newest recording that ran a single writer.
     private var longOnly: RecordingDiagnostics? {
-        sessions.first { ($0.writerStats?.count ?? 0) == 1 }
+        filteredSessions.first { ($0.writerStats?.count ?? 0) == 1 }
     }
 
     /// Newest recording that ran both writers.
     private var longAndShort: RecordingDiagnostics? {
-        sessions.first { ($0.writerStats?.count ?? 0) >= 2 }
+        filteredSessions.first { ($0.writerStats?.count ?? 0) >= 2 }
     }
 
     var body: some View {
         Form {
+            Section("캡처 설정 필터") {
+                Picker("늦은 프레임 처리", selection: $handlingFilter) {
+                    Text("전체").tag(LateFrameHandling?.none)
+                    ForEach(LateFrameHandling.allCases) { mode in
+                        Text(mode.shortTitle).tag(LateFrameHandling?.some(mode))
+                    }
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+            }
+
             if longOnly == nil || longAndShort == nil {
                 Section {
                     ContentUnavailableView(
                         "비교할 기록이 부족합니다",
                         systemImage: "square.split.2x1",
-                        description: Text("Long만 저장과 Long + Short 저장으로 각각 한 번씩 녹화하면 여기서 비교됩니다.")
+                        description: Text(handlingFilter == nil
+                            ? "Long만 저장과 Long + Short 저장으로 각각 한 번씩 녹화하면 여기서 비교됩니다."
+                            : "이 캡처 설정으로는 아직 두 조건이 모두 녹화되지 않았습니다.")
                     )
                 }
             } else {
@@ -47,6 +74,12 @@ struct DiagnosticsComparisonView: View {
                     comparisonRow("설정",
                                   "\(longOnly?.resolution.title ?? "--") \(longOnly?.fps.title ?? "")",
                                   "\(longAndShort?.resolution.title ?? "--") \(longAndShort?.fps.title ?? "")")
+                    // Task 063 item 4: if these two differ, the columns are not
+                    // comparable — the difference between them is the capture setting,
+                    // not the short-form path. Shown here so that can never be missed.
+                    comparisonRow("늦은 프레임 처리",
+                                  longOnly?.lateFrameHandling?.shortTitle ?? "—",
+                                  longAndShort?.lateFrameHandling?.shortTitle ?? "—")
                 }
 
                 Section("결과") {

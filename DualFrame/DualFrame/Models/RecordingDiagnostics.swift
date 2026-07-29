@@ -60,6 +60,11 @@ nonisolated struct RecordingDiagnostics: Codable, Equatable, Identifiable {
     /// Task 060 item 1: AVFoundation's own reason for each frame it discarded before
     /// the delegate ran, keyed by reason name. Optional so older records still decode.
     let droppedFrameReasons: [String: Int]?
+    /// Task 063 item 4: which `alwaysDiscardsLateVideoFrames` setting was in force for
+    /// this recording. Without it the two halves of the comparison run are
+    /// indistinguishable after the fact, which is exactly how every measurement before
+    /// Task 063 ended up unattributable. Optional so older records still decode.
+    let lateFrameHandling: LateFrameHandling?
 
     /// Arrival rate implied by the frames that actually reached the writer.
     var measuredArrivalFPS: Double {

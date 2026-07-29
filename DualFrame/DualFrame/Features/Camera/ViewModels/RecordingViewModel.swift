@@ -106,6 +106,10 @@ final class RecordingViewModel: ObservableObject {
     /// them by id — never to duplicate or reinterpret their data.
     private let libraryService: InternalVideoLibraryService
     private let groupService: RecordingGroupService
+    /// Task 063 item 4: read only when writing diagnostics, to label the measurement
+    /// with the capture setting it was taken under. Never used to change behaviour —
+    /// `CameraService` is the only thing that acts on this setting.
+    private let lateFrameHandlingSettingsService: LateFrameHandlingSettingsService
     private var durationTask: Task<Void, Never>?
     private var interruptionOccurredThisSession = false
     /// Task 024: created once per recording in `startRecording()`, cleared once
@@ -119,7 +123,8 @@ final class RecordingViewModel: ObservableObject {
         cameraService: CameraService,
         libraryService: InternalVideoLibraryService,
         diagnosticsService: RecordingDiagnosticsService = RecordingDiagnosticsService(),
-        groupService: RecordingGroupService = RecordingGroupService()
+        groupService: RecordingGroupService = RecordingGroupService(),
+        lateFrameHandlingSettingsService: LateFrameHandlingSettingsService = LateFrameHandlingSettingsService()
     ) {
         self.service = service
         self.dualRecordingCoordinator = dualRecordingCoordinator
@@ -127,6 +132,7 @@ final class RecordingViewModel: ObservableObject {
         self.libraryService = libraryService
         self.diagnosticsService = diagnosticsService
         self.groupService = groupService
+        self.lateFrameHandlingSettingsService = lateFrameHandlingSettingsService
     }
 
     /// Toggles between starting and stopping — the single button the camera screen exposes.
@@ -320,7 +326,12 @@ final class RecordingViewModel: ObservableObject {
             droppedBeforeConsumer: await service.performanceMonitor.droppedBeforeConsumerCount,
             savedNominalFrameRate: await service.lastSavedNominalFrameRate,
             writerStats: await service.lastWriterAppendStats,
-            droppedFrameReasons: await service.performanceMonitor.dropReasonCounts
+            droppedFrameReasons: await service.performanceMonitor.dropReasonCounts,
+            // Task 063 item 4: the setting `CameraService` read when it configured the
+            // video output for this recording. Same source (`UserDefaults`), and it can
+            // only change from the 진단 screen while no recording is running, so what is
+            // stored here is what was in force while these numbers were measured.
+            lateFrameHandling: lateFrameHandlingSettingsService.load().mode
         )
         await diagnosticsService.save(diagnostics)
     }

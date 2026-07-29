@@ -10,9 +10,32 @@ import SwiftUI
 /// (matches `ExternalStorageView`/`RecordingQualityView`).
 struct DiagnosticsView: View {
     @StateObject private var viewModel = DiagnosticsViewModel()
+    /// Task 063 item 4: the capture-stage experiment switch. Local `@State` seeded from
+    /// the store and written straight back on change — no view model, because nothing
+    /// else in the app reacts to it: `CameraService` re-reads the store before every
+    /// recording, so the next recording simply picks up whatever is selected here.
+    @State private var lateFrameHandling = LateFrameHandlingSettingsService().load().mode
+    private let lateFrameHandlingSettingsService = LateFrameHandlingSettingsService()
 
     var body: some View {
         List {
+            Section {
+                Picker("늦은 프레임 처리", selection: $lateFrameHandling) {
+                    ForEach(LateFrameHandling.allCases) { mode in
+                        Text(mode.title).tag(mode)
+                    }
+                }
+                .pickerStyle(.inline)
+                .labelsHidden()
+                Text(lateFrameHandling.detail)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } header: {
+                Text("캡처 실험 (Task 063)")
+            } footer: {
+                Text("이 설정은 다음 녹화부터 적용되며, 각 녹화 기록에 어떤 설정이었는지 함께 저장됩니다. 두 설정으로 각각 녹화한 뒤 아래 비교 화면에서 드롭 사유를 대조하세요.")
+            }
+
             // Task 062: the two conditions side by side, which is what the comparison
             // actually needs — scrolling between two detail screens loses the diff.
             Section {
@@ -23,31 +46,44 @@ struct DiagnosticsView: View {
                 }
             }
 
-            ForEach(viewModel.sessions) { session in
-            NavigationLink {
-                DiagnosticsDetailView(diagnostics: session)
-            } label: {
-                sessionRow(session)
-            }
-            }
-        }
-        .overlay {
+            // Task 063: the empty state used to be a full-screen `.overlay`, which on a
+            // fresh install covered the whole list — including the capture-experiment
+            // switch above, which is precisely what has to be reachable *before* the
+            // first recording. Moved inside the list so it replaces only the session
+            // rows it is talking about.
             if viewModel.sessions.isEmpty {
-                ContentUnavailableView("녹화 기록이 없습니다", systemImage: "chart.bar.doc.horizontal")
+                Section {
+                    ContentUnavailableView("녹화 기록이 없습니다", systemImage: "chart.bar.doc.horizontal")
+                }
+            } else {
+                ForEach(viewModel.sessions) { session in
+                    NavigationLink {
+                        DiagnosticsDetailView(diagnostics: session)
+                    } label: {
+                        sessionRow(session)
+                    }
+                }
             }
         }
         .navigationTitle("진단")
+        .onChange(of: lateFrameHandling) { _, newValue in
+            lateFrameHandlingSettingsService.save(LateFrameHandlingSettings(mode: newValue))
+        }
         .task {
             await viewModel.refresh()
         }
     }
 
     private func conditionLabel(_ session: RecordingDiagnostics) -> String {
-        switch session.writerStats?.count ?? 0 {
+        let outputs = switch session.writerStats?.count ?? 0 {
         case 0: "조건 미기록"
         case 1: "Long Only"
         default: "Long + Short"
         }
+        // Task 063: the capture setting is part of the condition, so a run can be told
+        // apart from its own A/B counterpart without opening the detail screen.
+        guard let handling = session.lateFrameHandling else { return outputs }
+        return "\(outputs) · \(handling.shortTitle)"
     }
 
     private func sessionRow(_ session: RecordingDiagnostics) -> some View {

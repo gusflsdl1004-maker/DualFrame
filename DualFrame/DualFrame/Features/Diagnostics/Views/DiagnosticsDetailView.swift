@@ -15,6 +15,12 @@ struct DiagnosticsDetailView: View {
                 LabeledContent("길이", value: formattedDuration)
                 LabeledContent("해상도", value: diagnostics.resolution.title)
                 LabeledContent("FPS", value: diagnostics.fps.title)
+                // Task 063 item 4: which capture setting produced these numbers. Absent
+                // on anything recorded before Task 063, which is exactly why those
+                // measurements could not be attributed to a setting.
+                if let handling = diagnostics.lateFrameHandling {
+                    LabeledContent("늦은 프레임 처리", value: handling.title)
+                }
             }
 
             Section("성능") {
@@ -127,7 +133,8 @@ struct DiagnosticsDetailView: View {
             droppedBeforeConsumer: 0,
             savedNominalFrameRate: 59.94,
             writerStats: nil,
-            droppedFrameReasons: ["OutOfBuffers": 291]
+            droppedFrameReasons: ["OutOfBuffers": 291],
+            lateFrameHandling: .discard
         ))
     }
 }
