@@ -258,9 +258,19 @@ struct VideoRecordRow: View {
             .foregroundStyle(.secondary)
 
         case .success(let destination):
-            Label("완료 (\(destination.title))", systemImage: "checkmark.circle.fill")
-                .font(.caption.bold())
-                .foregroundStyle(.green)
+            // Task 043 requirement 2: the actual export flow (ExportCoordinator and
+            // the underlying Photos/external-storage services) was always safely
+            // re-runnable — this state simply never offered a control to run it
+            // again, unlike .idle/.failed below. Without this button, a successful
+            // export was a dead end: the same recording could never be exported a
+            // second time from this screen.
+            VStack(alignment: .leading, spacing: 4) {
+                Label("완료 (\(destination.title))", systemImage: "checkmark.circle.fill")
+                    .font(.caption.bold())
+                    .foregroundStyle(.green)
+                Button("다시 내보내기", action: onExport)
+                    .font(.caption2)
+            }
 
         case .failed(let reason):
             VStack(alignment: .leading, spacing: 4) {

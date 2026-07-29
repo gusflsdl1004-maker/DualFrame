@@ -36,6 +36,18 @@ struct CameraPreviewView: View {
     @State private var qualityFallbackOccurred = false
     @State private var activeFPS: RecordingFPS?
     @State private var fpsFallbackOccurred = false
+    /// Task 043: mirrors `CameraService.zoomOptions`/`min`/`maxZoomFactor` — re-read
+    /// once after `cameraService.start()` and again after every successful camera
+    /// switch, since the two positions can have different lens configurations.
+    @State private var zoomOptions: [CameraZoomOption] = []
+    @State private var minZoomFactor: CGFloat = 1.0
+    @State private var maxZoomFactor: CGFloat = 1.0
+    @State private var currentZoomFactor: CGFloat = 1.0
+    /// The zoom factor in effect the moment the current pinch gesture began — pinch
+    /// reports a relative scale (1.0 = no change yet), so this is the baseline that
+    /// scale multiplies against.
+    @State private var zoomFactorAtPinchStart: CGFloat = 1.0
+    @GestureState private var pinchScale: CGFloat = 1.0
     /// Task 027: the camera actually in use — reflects `CameraService.currentPosition`,
     /// refreshed after every successful `switchCamera(to:)`.
     @State private var cameraPosition: CameraPosition = .back
@@ -81,6 +93,19 @@ struct CameraPreviewView: View {
             } else {
                 CameraPreviewRepresentable(session: cameraService.session)
                     .ignoresSafeArea()
+                    // Task 043 requirement 4: pinch-to-zoom directly on the preview,
+                    // matching Apple Camera. `$pinchScale` reports a *relative* scale
+                    // (1.0 = unchanged since the gesture began), so it's applied
+                    // against `zoomFactorAtPinchStart` — the zoom level the gesture
+                    // started from — rather than used as an absolute factor.
+                    .gesture(
+                        MagnificationGesture()
+                            .updating($pinchScale) { value, state, _ in state = value }
+                            .onEnded { _ in zoomFactorAtPinchStart = currentZoomFactor }
+                    )
+                    .onChange(of: pinchScale) { _, newScale in
+                        setZoom(zoomFactorAtPinchStart * newScale)
+                    }
                     .overlay {
                         // Task 040: purely visual, drawn above the live preview and
                         // below the status bar/controls so it never obscures them.
@@ -109,6 +134,11 @@ struct CameraPreviewView: View {
             activeFPS = await cameraService.activeFPS
             fpsFallbackOccurred = await cameraService.fpsFallbackOccurred
             cameraPosition = await cameraService.currentPosition
+            zoomOptions = await cameraService.zoomOptions
+            minZoomFactor = await cameraService.minZoomFactor
+            maxZoomFactor = await cameraService.maxZoomFactor
+            currentZoomFactor = await cameraService.currentZoomFactor
+            zoomFactorAtPinchStart = currentZoomFactor
             interruptionMonitor.startObserving(
                 session: cameraService.session,
                 onInterruptionBegan: { source in
@@ -132,6 +162,17 @@ struct CameraPreviewView: View {
         // behaviors `RecordingService` has today; see `RecordingOutputMode`'s docs).
         .task {
             while !Task.isCancelled {
+                // Task 043: re-read the actor's real active format every tick instead
+                // of relying on the one-time values captured at launch — otherwise this
+                // badge (and the capacity estimate below) would keep showing whatever
+                // quality/FPS was active when the camera first configured, even after
+                // `refreshRecordingFormat()` applies a newly-selected one at the start
+                // of the next recording.
+                activeQuality = await cameraService.activeQuality
+                qualityFallbackOccurred = await cameraService.qualityFallbackOccurred
+                activeFPS = await cameraService.activeFPS
+                fpsFallbackOccurred = await cameraService.fpsFallbackOccurred
+
                 let effectiveOutputMode: RecordingOutputMode
                 if recordingViewModel.isRecording {
                     effectiveOutputMode = await dualRecordingCoordinator.mode == .dual ? .both : .longOnly
@@ -215,6 +256,54 @@ struct CameraPreviewView: View {
         #endif
     }
 
+    /// Task 043 requirement 3/4: the one place that turns a UI gesture/tap into a
+    /// `CameraService.setZoomFactor(_:)` call — used by the quick-select buttons, the
+    /// slider, and the pinch gesture alike. Updates the local `currentZoomFactor`
+    /// immediately (so the slider/buttons/pinch all feel instant) rather than waiting
+    /// for the 1-second polling loop to pick up the actor's value.
+    private func setZoom(_ factor: CGFloat) {
+        currentZoomFactor = min(max(factor, minZoomFactor), maxZoomFactor)
+        Task { await cameraService.setZoomFactor(currentZoomFactor) }
+    }
+
+    private func isSelectedZoomOption(_ option: CameraZoomOption) -> Bool {
+        abs(option.factor - currentZoomFactor) < 0.05
+    }
+
+    /// Task 043 requirement 3/4/6: quick-select lens buttons (however many
+    /// `zoomOptions` the current device/position actually has) plus a continuous
+    /// slider spanning the device's full min–max zoom range, placed bottom-center,
+    /// directly above the record button (`recordingControls` below).
+    private var zoomControl: some View {
+        VStack(spacing: 8) {
+            if maxZoomFactor > minZoomFactor {
+                Slider(
+                    value: Binding(get: { currentZoomFactor }, set: setZoom),
+                    in: minZoomFactor...maxZoomFactor
+                )
+                .frame(width: 220)
+                .tint(.white)
+            }
+
+            HStack(spacing: 12) {
+                ForEach(zoomOptions) { option in
+                    Button {
+                        setZoom(option.factor)
+                    } label: {
+                        Text("\(option.label)×")
+                            .font(.caption.bold())
+                            .foregroundStyle(isSelectedZoomOption(option) ? .black : .white)
+                            .frame(width: 34, height: 34)
+                            .background(
+                                isSelectedZoomOption(option) ? Color.white : Color.black.opacity(0.35),
+                                in: Circle()
+                            )
+                    }
+                }
+            }
+        }
+    }
+
     private var isMicrophoneGranted: Bool {
         permissionViewModel.microphoneStatus == .granted
     }
@@ -233,6 +322,13 @@ struct CameraPreviewView: View {
             qualityFallbackOccurred = await cameraService.qualityFallbackOccurred
             activeFPS = await cameraService.activeFPS
             fpsFallbackOccurred = await cameraService.fpsFallbackOccurred
+            // Task 043: the camera just switched can have an entirely different lens
+            // configuration (the front camera typically has no ultra-wide/telephoto).
+            zoomOptions = await cameraService.zoomOptions
+            minZoomFactor = await cameraService.minZoomFactor
+            maxZoomFactor = await cameraService.maxZoomFactor
+            currentZoomFactor = await cameraService.currentZoomFactor
+            zoomFactorAtPinchStart = currentZoomFactor
         } catch {
             // Switching failed (e.g. no front camera on this device) — stay on the
             // current camera rather than leaving the UI in an inconsistent state.
@@ -523,6 +619,9 @@ struct CameraPreviewView: View {
                 .foregroundStyle(.white.opacity(0.8))
             }
             #endif
+
+            // Task 043 requirement 6: bottom-center, directly above the record button.
+            zoomControl
 
             // Task 038 requirement 2: enlarged (bigger font, more padding) so the
             // primary action reads clearly at a glance, closer to the Camera app's

@@ -147,6 +147,11 @@ final class RecordingViewModel: ObservableObject {
             // at camera setup — a rotation *during* the recording that follows is never
             // read again, so it has no effect on the file already being written.
             await cameraService.refreshRecordingOrientation()
+            // Task 043 requirement 1: same reasoning, for quality/FPS — a Settings
+            // change made after the camera was first configured must be picked up
+            // before this recording's writer is built, not left stale until app
+            // restart (the real-device "4K selected, Full HD recorded" bug).
+            await cameraService.refreshRecordingFormat()
 
             // Task 024 requirement 2: created exactly once per recording, before it
             // starts — every output this recording produces will be tagged with this
