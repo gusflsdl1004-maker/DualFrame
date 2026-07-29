@@ -26,6 +26,8 @@ struct CameraPreviewView: View {
     @StateObject private var guidelineViewModel = RecordingGuidelineViewModel()
     /// Task 041: live storage + estimated recording time.
     @StateObject private var capacityViewModel = RecordingCapacityViewModel()
+    /// Task 050: the quality preset shown in the HUD.
+    @StateObject private var bitratePresetViewModel = BitratePresetViewModel()
     @State private var cameraService: CameraService
     @State private var libraryService: InternalVideoLibraryService
     @State private var dualRecordingCoordinator: DualRecordingCoordinator
@@ -43,6 +45,10 @@ struct CameraPreviewView: View {
     @State private var minZoomFactor: CGFloat = 1.0
     @State private var maxZoomFactor: CGFloat = 1.0
     @State private var currentZoomFactor: CGFloat = 1.0
+    /// Task 050 requirement 7: the raw factor the user reads as "1×". Needed to show a
+    /// meaningful zoom value on a virtual multi-lens device, where `videoZoomFactor`
+    /// 1.0 is the ultra-wide (a "0.5×" view) rather than the wide lens.
+    @State private var baseZoomFactor: CGFloat = 1.0
     /// The zoom factor in effect the moment the current pinch gesture began — pinch
     /// reports a relative scale (1.0 = no change yet), so this is the baseline that
     /// scale multiplies against.
@@ -164,6 +170,7 @@ struct CameraPreviewView: View {
             minZoomFactor = await cameraService.minZoomFactor
             maxZoomFactor = await cameraService.maxZoomFactor
             currentZoomFactor = await cameraService.currentZoomFactor
+            baseZoomFactor = await cameraService.baseZoomFactor
             zoomFactorAtPinchStart = currentZoomFactor
             interruptionMonitor.startObserving(
                 session: cameraService.session,
@@ -304,8 +311,26 @@ struct CameraPreviewView: View {
     /// `zoomOptions` the current device/position actually has) plus a continuous
     /// slider spanning the device's full min–max zoom range, placed bottom-center,
     /// directly above the record button (`recordingControls` below).
+    /// Task 050 requirement 7: the live zoom value, normalised so the user reads what
+    /// they expect — "1.0×" for the wide lens even when the underlying
+    /// `videoZoomFactor` is 2.0 on a virtual multi-lens device. Updated by the buttons,
+    /// the slider and pinch alike, since all three funnel through `setZoom`.
+    private var currentZoomLabel: String {
+        let displayed = baseZoomFactor > 0 ? currentZoomFactor / baseZoomFactor : currentZoomFactor
+        return String(format: "%.1f×", displayed)
+    }
+
     private func zoomControl(isLandscape: Bool) -> some View {
         VStack(spacing: 8) {
+            // Requirement 7: always visible, so pinch has a readout too — the discrete
+            // buttons alone can't show an intermediate value.
+            Text(currentZoomLabel)
+                .font(.caption2.monospacedDigit().bold())
+                .foregroundStyle(.white)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 3)
+                .background(.black.opacity(0.45), in: Capsule())
+
             if maxZoomFactor > minZoomFactor {
                 Slider(
                     value: Binding(
@@ -365,6 +390,7 @@ struct CameraPreviewView: View {
             minZoomFactor = await cameraService.minZoomFactor
             maxZoomFactor = await cameraService.maxZoomFactor
             currentZoomFactor = await cameraService.currentZoomFactor
+            baseZoomFactor = await cameraService.baseZoomFactor
             zoomFactorAtPinchStart = currentZoomFactor
         } catch {
             // Switching failed (e.g. no front camera on this device) — stay on the
@@ -435,19 +461,7 @@ struct CameraPreviewView: View {
                     if let statusText = recordingViewModel.visibleStatusText {
                         statusChip(statusText, emphasized: true)
                     }
-                    HStack(spacing: 4) {
-                        if let activeQuality {
-                            // Task 038 requirement 2: readable quality tier (e.g.
-                            // "Full HD (1080p)") instead of raw pixel dimensions.
-                            statusChip(activeQuality.title)
-                        }
-                        if let activeFPS {
-                            statusChip(activeFPS.title)
-                        }
-                    }
-                    // Task 042 requirement 1: user-facing output mode, never
-                    // "Single Recording"/"Dual Recording".
-                    statusChip(outputModeViewModel.settings.outputMode.title)
+                    recordingHUD
                 }
                 .fixedSize(horizontal: false, vertical: true)
 
@@ -552,10 +566,50 @@ struct CameraPreviewView: View {
     /// Task 047 requirement 3: capacity readout, fallback notices and the interruption
     /// banner. Split out of `statusBar` so each block is width-bounded on its own and a
     /// long Korean sentence can wrap without disturbing the rows above it.
+    /// Task 050 requirement 2: the recording HUD — the settings that will apply to the
+    /// next recording, in two short lines.
+    ///
+    ///     4K (2160p) | 60 FPS | 고화질
+    ///     약 6시간 12분
+    ///
+    /// Deliberately limited to quality, frame rate, quality preset and remaining time
+    /// (requirement 2). Long/Short output mode, dropped frames, writer status and every
+    /// other diagnostic stay out of it — output mode is still visible in the 녹화 요약
+    /// sheet, and the diagnostics remain Debug-only (requirement 8).
+    private var recordingHUD: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(hudSettingsLine)
+                .font(.caption.bold())
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
+            Text(hudRemainingLine)
+                .font(.caption2.monospacedDigit())
+                .lineLimit(1)
+                .foregroundStyle(capacityWarningColor)
+        }
+        .fixedSize(horizontal: true, vertical: false)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
+        .background(.black.opacity(0.5), in: RoundedRectangle(cornerRadius: 10))
+        .foregroundStyle(.white)
+    }
+
+    /// "4K (2160p) | 60 FPS | 고화질". Falls back to placeholders until the camera has
+    /// resolved its actual format, so the line never collapses or jumps in width.
+    private var hudSettingsLine: String {
+        [
+            activeQuality?.title ?? "--",
+            activeFPS?.title ?? "--",
+            bitratePresetViewModel.settings.preset.shortTitle
+        ].joined(separator: "  |  ")
+    }
+
+    private var hudRemainingLine: String {
+        "약 \(capacityViewModel.approximateRemainingText) 촬영 가능"
+    }
+
     @ViewBuilder
     private var statusDetails: some View {
-        capacityBadge
-
         if qualityFallbackOccurred, let activeQuality {
             warningBanner("이 기기에서 지원하지 않는 화질이라 \(activeQuality.title)(으)로 대신 녹화합니다.")
         }
@@ -650,11 +704,19 @@ struct CameraPreviewView: View {
         }
     }
 
-    /// Long/Short Recording status, shown independently (requirement 8) — only
-    /// populated while `RecordingMode` is `.dual`, so this renders nothing in `.single`
-    /// mode (unchanged from before Task 019).
+    /// Per-writer Long/Short status.
+    ///
+    /// Task 050 requirement 8: now Debug-only. This was still rendering on the Release
+    /// camera screen, which requirement 8 explicitly rules out ("Long 저장 / Short 저장
+    /// … Debug 빌드에서만"). A source-level audit of what remains outside `#if DEBUG`
+    /// is what caught it — the `strings` check could not, because it does not extract
+    /// these Korean literals from either binary.
+    ///
+    /// Only populated while `RecordingMode` is `.dual`, so it rendered nothing in
+    /// `.single` mode even before this (unchanged from Task 019).
     @ViewBuilder
     private var dualRecordingStatusRows: some View {
+        #if DEBUG
         if recordingViewModel.longFormStatusText != nil || recordingViewModel.shortFormStatusText != nil {
             VStack(spacing: 2) {
                 if let longFormStatusText = recordingViewModel.longFormStatusText {
@@ -667,6 +729,7 @@ struct CameraPreviewView: View {
             .font(.caption2.bold())
             .foregroundStyle(.white)
         }
+        #endif
     }
 
     /// Task 047 requirement 3: the same controls, laid out for the space available.

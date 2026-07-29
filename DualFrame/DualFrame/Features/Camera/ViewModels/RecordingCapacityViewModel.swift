@@ -35,6 +35,24 @@ final class RecordingCapacityViewModel: ObservableObject {
         return String(format: "%02d:%02d:%02d", clamped / 3600, (clamped % 3600) / 60, clamped % 60)
     }
 
+    /// Task 050 requirement 2: the HUD's human-readable form — "6시간 12분", "48분",
+    /// "35초". A ticking `HH:MM:SS` is right for a countdown during recording, but the
+    /// HUD answers "roughly how much can I shoot?", where seconds of precision on a
+    /// six-hour figure are noise.
+    var approximateRemainingText: String {
+        guard let estimatedSecondsRemaining else { return "--" }
+        let clamped = max(0, estimatedSecondsRemaining)
+        let hours = clamped / 3600
+        let minutes = (clamped % 3600) / 60
+        if hours > 0 {
+            return minutes > 0 ? "\(hours)시간 \(minutes)분" : "\(hours)시간"
+        }
+        if minutes > 0 {
+            return "\(minutes)분"
+        }
+        return "\(clamped)초"
+    }
+
     /// Requirement 4: 5분 이하 → 노란색, 1분 이하 → 빨간색.
     var warningLevel: WarningLevel {
         guard let estimatedSecondsRemaining else { return .normal }

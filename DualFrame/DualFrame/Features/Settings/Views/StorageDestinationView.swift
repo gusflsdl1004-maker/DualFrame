@@ -42,6 +42,10 @@ struct StorageDestinationView: View {
                     NavigationLink("녹화 프레임레이트") {
                         RecordingFPSView()
                     }
+                    // Task 050 requirement 3: quality preset (표준/고화질/최고화질).
+                    NavigationLink("녹화 품질") {
+                        BitratePresetView()
+                    }
                     NavigationLink("저장 방식") {
                         RecordingOutputModeView()
                     }

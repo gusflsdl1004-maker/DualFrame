@@ -12,7 +12,15 @@ struct RecordingFPSView: View {
     /// Task 039 requirement 5: FPS support depends on which resolution is currently
     /// selected — the same camera can support 60fps at Full HD but only 30fps at 4K.
     private let capabilityService = DeviceCapabilityService()
-    private let currentQuality = RecordingQualitySettingsService().load().selectedQuality
+    private let qualitySettingsService = RecordingQualitySettingsService()
+    /// Task 050 requirement 1: `@State` refreshed on every appearance, never a `let`
+    /// captured when the view struct is built.
+    ///
+    /// SwiftUI constructs a `NavigationLink`'s destination eagerly — before the user
+    /// navigates — so a stored `let` here was initialised with whatever quality was
+    /// selected at that earlier moment. Change the quality, come back, and the support
+    /// verdicts (and the footer sentence) were still computed against the old one.
+    @State private var currentQuality: RecordingQuality = RecordingQualitySettingsService().load().selectedQuality
 
     var body: some View {
         Form {
@@ -27,12 +35,17 @@ struct RecordingFPSView: View {
             }
         }
         .navigationTitle("녹화 프레임레이트")
-        #if DEBUG
-        // Task 049: prints the real AVCaptureDevice.formats search behind each
-        // "(지원 안 함)" verdict, so a wrong one can be read off device data rather
-        // than reasoned about.
-        .task { capabilityService.logCapabilityDump() }
-        #endif
+        .task {
+            // Requirement 1: re-read on every appearance so the rows, the "(지원 안 함)"
+            // markers and the footer all reflect the quality selected *now*.
+            currentQuality = qualitySettingsService.load().selectedQuality
+            #if DEBUG
+            // Task 049: prints the real AVCaptureDevice.formats search behind each
+            // verdict, so a wrong one can be read off device data rather than
+            // reasoned about.
+            capabilityService.logCapabilityDump()
+            #endif
+        }
     }
 
     private func fpsRow(_ fps: RecordingFPS) -> some View {

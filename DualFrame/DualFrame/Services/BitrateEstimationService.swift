@@ -31,9 +31,21 @@ nonisolated struct BitrateEstimationService {
     /// Mirrors `RecordingService.makeWriterContext`'s literal `AVEncoderBitRateKey`
     /// value for the audio track (64 kbps AAC mono).
     private let audioBitrateBps: Double
+    /// Task 050 requirement 3: read fresh on construction so a preset change applies to
+    /// the next recording and to the next capacity refresh alike.
+    private let presetService: BitratePresetSettingsService
 
-    init(audioBitrateBps: Double = 64_000) {
+    init(
+        audioBitrateBps: Double = 64_000,
+        presetService: BitratePresetSettingsService = BitratePresetSettingsService()
+    ) {
         self.audioBitrateBps = audioBitrateBps
+        self.presetService = presetService
+    }
+
+    /// The preset currently in effect.
+    var currentPreset: BitratePreset {
+        presetService.load().preset
     }
 
     /// Bits per pixel per frame for a given frame size. Tiered rather than constant —
@@ -46,9 +58,11 @@ nonisolated struct BitrateEstimationService {
         }
     }
 
-    /// The video bitrate a writer at `width`×`height` and `fps` is configured with.
+    /// The video bitrate a writer at `width`×`height` and `fps` is configured with,
+    /// scaled by the user's quality preset (Task 050 requirement 3).
     func videoBitrateBps(width: Int, height: Int, fps: RecordingFPS) -> Double {
-        Double(width * height) * Double(fps.rawValue) * bitsPerPixel(width: width, height: height)
+        let base = Double(width * height) * Double(fps.rawValue) * bitsPerPixel(width: width, height: height)
+        return base * currentPreset.bitrateMultiplier
     }
 
     /// Integer form, for `AVVideoAverageBitRateKey`.
