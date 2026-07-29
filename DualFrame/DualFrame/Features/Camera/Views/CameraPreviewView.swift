@@ -136,21 +136,17 @@ struct CameraPreviewView: View {
                                 .ignoresSafeArea()
                         }
 
-                        statusBar(isLandscape: isLandscape)
-                            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-
-                        // Requirement 3: in landscape the screen is short, so a
-                        // bottom-anchored control stack collides with the status bar
-                        // and the framing guide. Controls move to the trailing edge and
-                        // stack vertically there, the way Apple Camera does — Landscape
-                        // Left and Right both use whichever side the layout container
-                        // reports as trailing, so neither is special-cased.
-                        recordingControls(isLandscape: isLandscape)
-                            .frame(
-                                maxWidth: .infinity,
-                                maxHeight: .infinity,
-                                alignment: isLandscape ? .trailing : .bottom
-                            )
+                        // Task 052 requirement 3: two genuinely different layouts, not
+                        // one layout rotated. Portrait keeps the familiar
+                        // top-bar/bottom-controls split; landscape uses dedicated
+                        // leading/trailing columns so nothing sits over the middle of
+                        // the frame — which is where the subject is, and where the
+                        // 16:9/9:16 framing guides overlap.
+                        if isLandscape {
+                            landscapeOverlay
+                        } else {
+                            portraitOverlay
+                        }
                     }
                 }
             }
@@ -472,6 +468,50 @@ struct CameraPreviewView: View {
         }
         .padding(.horizontal, 12)
         .padding(.top, 8)
+    }
+
+    /// Portrait: HUD and entry points along the top, controls along the bottom — the
+    /// full width is available, so nothing has to compete for the middle.
+    private var portraitOverlay: some View {
+        ZStack {
+            statusBar(isLandscape: false)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+            recordingControls(isLandscape: false)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+        }
+    }
+
+    /// Task 052 requirement 3: a layout built for landscape rather than inherited from
+    /// portrait.
+    ///
+    /// In landscape the frame is wide and short: a top bar plus a bottom bar would eat
+    /// most of the vertical space and sit directly over the subject. So the two edges
+    /// that are *cheap* in landscape are used instead —
+    ///   leading  : HUD and warnings, top-aligned
+    ///   trailing : entry-point icons above, record control below
+    /// — leaving the entire horizontal centre band, where both framing guides sit,
+    /// completely unobstructed.
+    private var landscapeOverlay: some View {
+        HStack(alignment: .top, spacing: 0) {
+            VStack(alignment: .leading, spacing: 6) {
+                if let statusText = recordingViewModel.visibleStatusText {
+                    statusChip(statusText, emphasized: true)
+                }
+                recordingHUD
+                statusDetails
+                Spacer(minLength: 0)
+            }
+
+            Spacer(minLength: 0)
+
+            VStack(alignment: .trailing, spacing: 10) {
+                HStack(spacing: 8) { iconButtons }
+                Spacer(minLength: 0)
+                recordingControls(isLandscape: true)
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
     }
 
     /// Task 047 requirement 3: the top-right entry points, extracted so the status bar

@@ -823,50 +823,83 @@ private nonisolated final class SampleBufferOutputForwarder: NSObject,
     AVCaptureVideoDataOutputSampleBufferDelegate,
     AVCaptureAudioDataOutputSampleBufferDelegate {
 
-    /// One captured buffer, tagged with which output it came from, so a single ordered
-    /// stream can carry both without losing their relative order.
-    private enum CapturedBuffer {
-        case video(CMSampleBuffer)
-        case audio(CMSampleBuffer)
-    }
-
     private let recordingService: RecordingService
     private let performanceMonitor: RecordingPerformanceMonitor
-    private let continuation: AsyncStream<CapturedBuffer>.Continuation
-    private let consumerTask: Task<Void, Never>
+
+    /// Task 052: **separate** streams for video and audio.
+    ///
+    /// Task 047b put both on one serial stream with one consumer, to guarantee
+    /// ordering. That is what limits arrival to ~33-36fps against a 60fps target: an
+    /// audio buffer arriving between two video frames blocks the next video frame for
+    /// the whole of its own `RecordingService.append` (which loops every writer). Audio
+    /// arrives at roughly the same rate as video, so video throughput was being roughly
+    /// halved — which is exactly the measured figure.
+    ///
+    /// Splitting them is safe: ordering only has to hold *within* one
+    /// `AVAssetWriterInput`, and each stream still has exactly one consumer, so video
+    /// frames still reach the writer in capture order. The video and audio inputs are
+    /// independent and are driven by their own presentation timestamps, so there is no
+    /// cross-stream ordering requirement to preserve.
+    private let videoContinuation: AsyncStream<CMSampleBuffer>.Continuation
+    private let audioContinuation: AsyncStream<CMSampleBuffer>.Continuation
+    private let videoConsumer: Task<Void, Never>
+    private let audioConsumer: Task<Void, Never>
+
+    /// Task 052: counted here rather than by awaiting the monitor per buffer — see
+    /// `flushInterval`. Only ever touched from the single video consumer.
+    private var videoConsumed = 0
+    /// Frames the bounded stream discarded because the consumer was behind. This is the
+    /// number that distinguishes "the camera produced fewer frames" from "we could not
+    /// drain them fast enough" — the former is a capture problem, the latter is ours.
+    private nonisolated(unsafe) var videoYieldDropped = 0
+    private nonisolated(unsafe) var videoYielded = 0
+
+    /// How many buffers between pushes to `RecordingPerformanceMonitor`. Task 047b
+    /// awaited that actor twice per buffer (`frameSpawned`/`frameCompleted`) purely for
+    /// counters — at 60fps video plus audio that is hundreds of extra suspensions a
+    /// second on the critical path, for two integer increments.
+    private static let flushInterval = 30
 
     init(recordingService: RecordingService, performanceMonitor: RecordingPerformanceMonitor) {
         self.recordingService = recordingService
         self.performanceMonitor = performanceMonitor
 
-        // `.bufferingNewest` gives bounded, ordered delivery: a backlog discards the
-        // oldest pending frames instead of retaining every buffer until the writer
-        // catches up. 12 frames is a fifth of a second at 60fps — enough to absorb a
-        // normal hiccup, small enough that the capture pool is never starved.
-        let (stream, continuation) = AsyncStream<CapturedBuffer>.makeStream(
+        // Video gets its own budget now that audio cannot consume it. 12 frames is a
+        // fifth of a second at 60fps — enough to absorb a hiccup, small enough that the
+        // capture pool is never starved.
+        let (videoStream, videoContinuation) = AsyncStream<CMSampleBuffer>.makeStream(
             bufferingPolicy: .bufferingNewest(12)
         )
-        self.continuation = continuation
+        let (audioStream, audioContinuation) = AsyncStream<CMSampleBuffer>.makeStream(
+            bufferingPolicy: .bufferingNewest(24)
+        )
+        self.videoContinuation = videoContinuation
+        self.audioContinuation = audioContinuation
 
-        // Exactly one consumer, so buffers reach `RecordingService` in the order they
-        // were captured.
-        consumerTask = Task {
-            for await buffer in stream {
-                await performanceMonitor.frameSpawned()
-                switch buffer {
-                case .video(let sampleBuffer):
-                    await recordingService.appendVideoSampleBuffer(sampleBuffer)
-                case .audio(let sampleBuffer):
-                    await recordingService.appendAudioSampleBuffer(sampleBuffer)
+        videoConsumer = Task {
+            var sinceFlush = 0
+            for await sampleBuffer in videoStream {
+                await recordingService.appendVideoSampleBuffer(sampleBuffer)
+                sinceFlush += 1
+                if sinceFlush >= Self.flushInterval {
+                    await performanceMonitor.framesProcessed(sinceFlush)
+                    sinceFlush = 0
                 }
-                await performanceMonitor.frameCompleted()
+            }
+        }
+
+        audioConsumer = Task {
+            for await sampleBuffer in audioStream {
+                await recordingService.appendAudioSampleBuffer(sampleBuffer)
             }
         }
     }
 
     deinit {
-        continuation.finish()
-        consumerTask.cancel()
+        videoContinuation.finish()
+        audioContinuation.finish()
+        videoConsumer.cancel()
+        audioConsumer.cancel()
     }
 
     func captureOutput(
@@ -874,25 +907,21 @@ private nonisolated final class SampleBufferOutputForwarder: NSObject,
         didOutput sampleBuffer: CMSampleBuffer,
         from connection: AVCaptureConnection
     ) {
-        // Task 047: hands the buffer to a single serial consumer instead of spawning a
-        // new unstructured `Task` per buffer, which had two concrete defects:
-        //
-        //  1. No ordering guarantee. Separate `Task`s awaiting the same actor are not
-        //     FIFO, so sample buffers could reach `RecordingService.append` out of
-        //     presentation-time order — and `AVAssetWriterInput` requires strictly
-        //     increasing timestamps.
-        //  2. No backpressure. Every in-flight task retained its `CMSampleBuffer`, so
-        //     whenever the writer couldn't keep up the capture pool was exhausted and
-        //     AVFoundation started dropping frames at the source. That is visible in
-        //     the real-device log as `measuredArrivalFPS=26.64` against a 30fps target.
-        //
-        // The stream is ordered and bounded: under sustained overload it discards the
-        // oldest *pending* frames deliberately (and counts them) rather than letting
-        // the capture pool starve.
         if output is AVCaptureVideoDataOutput {
-            continuation.yield(.video(sampleBuffer))
+            // `yield` reports whether the buffer was actually enqueued. Counting the
+            // discards here is what proves where 60fps becomes 36fps: if `dropped` is
+            // high the consumer is the bottleneck, if it is ~0 the camera itself is
+            // delivering fewer frames.
+            let result = videoContinuation.yield(sampleBuffer)
+            videoYielded += 1
+            if case .dropped = result { videoYieldDropped += 1 }
+            #if DEBUG
+            if videoYielded % 120 == 0 {
+                print("[Task052-Pipeline] videoYielded=\(videoYielded) droppedBeforeConsumer=\(videoYieldDropped) (\(String(format: "%.1f", Double(videoYieldDropped) / Double(videoYielded) * 100))%)")
+            }
+            #endif
         } else if output is AVCaptureAudioDataOutput {
-            continuation.yield(.audio(sampleBuffer))
+            audioContinuation.yield(sampleBuffer)
         }
     }
 

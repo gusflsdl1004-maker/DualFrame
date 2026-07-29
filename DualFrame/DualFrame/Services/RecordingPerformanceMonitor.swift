@@ -116,6 +116,20 @@ actor RecordingPerformanceMonitor {
 
     /// Call when a sample buffer is handed off from the capture output — before the
     /// asynchronous append into `RecordingService` even begins.
+    /// Task 052: batched replacement for the per-buffer `frameSpawned`/`frameCompleted`
+    /// pair. Those were two `await`s on this actor for every single sample buffer —
+    /// at 60fps video plus audio that is hundreds of suspensions a second spent on two
+    /// integer increments, on the exact path that has to keep up with the camera.
+    /// `SampleBufferOutputForwarder` now counts locally and calls this every 30 frames.
+    ///
+    /// The spawned/completed pair existed to detect an append backlog. That job now
+    /// belongs to the bounded `AsyncStream` in the forwarder, which reports the frames
+    /// it had to discard directly.
+    func framesProcessed(_ count: Int) {
+        spawnedFrameCount += count
+        completedFrameCount += count
+    }
+
     func frameSpawned() {
         spawnedFrameCount += 1
     }
