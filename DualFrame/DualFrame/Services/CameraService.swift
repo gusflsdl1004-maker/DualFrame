@@ -293,6 +293,12 @@ actor CameraService {
         setUpZoomCapabilities(device: device)
         isConfigured = true
         logStartupEvent("Camera Configured", detail: requestedPosition.title)
+        #if DEBUG
+        // Task 051 item 2: dumped at launch, not only when the FPS settings screen is
+        // opened — a normal run now captures the full device/format survey.
+        DeviceCapabilityService().logCapabilityDump()
+        print("[Task049-Caps]   ACTUALLY-BOUND deviceType=\(device.deviceType.rawValue) uniqueID=\(device.uniqueID)")
+        #endif
     }
 
     /// Task 044 requirement 2: the prime suspect for "device.activeFormat says

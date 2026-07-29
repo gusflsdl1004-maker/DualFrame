@@ -145,10 +145,22 @@ nonisolated struct DeviceCapabilityService {
             }
         }
 
+        // Task 051 items 2/3: for every combination, the Settings verdict and the
+        // device `CameraService` would actually bind, side by side. If these two ever
+        // disagree the capability lookup has drifted apart again; identical output is
+        // the empirical proof that they share one implementation.
         for quality in RecordingQuality.allCases {
             for fps in RecordingFPS.allCases {
-                let verdict = isSupported(fps, at: quality) ? "선택 가능" : "차단됨"
-                print("[Task049-Caps]   SETTINGS-VERDICT \(quality.title) @\(fps.rawValue)fps -> \(verdict)")
+                let settingsVerdict = isSupported(fps, at: quality)
+                let bound = Self.bestDevice(position: position, quality: quality, fps: fps)
+                let boundSupports = bound.map { Self.supports(quality: quality, fps: fps, device: $0) } ?? false
+                let agree = settingsVerdict == boundSupports ? "AGREE" : "*** MISMATCH ***"
+                print("""
+                [Task049-Caps]   \(quality.title) @\(fps.rawValue)fps \
+                settings=\(settingsVerdict ? "선택 가능" : "차단됨") \
+                captureWouldBind=\(bound?.deviceType.rawValue ?? "nil") \
+                thatDeviceSupports=\(boundSupports ? "YES" : "no") -> \(agree)
+                """)
             }
         }
     }
