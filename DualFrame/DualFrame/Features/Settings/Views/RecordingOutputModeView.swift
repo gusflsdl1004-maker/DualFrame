@@ -5,12 +5,14 @@
 
 import SwiftUI
 
-/// Task 042: replaces the old Single/Dual Recording picker (`RecordingModeView`,
-/// still present unchanged for internal/backward-compat reasons but no longer linked
-/// to from Settings) — the user only ever sees "Long만 저장" / "Short만 저장" /
-/// "Long + Short 저장" here, never "Single"/"Dual" (requirement 1/2). Pushed from the
-/// Settings screen, so it has no `NavigationStack` of its own (matches
-/// `RecordingQualityView`).
+/// Task 042 (revised): replaces the old Single/Dual Recording picker
+/// (`RecordingModeView`, still present unchanged for internal/backward-compat
+/// reasons but no longer linked to from Settings) — the user only ever sees "Long만
+/// 저장" / "Long + Short 저장" here, never "Single"/"Dual" (requirement 1/2). A third
+/// "Short만 저장" option was removed before merge: `RecordingService` has no real
+/// short-only capability, so offering it would have meant the app silently recorded
+/// both outputs while claiming to record only one. Pushed from the Settings screen,
+/// so it has no `NavigationStack` of its own (matches `RecordingQualityView`).
 struct RecordingOutputModeView: View {
     @StateObject private var viewModel = RecordingOutputModeViewModel()
 
@@ -22,8 +24,6 @@ struct RecordingOutputModeView: View {
                 }
             } header: {
                 Text("저장 방식")
-            } footer: {
-                Text("Short만 저장은 이번 버전에서는 실제로 Long + Short를 모두 저장하고, 보관함에서 Short만 보여줍니다.")
             }
         }
         .navigationTitle("저장 방식")

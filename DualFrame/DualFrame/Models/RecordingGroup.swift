@@ -66,21 +66,11 @@ nonisolated struct ResolvedRecordingGroup: Identifiable, Equatable {
     /// `.both` (show everything), so old groups are completely unaffected.
     let outputMode: RecordingOutputMode?
 
-    /// Task 042 requirement 7: what the Library should actually show for the long-form
-    /// slot, given this group's output mode. Only hides the slot for `.shortOnly` —
-    /// `.longOnly`/`.both`/`nil` (legacy) show it exactly as `long` already does.
-    ///
-    /// Known limitation (see the Task 042 report): `.shortOnly` currently still
-    /// records a real long-form file under the hood (`RecordingOutputMode
-    /// .underlyingRecordingMode` maps it to `.dual`, since `RecordingService` has no
-    /// real short-only capability yet) — this only hides it from this display, the
-    /// file itself still exists in the library and still consumes storage.
-    var displayedLong: ResolvedRecordingGroupMember {
-        outputMode == .shortOnly ? .none : long
-    }
-
-    /// Same reasoning as `displayedLong`, for the short-form slot — only `.longOnly`
-    /// hides it.
+    /// Task 042 requirement 3 (revised): what the Library should actually show for
+    /// the short-form slot, given this group's output mode. Only `.longOnly` hides
+    /// it — `.both`/`nil` (legacy) show it exactly as `short` already does. The
+    /// long-form slot has no equivalent hiding case now that `.shortOnly` has been
+    /// removed, so call sites use `long` directly.
     var displayedShort: ResolvedRecordingGroupMember {
         outputMode == .longOnly ? .none : short
     }

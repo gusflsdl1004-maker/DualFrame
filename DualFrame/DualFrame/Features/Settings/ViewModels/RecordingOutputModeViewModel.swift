@@ -30,10 +30,24 @@ final class RecordingOutputModeViewModel: ObservableObject {
     ) {
         self.service = service
         self.legacyModeService = legacyModeService
-        settings = service.load()
-        // Requirement 2/backward-compat: keep the legacy key in sync on load too, not
-        // just on the next change — so RecordingService's very first read after this
-        // update already matches whatever output mode is actually shown/selected.
+
+        if service.hasStoredValue {
+            settings = service.load()
+        } else {
+            // Requirement 4: no `RecordingOutputModeSettings` has ever been saved —
+            // migrate from whatever the legacy `RecordingMode` already is, instead of
+            // silently applying `.default`, so an existing user's prior Single/Dual
+            // choice carries over as Long만/Long+Short rather than resetting.
+            let migrated = RecordingOutputModeSettings(
+                outputMode: legacyModeService.load().mode == .single ? .longOnly : .both
+            )
+            settings = migrated
+            service.save(migrated)
+        }
+
+        // Keep the legacy key in sync on load too, not just on the next change — so
+        // RecordingService's very first read after this update already matches
+        // whatever output mode is actually shown/selected.
         legacyModeService.save(RecordingModeSettings(mode: settings.outputMode.underlyingRecordingMode))
     }
 }

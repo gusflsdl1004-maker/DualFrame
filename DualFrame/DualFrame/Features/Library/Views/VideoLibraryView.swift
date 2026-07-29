@@ -125,7 +125,7 @@ private struct RecordingGroupRow: View {
             Text(formattedDuration)
                 .font(.caption)
                 .foregroundStyle(.secondary)
-            memberStatusRow(title: "롱폼", member: group.displayedLong)
+            memberStatusRow(title: "롱폼", member: group.long)
             memberStatusRow(title: "숏폼", member: group.displayedShort)
         }
         .padding(.vertical, 4)
@@ -167,7 +167,7 @@ private struct RecordingGroupDetailView: View {
 
     var body: some View {
         List {
-            memberSection(title: "롱폼", member: group.displayedLong)
+            memberSection(title: "롱폼", member: group.long)
             memberSection(title: "숏폼", member: group.displayedShort)
         }
         .navigationTitle(group.createdAt.formatted(date: .abbreviated, time: .shortened))

@@ -17,6 +17,16 @@ nonisolated struct RecordingOutputModeSettingsService {
         self.defaults = defaults
     }
 
+    /// Whether a value has ever been saved under this key — distinct from `load()`
+    /// returning `.default`, which also happens when nothing has ever been saved
+    /// *or* when a previously-saved value no longer decodes (e.g. the removed
+    /// `.shortOnly` case). `RecordingOutputModeViewModel` uses this to decide whether
+    /// to migrate from the legacy `RecordingMode` instead of silently applying
+    /// `.default`.
+    var hasStoredValue: Bool {
+        defaults.data(forKey: key) != nil
+    }
+
     func load() -> RecordingOutputModeSettings {
         guard let data = defaults.data(forKey: key),
               let settings = try? JSONDecoder().decode(RecordingOutputModeSettings.self, from: data) else {
