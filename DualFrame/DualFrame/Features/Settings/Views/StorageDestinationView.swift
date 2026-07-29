@@ -11,6 +11,7 @@ import SwiftUI
 struct StorageDestinationView: View {
     @StateObject private var viewModel = StorageSettingsViewModel()
     @StateObject private var recoveryViewModel = RecoveryViewModel(checkpointStore: RecordingCheckpointStore())
+    @StateObject private var guidelineViewModel = RecordingGuidelineViewModel()
     @ObservedObject var externalStorageViewModel: ExternalStorageViewModel
     @Environment(\.dismiss) private var dismiss
 
@@ -34,7 +35,7 @@ struct StorageDestinationView: View {
                     }
                 }
 
-                Section("녹화") {
+                Section {
                     NavigationLink("녹화 화질") {
                         RecordingQualityView()
                     }
@@ -44,6 +45,11 @@ struct StorageDestinationView: View {
                     NavigationLink("녹화 모드") {
                         RecordingModeView()
                     }
+                    Toggle("촬영 가이드 표시", isOn: $guidelineViewModel.settings.isEnabled)
+                } header: {
+                    Text("녹화")
+                } footer: {
+                    Text("촬영 가이드는 미리보기 화면에 롱폼(16:9)과 숏폼(9:16) 촬영 영역을 선으로 표시합니다.")
                 }
 
                 Section("복구") {

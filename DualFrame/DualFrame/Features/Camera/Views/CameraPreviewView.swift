@@ -16,6 +16,8 @@ struct CameraPreviewView: View {
     @StateObject private var recordingModeViewModel = RecordingModeViewModel()
     @StateObject private var storageSettingsViewModel = StorageSettingsViewModel()
     @StateObject private var orientationManager = OrientationManager()
+    /// Task 040: whether the Long/Short framing guide overlay is shown.
+    @StateObject private var guidelineViewModel = RecordingGuidelineViewModel()
     @State private var cameraService: CameraService
     @State private var libraryService: InternalVideoLibraryService
     @State private var dualRecordingCoordinator: DualRecordingCoordinator
@@ -71,6 +73,15 @@ struct CameraPreviewView: View {
             } else {
                 CameraPreviewRepresentable(session: cameraService.session)
                     .ignoresSafeArea()
+                    .overlay {
+                        // Task 040: purely visual, drawn above the live preview and
+                        // below the status bar/controls so it never obscures them.
+                        // Camera output itself is untouched — this only draws lines.
+                        if guidelineViewModel.settings.isEnabled {
+                            RecordingGuidelineOverlayView()
+                                .ignoresSafeArea()
+                        }
+                    }
                     .overlay(alignment: .top) {
                         statusBar
                     }
