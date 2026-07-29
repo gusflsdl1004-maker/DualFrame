@@ -65,6 +65,16 @@ nonisolated struct RecordingDiagnostics: Codable, Equatable, Identifiable {
     /// indistinguishable after the fact, which is exactly how every measurement before
     /// Task 063 ended up unattributable. Optional so older records still decode.
     let lateFrameHandling: LateFrameHandling?
+    /// Task 064: the encoder configuration this recording ran under, and — the part that
+    /// settles it — the codec/profile/**level** parsed back out of the file that was
+    /// actually written. The level is chosen by VideoToolbox, not by the app, and for
+    /// H.264 it is what caps frame rate at a given resolution. All optional so records
+    /// written before Task 064 still decode.
+    let videoCodecPreference: VideoCodecPreference?
+    let keyFrameIntervalSeconds: Int?
+    let bitratePreset: BitratePreset?
+    /// e.g. `hvc1 profile=1 tier=Main level=5.1` or `avc1 profile=100 level=5.1`.
+    let savedVideoFormat: String?
 
     /// Arrival rate implied by the frames that actually reached the writer.
     var measuredArrivalFPS: Double {

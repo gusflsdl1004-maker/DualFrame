@@ -23,6 +23,28 @@ struct DiagnosticsDetailView: View {
                 }
             }
 
+            // Task 064: what the encoder was asked for, and what it actually produced.
+            // `저장된 포맷` is parsed out of the written file, so the level shown is
+            // VideoToolbox's own choice — for H.264, Level 5.1 at 4K means 30fps was the
+            // ceiling no matter how many frames arrived.
+            if diagnostics.videoCodecPreference != nil || diagnostics.savedVideoFormat != nil {
+                Section("인코더") {
+                    if let codec = diagnostics.videoCodecPreference {
+                        LabeledContent("코덱 설정", value: codec.title)
+                    }
+                    if let interval = diagnostics.keyFrameIntervalSeconds {
+                        LabeledContent("키프레임 간격", value: "\(interval)초")
+                    }
+                    if let preset = diagnostics.bitratePreset {
+                        LabeledContent("비트레이트 프리셋", value: preset.title)
+                    }
+                    if let format = diagnostics.savedVideoFormat, !format.isEmpty {
+                        LabeledContent("저장된 포맷", value: format)
+                            .font(.caption.monospaced())
+                    }
+                }
+            }
+
             Section("성능") {
                 // Task 057 item 3: the four figures that decide whether 60fps was
                 // actually achieved, available in Release — this screen ships.
@@ -134,7 +156,11 @@ struct DiagnosticsDetailView: View {
             savedNominalFrameRate: 59.94,
             writerStats: nil,
             droppedFrameReasons: ["OutOfBuffers": 291],
-            lateFrameHandling: .discard
+            lateFrameHandling: .discard,
+            videoCodecPreference: .auto,
+            keyFrameIntervalSeconds: 1,
+            bitratePreset: .high,
+            savedVideoFormat: "hvc1 profile=1 tier=Main level=5.1"
         ))
     }
 }

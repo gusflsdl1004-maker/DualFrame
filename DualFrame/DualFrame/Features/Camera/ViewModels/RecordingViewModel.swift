@@ -110,6 +110,11 @@ final class RecordingViewModel: ObservableObject {
     /// with the capture setting it was taken under. Never used to change behaviour —
     /// `CameraService` is the only thing that acts on this setting.
     private let lateFrameHandlingSettingsService: LateFrameHandlingSettingsService
+    /// Task 064: same role — read only when writing diagnostics, to label the
+    /// measurement with the encoder condition it was taken under. `RecordingService` is
+    /// the only thing that acts on these.
+    private let encoderSettingsService = VideoEncoderSettingsService()
+    private let bitratePresetSettingsService = BitratePresetSettingsService()
     private var durationTask: Task<Void, Never>?
     private var interruptionOccurredThisSession = false
     /// Task 024: created once per recording in `startRecording()`, cleared once
@@ -331,7 +336,14 @@ final class RecordingViewModel: ObservableObject {
             // video output for this recording. Same source (`UserDefaults`), and it can
             // only change from the 진단 screen while no recording is running, so what is
             // stored here is what was in force while these numbers were measured.
-            lateFrameHandling: lateFrameHandlingSettingsService.load().mode
+            lateFrameHandling: lateFrameHandlingSettingsService.load().mode,
+            // Task 064: the encoder condition, alongside the ground truth read back from
+            // the file itself — a codec setting says what was requested, the file's own
+            // level says what the hardware encoder actually ran at.
+            videoCodecPreference: encoderSettingsService.load().codec,
+            keyFrameIntervalSeconds: encoderSettingsService.load().keyFrameInterval.rawValue,
+            bitratePreset: bitratePresetSettingsService.load().preset,
+            savedVideoFormat: await service.lastSavedVideoFormat
         )
         await diagnosticsService.save(diagnostics)
     }

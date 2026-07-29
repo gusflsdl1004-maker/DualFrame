@@ -80,6 +80,14 @@ struct DiagnosticsComparisonView: View {
                     comparisonRow("늦은 프레임 처리",
                                   longOnly?.lateFrameHandling?.shortTitle ?? "—",
                                   longAndShort?.lateFrameHandling?.shortTitle ?? "—")
+                    // Task 064: same warning applies — if these differ, the columns
+                    // measure two different encoders, not the short-form path.
+                    comparisonRow("코덱 설정",
+                                  longOnly?.videoCodecPreference?.shortTitle ?? "—",
+                                  longAndShort?.videoCodecPreference?.shortTitle ?? "—")
+                    comparisonRow("저장된 코덱/레벨",
+                                  codecAndLevel(longOnly?.savedVideoFormat),
+                                  codecAndLevel(longAndShort?.savedVideoFormat))
                 }
 
                 Section("결과") {
@@ -129,6 +137,20 @@ struct DiagnosticsComparisonView: View {
             }
         }
         .navigationTitle("Long vs Long+Short")
+    }
+
+    /// Task 064: `hvc1 profile=1 tier=Main level=5.1` -> `hvc1 L5.1`. The full string is
+    /// on the detail screen; this column is 90pt wide and the two facts that matter here
+    /// are the codec and the level. Falls back to the raw string if it has no level, so
+    /// an unparsed format is still shown rather than hidden.
+    private func codecAndLevel(_ format: String?) -> String {
+        guard let format, !format.isEmpty else { return "—" }
+        let codec = format.split(separator: " ").first.map(String.init) ?? format
+        guard let level = format
+            .split(separator: " ")
+            .first(where: { $0.hasPrefix("level=") })?
+            .dropFirst("level=".count) else { return format }
+        return "\(codec) L\(level)"
     }
 
     /// The long-form writer in a record: the one that never ran a crop.

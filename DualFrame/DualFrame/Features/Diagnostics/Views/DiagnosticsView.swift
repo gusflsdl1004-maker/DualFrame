@@ -16,6 +16,10 @@ struct DiagnosticsView: View {
     /// recording, so the next recording simply picks up whatever is selected here.
     @State private var lateFrameHandling = LateFrameHandlingSettingsService().load().mode
     private let lateFrameHandlingSettingsService = LateFrameHandlingSettingsService()
+    /// Task 064: the encoder-path experiment. Same pattern — `RecordingService` re-reads
+    /// the store when it builds each writer, so the next recording picks this up.
+    @State private var encoderSettings = VideoEncoderSettingsService().load()
+    private let encoderSettingsService = VideoEncoderSettingsService()
 
     var body: some View {
         List {
@@ -34,6 +38,30 @@ struct DiagnosticsView: View {
                 Text("캡처 실험 (Task 063)")
             } footer: {
                 Text("이 설정은 다음 녹화부터 적용되며, 각 녹화 기록에 어떤 설정이었는지 함께 저장됩니다. 두 설정으로 각각 녹화한 뒤 아래 비교 화면에서 드롭 사유를 대조하세요.")
+            }
+
+            Section {
+                Picker("코덱", selection: $encoderSettings.codec) {
+                    ForEach(VideoCodecPreference.allCases) { codec in
+                        Text(codec.title).tag(codec)
+                    }
+                }
+                Text(encoderSettings.codec.detail)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                Picker("키프레임 간격", selection: $encoderSettings.keyFrameInterval) {
+                    ForEach(KeyFrameInterval.allCases) { interval in
+                        Text(interval.title).tag(interval)
+                    }
+                }
+                Text(encoderSettings.keyFrameInterval.detail)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } header: {
+                Text("인코더 실험 (Task 064)")
+            } footer: {
+                Text("H.264 Level 5.1은 4K에서 초당 30프레임이 한계입니다(4K 1프레임 = 32,400 매크로블록, Level 5.1 = 983,040 MB/s). iPhone의 하드웨어 H.264 인코더는 Level 5.1을 넘지 않으므로 4K60은 HEVC가 필요합니다. 비트레이트는 설정 → 녹화 화질에서 '절반'을 고르면 비교할 수 있습니다.")
             }
 
             // Task 062: the two conditions side by side, which is what the comparison
@@ -68,6 +96,9 @@ struct DiagnosticsView: View {
         .navigationTitle("진단")
         .onChange(of: lateFrameHandling) { _, newValue in
             lateFrameHandlingSettingsService.save(LateFrameHandlingSettings(mode: newValue))
+        }
+        .onChange(of: encoderSettings) { _, newValue in
+            encoderSettingsService.save(newValue)
         }
         .task {
             await viewModel.refresh()

@@ -120,6 +120,9 @@ actor RecordingService {
     /// Task 049: the single definition of the recording bitrate, shared with
     /// `RecordingCapacityViewModel`'s remaining-time estimate.
     private let bitrateService = BitrateEstimationService()
+    /// Task 064: codec and keyframe interval. Read inside `makeWriterContext`, once per
+    /// writer per recording, so a change takes effect on the next recording.
+    private let encoderSettingsService = VideoEncoderSettingsService()
     private let libraryService: InternalVideoLibraryService
     /// `nonisolated` because these are just references to other actors — safe to hand
     /// out (actors are inherently `Sendable`) without crossing this actor's isolation.
@@ -151,6 +154,12 @@ actor RecordingService {
     /// written, in every configuration — this is the number that decides whether 60fps
     /// was actually achieved, and it has to be available in Release.
     private(set) var lastSavedNominalFrameRate: Float = 0
+    /// Task 064 item 5: the codec, profile and **level** the saved file actually carries,
+    /// parsed from its own format description. This is the only way to answer "did the
+    /// hardware encoder run at a level that can sustain this frame rate" with evidence
+    /// rather than inference — the writer is told a codec, but the level is chosen by
+    /// VideoToolbox and is never visible from the settings dictionary.
+    private(set) var lastSavedVideoFormat = ""
     /// Task 059: per-writer accept/reject census for the recording that just finished.
     private(set) var lastWriterAppendStats: [WriterAppendStats] = []
 
@@ -720,9 +729,15 @@ actor RecordingService {
             writerStatuses[profile]?.validationResult = result
             lastValidationResult = result
 
-            if let track = try? await AVURLAsset(url: context.outputURL).loadTracks(withMediaType: .video).first,
-               let rate = try? await track.load(.nominalFrameRate) {
-                lastSavedNominalFrameRate = rate
+            if let track = try? await AVURLAsset(url: context.outputURL).loadTracks(withMediaType: .video).first {
+                if let rate = try? await track.load(.nominalFrameRate) {
+                    lastSavedNominalFrameRate = rate
+                }
+                // Task 064 item 5: what the encoder actually produced, not what it was asked for.
+                if let descriptions = try? await track.load(.formatDescriptions),
+                   let description = descriptions.first {
+                    lastSavedVideoFormat = Self.describeVideoFormat(description)
+                }
             }
 
             #if DEBUG
@@ -863,6 +878,55 @@ actor RecordingService {
         }
     }
 
+    /// Task 064 item 5: the codec, profile and level a written file actually carries.
+    ///
+    /// The level is the number that matters. `AVVideoCodecKey` says which codec the
+    /// writer was *asked* for, but VideoToolbox picks the level itself, and for H.264 the
+    /// level is exactly what caps frame rate at a given resolution — Level 5.1 allows
+    /// 983,040 macroblocks/sec, which is 4K at 30fps. If a 4K60 recording comes back
+    /// `avc1 … level=5.1`, the encoder was never going to reach 60fps.
+    ///
+    /// Read from the sample description extension atoms (`avcC` / `hvcC`), whose layout
+    /// is fixed by ISO/IEC 14496-15. Returns just the four-character codec if the atom is
+    /// missing or too short — this is diagnostics, so it degrades rather than throwing.
+    private nonisolated static func describeVideoFormat(_ formatDescription: CMFormatDescription) -> String {
+        let subType = CMFormatDescriptionGetMediaSubType(formatDescription)
+        let codec = String(bytes: [
+            UInt8((subType >> 24) & 0xFF), UInt8((subType >> 16) & 0xFF),
+            UInt8((subType >> 8) & 0xFF), UInt8(subType & 0xFF)
+        ], encoding: .ascii) ?? "\(subType)"
+
+        guard let atoms = CMFormatDescriptionGetExtension(
+            formatDescription,
+            extensionKey: kCMFormatDescriptionExtension_SampleDescriptionExtensionAtoms
+        ) as? [String: Any] else {
+            return codec
+        }
+
+        // avcC: [0] configurationVersion, [1] AVCProfileIndication,
+        //       [2] profile_compatibility, [3] AVCLevelIndication (level × 10).
+        if let avcC = atoms["avcC"] as? Data, avcC.count >= 4 {
+            let bytes = Array(avcC)
+            return String(
+                format: "%@ profile=%d level=%.1f",
+                codec, Int(bytes[1]), Double(bytes[3]) / 10
+            )
+        }
+
+        // hvcC: [1] profile_space(2) | tier_flag(1) | profile_idc(5),
+        //       [12] general_level_idc (level × 30).
+        if let hvcC = atoms["hvcC"] as? Data, hvcC.count >= 13 {
+            let bytes = Array(hvcC)
+            let tier = (bytes[1] & 0x20) != 0 ? "High" : "Main"
+            return String(
+                format: "%@ profile=%d tier=%@ level=%.1f",
+                codec, Int(bytes[1] & 0x1F), tier, Double(bytes[12]) / 30
+            )
+        }
+
+        return codec
+    }
+
     private func makeWriterContext(for profile: OutputProfile) throws -> WriterContext {
         let url = Self.makeOutputURL()
         let writer = try AVAssetWriter(url: url, fileType: .mov)
@@ -883,8 +947,25 @@ actor RecordingService {
             height: format.resolution.height,
             fps: format.fps
         )
+        // Task 064 item 1: the codec is no longer hardcoded to H.264.
+        //
+        // A 4K frame is 32,400 macroblocks; H.264 Level 5.1 (`MaxMBPS` 983,040) tops out
+        // at 30fps for that frame size, and Apple's hardware H.264 encoder does not go
+        // above Level 5.1 on iPhone. 4K60 in H.264 is therefore outside the encoder's
+        // specification — which is why iOS's own camera offers 4K60 under "고효율"(HEVC)
+        // and not under "높은 호환성"(H.264). Every 4K60 measurement this project has
+        // taken was against that configuration. See `VideoCodecPreference`.
+        //
+        // `.auto` resolves per output, so the 4K60 long-form gets HEVC while a 1080p
+        // short-form or a 4K30 recording stays on the more compatible H.264.
+        let encoderSettings = encoderSettingsService.load()
+        let codec = encoderSettings.codec.resolvedCodec(
+            width: format.resolution.width,
+            height: format.resolution.height,
+            fps: format.fps.rawValue
+        )
         let videoSettings: [String: Any] = [
-            AVVideoCodecKey: AVVideoCodecType.h264,
+            AVVideoCodecKey: codec,
             AVVideoWidthKey: format.resolution.width,
             AVVideoHeightKey: format.resolution.height,
             AVVideoCompressionPropertiesKey: [
@@ -895,9 +976,23 @@ actor RecordingService {
                 // the written file's nominal frame rate even when 60fps of buffers
                 // arrive.
                 AVVideoExpectedSourceFrameRateKey: format.fps.rawValue,
-                // One keyframe per second: standard for real-time capture, and it
-                // bounds how much is lost if a file is truncated by a crash.
-                AVVideoMaxKeyFrameIntervalDurationKey: 1
+                // Task 064 item 3: was a hardcoded 1 second. An I-frame at 4K costs far
+                // more than a P-frame, so this is a real lever on encoder throughput —
+                // and a real trade-off, since a truncated file loses at most one
+                // interval (CLAUDE.md rule 1). Default stays 1 second.
+                AVVideoMaxKeyFrameIntervalDurationKey: encoderSettings.keyFrameInterval.rawValue,
+                // Task 064 item 4 (compression-property audit): this was never set, so
+                // it defaulted to `true` and the encoder was free to emit B-frames.
+                // B-frames require the encoder to hold and reorder frames, which costs
+                // throughput and adds latency, and they buy nothing here: this is
+                // real-time capture (`expectsMediaDataInRealTime = true`) written
+                // straight to disk, not an offline export. Apple's guidance for
+                // real-time encoding is to disable reordering.
+                //
+                // Trade-off, stated rather than hidden: at a fixed bitrate, dropping
+                // B-frames costs a little compression efficiency. Recording stability
+                // outranks that (CLAUDE.md rules 2/3).
+                AVVideoAllowFrameReorderingKey: false
             ]
         ]
         #if DEBUG
