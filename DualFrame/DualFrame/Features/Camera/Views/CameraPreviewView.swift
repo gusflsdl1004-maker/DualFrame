@@ -91,22 +91,37 @@ struct CameraPreviewView: View {
             if permissionViewModel.isDenied {
                 CameraPermissionDeniedView()
             } else {
-                CameraPreviewRepresentable(session: cameraService.session)
-                    .ignoresSafeArea()
-                    // Task 043 requirement 4: pinch-to-zoom directly on the preview,
-                    // matching Apple Camera. `$pinchScale` reports a *relative* scale
-                    // (1.0 = unchanged since the gesture began), so it's applied
-                    // against `zoomFactorAtPinchStart` — the zoom level the gesture
-                    // started from — rather than used as an absolute factor.
-                    .gesture(
-                        MagnificationGesture()
-                            .updating($pinchScale) { value, state, _ in state = value }
-                            .onEnded { _ in zoomFactorAtPinchStart = currentZoomFactor }
-                    )
-                    .onChange(of: pinchScale) { _, newScale in
-                        setZoom(zoomFactorAtPinchStart * newScale)
-                    }
-                    .overlay {
+                // Task 047 requirement 3: one GeometryReader drives the whole
+                // responsive layout. `isLandscape` is derived from the actual
+                // container size rather than from `OrientationManager` — the recording
+                // pipeline's orientation is a separate concern (CLAUDE.md rules 52-56)
+                // and must never be coupled to how the UI happens to be laid out.
+                GeometryReader { geometry in
+                    let isLandscape = geometry.size.width > geometry.size.height
+                    // A ZStack, not `.overlay` on the preview: the preview calls
+                    // `.ignoresSafeArea()`, which expands it *past* the GeometryReader's
+                    // bounds, and anything overlaid on it inherits that oversized frame
+                    // — which pushed the status chips off the left edge. Layering here
+                    // instead keeps every control inside the safe area while the camera
+                    // image alone still bleeds edge to edge.
+                    ZStack {
+                        CameraPreviewRepresentable(session: cameraService.session)
+                            .ignoresSafeArea()
+                            // Task 043 requirement 4: pinch-to-zoom directly on the
+                            // preview, matching Apple Camera. `$pinchScale` reports a
+                            // *relative* scale (1.0 = unchanged since the gesture
+                            // began), so it's applied against `zoomFactorAtPinchStart`
+                            // — the zoom level the gesture started from — rather than
+                            // used as an absolute factor.
+                            .gesture(
+                                MagnificationGesture()
+                                    .updating($pinchScale) { value, state, _ in state = value }
+                                    .onEnded { _ in zoomFactorAtPinchStart = currentZoomFactor }
+                            )
+                            .onChange(of: pinchScale) { _, newScale in
+                                setZoom(zoomFactorAtPinchStart * newScale)
+                            }
+
                         // Task 040: purely visual, drawn above the live preview and
                         // below the status bar/controls so it never obscures them.
                         // Camera output itself is untouched — this only draws lines.
@@ -114,13 +129,24 @@ struct CameraPreviewView: View {
                             RecordingGuidelineOverlayView()
                                 .ignoresSafeArea()
                         }
+
+                        statusBar(isLandscape: isLandscape)
+                            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+
+                        // Requirement 3: in landscape the screen is short, so a
+                        // bottom-anchored control stack collides with the status bar
+                        // and the framing guide. Controls move to the trailing edge and
+                        // stack vertically there, the way Apple Camera does — Landscape
+                        // Left and Right both use whichever side the layout container
+                        // reports as trailing, so neither is special-cased.
+                        recordingControls(isLandscape: isLandscape)
+                            .frame(
+                                maxWidth: .infinity,
+                                maxHeight: .infinity,
+                                alignment: isLandscape ? .trailing : .bottom
+                            )
                     }
-                    .overlay(alignment: .top) {
-                        statusBar
-                    }
-                    .overlay(alignment: .bottom) {
-                        recordingControls
-                    }
+                }
             }
         }
         .task {
@@ -278,7 +304,7 @@ struct CameraPreviewView: View {
     /// `zoomOptions` the current device/position actually has) plus a continuous
     /// slider spanning the device's full min–max zoom range, placed bottom-center,
     /// directly above the record button (`recordingControls` below).
-    private var zoomControl: some View {
+    private func zoomControl(isLandscape: Bool) -> some View {
         VStack(spacing: 8) {
             if maxZoomFactor > minZoomFactor {
                 Slider(
@@ -289,7 +315,9 @@ struct CameraPreviewView: View {
                     ),
                     in: minZoomFactor...maxZoomFactor
                 )
-                .frame(width: 220)
+                // Task 047: narrower in the landscape trailing column so it can't
+                // overflow it.
+                .frame(width: isLandscape ? 170 : 220)
                 .tint(.white)
             }
 
@@ -349,6 +377,25 @@ struct CameraPreviewView: View {
     /// mid-word wrapping — it tells SwiftUI to give the label its full intrinsic
     /// width rather than compressing it until the text has to break between
     /// characters.
+    /// Task 047 requirement 3: a full-sentence warning, as opposed to `statusChip`'s
+    /// short label. These were plain `Text` in a Capsule with no width bound, so a long
+    /// Korean sentence either ran past the screen edge or — since Korean offers no
+    /// spaces to break on — wrapped between characters. A rounded rectangle (a Capsule
+    /// clips multi-line text badly), an explicit multi-line allowance, and a width
+    /// ceiling tied to the container make it wrap as readable lines instead.
+    private func warningBanner(_ text: String, color: Color = .yellow) -> some View {
+        Text(text)
+            .font(.caption2)
+            .lineLimit(3)
+            .multilineTextAlignment(.leading)
+            .fixedSize(horizontal: false, vertical: true)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 6)
+            .background(.black.opacity(0.6), in: RoundedRectangle(cornerRadius: 12))
+            .foregroundStyle(color)
+            .frame(maxWidth: 320, alignment: .leading)
+    }
+
     private func statusChip(_ text: String, emphasized: Bool = false) -> some View {
         Text(text)
             .font(.caption.bold())
@@ -363,8 +410,19 @@ struct CameraPreviewView: View {
             .foregroundStyle(.white)
     }
 
-    private var statusBar: some View {
+    private func statusBar(isLandscape: Bool) -> some View {
         VStack(alignment: .leading, spacing: 6) {
+            // Task 047 requirement 3: the icon row gets its own full-width row rather
+            // than competing with the status chips for one line. Five 46pt targets plus
+            // the debug menu need ~230pt; alongside the chip column that exceeded a
+            // 393pt-wide screen, clipping the camera-toggle and pushing the debug menu
+            // off-screen entirely. Stacking them removes the competition, so neither
+            // side has to shrink at any screen size.
+            HStack(spacing: 8) {
+                Spacer(minLength: 0)
+                iconButtons
+            }
+
             HStack(alignment: .top) {
                 // Task 045 requirement 4: previously one long HStack of four Texts in
                 // a single Capsule. In portrait that row is wider than the screen, and
@@ -393,8 +451,21 @@ struct CameraPreviewView: View {
                 }
                 .fixedSize(horizontal: false, vertical: true)
 
-                Spacer(minLength: 8)
+                Spacer(minLength: 0)
+            }
 
+            statusDetails
+        }
+        .padding(.horizontal, 12)
+        .padding(.top, 8)
+    }
+
+    /// Task 047 requirement 3: the top-right entry points, extracted so the status bar
+    /// can lay them out on their own row instead of squeezing them beside the status
+    /// chips.
+    @ViewBuilder
+    private var iconButtons: some View {
+        Group {
                 // Task 038 requirement 2: icon buttons enlarged (10 → 14 padding) for
                 // easier tapping, matching the Camera app's touch-target sizing.
                 Button {
@@ -475,52 +546,35 @@ struct CameraPreviewView: View {
                         .foregroundStyle(.white)
                 }
                 #endif
-            }
-
-            capacityBadge
-
-            if qualityFallbackOccurred, let activeQuality {
-                Text("이 기기에서 지원하지 않는 화질이라 \(activeQuality.title)(으)로 대신 녹화합니다.")
-                    .font(.caption2)
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 6)
-                    .background(.black.opacity(0.5), in: Capsule())
-                    .foregroundStyle(.yellow)
-            }
-
-            if fpsFallbackOccurred, let activeFPS {
-                Text("현재 화질에서 지원하지 않는 프레임레이트라 \(activeFPS.title)(으)로 대신 녹화합니다.")
-                    .font(.caption2)
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 6)
-                    .background(.black.opacity(0.5), in: Capsule())
-                    .foregroundStyle(.yellow)
-            }
-
-            if let lowStorageWarning = recordingViewModel.lowStorageWarning {
-                Text(lowStorageWarning)
-                    .font(.caption2)
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 6)
-                    .background(.black.opacity(0.5), in: Capsule())
-                    .foregroundStyle(.yellow)
-            }
-
-            // Task 041 requirement 5: recording would fail outright — a clearer,
-            // upfront message rather than only surfacing this after a failed attempt.
-            if capacityViewModel.isStorageInsufficientToRecord {
-                Text("저장 공간이 부족하여 녹화를 시작할 수 없습니다.")
-                    .font(.caption2.bold())
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 6)
-                    .background(.black.opacity(0.5), in: Capsule())
-                    .foregroundStyle(.red)
-            }
-
-            interruptionBanner
         }
-        .padding(.horizontal, 16)
-        .padding(.top, 8)
+    }
+
+    /// Task 047 requirement 3: capacity readout, fallback notices and the interruption
+    /// banner. Split out of `statusBar` so each block is width-bounded on its own and a
+    /// long Korean sentence can wrap without disturbing the rows above it.
+    @ViewBuilder
+    private var statusDetails: some View {
+        capacityBadge
+
+        if qualityFallbackOccurred, let activeQuality {
+            warningBanner("이 기기에서 지원하지 않는 화질이라 \(activeQuality.title)(으)로 대신 녹화합니다.")
+        }
+
+        if fpsFallbackOccurred, let activeFPS {
+            warningBanner("현재 화질에서 지원하지 않는 프레임레이트라 \(activeFPS.title)(으)로 대신 녹화합니다.")
+        }
+
+        if let lowStorageWarning = recordingViewModel.lowStorageWarning {
+            warningBanner(lowStorageWarning)
+        }
+
+        // Task 041 requirement 5: recording would fail outright — a clearer,
+        // upfront message rather than only surfacing this after a failed attempt.
+        if capacityViewModel.isStorageInsufficientToRecord {
+            warningBanner("저장 공간이 부족하여 녹화를 시작할 수 없습니다.", color: .red)
+        }
+
+        interruptionBanner
     }
 
     /// Task 041: "남은 저장 공간 / 예상 촬영 가능" — updated every second by the
@@ -615,8 +669,13 @@ struct CameraPreviewView: View {
         }
     }
 
-    private var recordingControls: some View {
-        VStack(spacing: 10) {
+    /// Task 047 requirement 3: the same controls, laid out for the space available.
+    /// Portrait keeps the familiar bottom-centre stack; landscape moves them to a
+    /// narrower trailing column, because a wide bottom stack on a short screen
+    /// overlapped both the status bar and the framing guide. Everything inside is
+    /// width-bounded so nothing is clipped on a small device.
+    private func recordingControls(isLandscape: Bool) -> some View {
+        VStack(spacing: isLandscape ? 8 : 10) {
             if let result = recordingViewModel.lastValidationResult {
                 VStack(spacing: 2) {
                     Text("용량 \(recordingViewModel.formattedFileSize)")
@@ -627,8 +686,13 @@ struct CameraPreviewView: View {
                 .foregroundStyle(.white)
                 .opacity(result.isValid ? 1 : 0.7)
             } else if let errorMessage = recordingViewModel.errorMessage {
+                // Requirement 3: error text is a full sentence — allow it to wrap
+                // rather than run off the edge.
                 Text(errorMessage)
                     .font(.caption2)
+                    .lineLimit(3)
+                    .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
                     .foregroundStyle(.red)
             }
 
@@ -643,35 +707,54 @@ struct CameraPreviewView: View {
             // developer diagnostics, not something an end user needs mid-recording —
             // moved behind #if DEBUG instead of always showing on the main screen.
             // The underlying stats are unchanged; only where they're displayed moved.
+            //
+            // Task 047: in landscape these three side by side are wider than the
+            // trailing column, so they stack there instead of being clipped.
             if recordingViewModel.isRecording {
-                HStack(spacing: 12) {
-                    Text("Dropped: \(recordingViewModel.formattedDroppedFrames)")
-                    Text("Mem: \(recordingViewModel.memoryStatusText)")
-                    Text("Write: \(recordingViewModel.writeStatusText)")
+                ViewThatFits(in: .horizontal) {
+                    HStack(spacing: 12) {
+                        Text("Dropped: \(recordingViewModel.formattedDroppedFrames)")
+                        Text("Mem: \(recordingViewModel.memoryStatusText)")
+                        Text("Write: \(recordingViewModel.writeStatusText)")
+                    }
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Dropped: \(recordingViewModel.formattedDroppedFrames)")
+                        Text("Mem: \(recordingViewModel.memoryStatusText)")
+                        Text("Write: \(recordingViewModel.writeStatusText)")
+                    }
                 }
                 .font(.caption2)
                 .foregroundStyle(.white.opacity(0.8))
             }
             #endif
 
-            // Task 043 requirement 6: bottom-center, directly above the record button.
-            zoomControl
+            // Task 043 requirement 6 / 047: directly above the record button in both
+            // orientations — the control itself adapts its own width.
+            zoomControl(isLandscape: isLandscape)
 
             // Task 038 requirement 2: enlarged (bigger font, more padding) so the
             // primary action reads clearly at a glance, closer to the Camera app's
-            // prominent shutter control.
+            // prominent shutter control. Task 047: slightly tighter in landscape so
+            // the whole column fits a short screen without clipping.
             Button {
                 recordingViewModel.toggleRecording(expectsAudioTrack: isMicrophoneGranted)
             } label: {
                 Text(recordingViewModel.isRecording ? AppStrings.Camera.stopRecording : AppStrings.Camera.startRecording)
-                    .font(.title3.bold())
-                    .padding(.horizontal, 36)
-                    .padding(.vertical, 18)
+                    .font(isLandscape ? .body.bold() : .title3.bold())
+                    .lineLimit(1)
+                    .fixedSize(horizontal: true, vertical: false)
+                    .padding(.horizontal, isLandscape ? 24 : 36)
+                    .padding(.vertical, isLandscape ? 12 : 18)
                     .background(recordingViewModel.isRecording ? Color.red : Color.white, in: Capsule())
                     .foregroundStyle(recordingViewModel.isRecording ? .white : .black)
             }
         }
-        .padding(.bottom, 32)
+        // Requirement 3: Safe Area respected in both orientations — the trailing
+        // column clears the home indicator/notch side, the bottom stack clears the
+        // home indicator.
+        .padding(isLandscape ? .trailing : .bottom, isLandscape ? 20 : 32)
+        .padding(isLandscape ? .vertical : .horizontal, 12)
+        .frame(maxWidth: isLandscape ? 260 : .infinity)
     }
 }
 

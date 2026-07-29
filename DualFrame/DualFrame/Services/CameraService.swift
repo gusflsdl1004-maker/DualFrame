@@ -839,12 +839,50 @@ private nonisolated final class SampleBufferOutputForwarder: NSObject,
     AVCaptureVideoDataOutputSampleBufferDelegate,
     AVCaptureAudioDataOutputSampleBufferDelegate {
 
+    /// One captured buffer, tagged with which output it came from, so a single ordered
+    /// stream can carry both without losing their relative order.
+    private enum CapturedBuffer {
+        case video(CMSampleBuffer)
+        case audio(CMSampleBuffer)
+    }
+
     private let recordingService: RecordingService
     private let performanceMonitor: RecordingPerformanceMonitor
+    private let continuation: AsyncStream<CapturedBuffer>.Continuation
+    private let consumerTask: Task<Void, Never>
 
     init(recordingService: RecordingService, performanceMonitor: RecordingPerformanceMonitor) {
         self.recordingService = recordingService
         self.performanceMonitor = performanceMonitor
+
+        // `.bufferingNewest` gives bounded, ordered delivery: a backlog discards the
+        // oldest pending frames instead of retaining every buffer until the writer
+        // catches up. 12 frames is a fifth of a second at 60fps — enough to absorb a
+        // normal hiccup, small enough that the capture pool is never starved.
+        let (stream, continuation) = AsyncStream<CapturedBuffer>.makeStream(
+            bufferingPolicy: .bufferingNewest(12)
+        )
+        self.continuation = continuation
+
+        // Exactly one consumer, so buffers reach `RecordingService` in the order they
+        // were captured.
+        consumerTask = Task {
+            for await buffer in stream {
+                await performanceMonitor.frameSpawned()
+                switch buffer {
+                case .video(let sampleBuffer):
+                    await recordingService.appendVideoSampleBuffer(sampleBuffer)
+                case .audio(let sampleBuffer):
+                    await recordingService.appendAudioSampleBuffer(sampleBuffer)
+                }
+                await performanceMonitor.frameCompleted()
+            }
+        }
+    }
+
+    deinit {
+        continuation.finish()
+        consumerTask.cancel()
     }
 
     func captureOutput(
@@ -852,20 +890,25 @@ private nonisolated final class SampleBufferOutputForwarder: NSObject,
         didOutput sampleBuffer: CMSampleBuffer,
         from connection: AVCaptureConnection
     ) {
-        let recordingService = recordingService
-        let performanceMonitor = performanceMonitor
+        // Task 047: hands the buffer to a single serial consumer instead of spawning a
+        // new unstructured `Task` per buffer, which had two concrete defects:
+        //
+        //  1. No ordering guarantee. Separate `Task`s awaiting the same actor are not
+        //     FIFO, so sample buffers could reach `RecordingService.append` out of
+        //     presentation-time order — and `AVAssetWriterInput` requires strictly
+        //     increasing timestamps.
+        //  2. No backpressure. Every in-flight task retained its `CMSampleBuffer`, so
+        //     whenever the writer couldn't keep up the capture pool was exhausted and
+        //     AVFoundation started dropping frames at the source. That is visible in
+        //     the real-device log as `measuredArrivalFPS=26.64` against a 30fps target.
+        //
+        // The stream is ordered and bounded: under sustained overload it discards the
+        // oldest *pending* frames deliberately (and counts them) rather than letting
+        // the capture pool starve.
         if output is AVCaptureVideoDataOutput {
-            Task {
-                await performanceMonitor.frameSpawned()
-                await recordingService.appendVideoSampleBuffer(sampleBuffer)
-                await performanceMonitor.frameCompleted()
-            }
+            continuation.yield(.video(sampleBuffer))
         } else if output is AVCaptureAudioDataOutput {
-            Task {
-                await performanceMonitor.frameSpawned()
-                await recordingService.appendAudioSampleBuffer(sampleBuffer)
-                await performanceMonitor.frameCompleted()
-            }
+            continuation.yield(.audio(sampleBuffer))
         }
     }
 

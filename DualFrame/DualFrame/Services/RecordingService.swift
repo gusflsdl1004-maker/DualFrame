@@ -42,6 +42,14 @@ actor RecordingService {
         let outputURL: URL
         var isSessionStarted = false
         var hasFailed = false
+        /// Task 047: how many video frames this writer actually accepted, and how many
+        /// were skipped because its input wasn't ready. Short-form was failing with no
+        /// trace of why: its frames go through a synchronous 4K crop, so under load
+        /// `isReadyForMoreMediaData` goes false and `append` silently `continue`d,
+        /// leaving the writer to reach `finishWriting()` with an empty video track.
+        /// Counting both makes that visible instead of surfacing as an opaque failure.
+        var appendedVideoFrames = 0
+        var skippedVideoFrames = 0
         /// Non-nil only for the short-form output (Task 021) — long-form and `.single`
         /// mode leave both of these `nil`, so `append(_:isVideo:)` takes the exact same
         /// unmodified-sample-buffer path it always has for them.
@@ -386,7 +394,19 @@ actor RecordingService {
                 writerStatuses[profile]?.lastError = .writeFailed
                 lastError = .writeFailed
                 lastStartupFailureReason = .finishWritingFailed
-                logEvent("finishWriting failed", detail: profile.outputName)
+                // Task 047: `writer.error` was never read anywhere, which is why the
+                // short-form failure had no diagnosable cause — the status said
+                // "failed" and the actual reason was thrown away. Recorded alongside
+                // the frame counts, which distinguish "the writer rejected the data"
+                // from "the writer never received any data".
+                let reason = context.writer.error.map { "\($0)" } ?? "unknown"
+                logEvent(
+                    "finishWriting failed",
+                    detail: "\(profile.outputName): appended=\(context.appendedVideoFrames) skipped=\(context.skippedVideoFrames) error=\(reason)"
+                )
+                #if DEBUG
+                print("[Task044-Debug] STAGE 7 FAIL     profile=\(profile.outputName) writerStatus=\(context.writer.status.rawValue) appendedVideoFrames=\(context.appendedVideoFrames) skippedVideoFrames=\(context.skippedVideoFrames) writer.error=\(reason)")
+                #endif
                 continue
             }
 
@@ -396,6 +416,7 @@ actor RecordingService {
             lastValidationResult = result
 
             #if DEBUG
+            print("[Task044-Debug] STAGE 6b FRAMES  profile=\(profile.outputName) appendedVideoFrames=\(context.appendedVideoFrames) skippedVideoFrames=\(context.skippedVideoFrames)")
             await logFinishedFileStage(profile: profile, url: context.outputURL)
             #endif
 
@@ -655,7 +676,18 @@ actor RecordingService {
                 writerContexts[profile] = context
             }
 
-            guard writer.status == .writing, input.isReadyForMoreMediaData else { continue }
+            guard writer.status == .writing, input.isReadyForMoreMediaData else {
+                // Task 047: this `continue` used to be completely silent. For
+                // short-form under a 4K load it is the common path — its frames go
+                // through a synchronous crop, so its input falls behind and every
+                // skipped frame vanished without a trace, leaving `finishWriting()` to
+                // fail opaquely on an empty video track. Now counted per writer and
+                // surfaced in `stopRecording`.
+                if isVideo {
+                    writerContexts[profile]?.skippedVideoFrames += 1
+                }
+                continue
+            }
 
             let writeStart = Date()
             if isVideo, let cropConfiguration = context.cropConfiguration, let adaptor = context.pixelBufferAdaptor {
@@ -666,9 +698,15 @@ actor RecordingService {
                 if let sourcePixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer),
                    let croppedBuffer = frameCropper.croppedPixelBuffer(from: sourcePixelBuffer, configuration: cropConfiguration) {
                     let appended = adaptor.append(croppedBuffer, withPresentationTime: CMSampleBufferGetPresentationTimeStamp(sampleBuffer))
-                    if !appended {
+                    if appended {
+                        writerContexts[profile]?.appendedVideoFrames += 1
+                    } else {
                         markWriterFailed(profile, error: .writeFailed, startupReason: .appendFailed)
                     }
+                } else {
+                    // Cropper returned nil — one dropped frame, not a writer failure
+                    // (unchanged), but no longer invisible.
+                    writerContexts[profile]?.skippedVideoFrames += 1
                 }
             } else {
                 // Unchanged since before Task 021: long-form, `.single` mode, and every
