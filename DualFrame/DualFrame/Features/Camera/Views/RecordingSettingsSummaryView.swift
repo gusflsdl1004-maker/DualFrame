@@ -11,7 +11,7 @@ import SwiftUI
 /// view adds no new business logic and cannot change anything (no controls, only
 /// `LabeledContent`). Available in both Debug and Release builds.
 struct RecordingSettingsSummaryView: View {
-    @ObservedObject var recordingModeViewModel: RecordingModeViewModel
+    @ObservedObject var outputModeViewModel: RecordingOutputModeViewModel
     @ObservedObject var storageSettingsViewModel: StorageSettingsViewModel
     @ObservedObject var orientationManager: OrientationManager
     let cameraPosition: CameraPosition
@@ -27,7 +27,9 @@ struct RecordingSettingsSummaryView: View {
                 }
 
                 Section("녹화") {
-                    LabeledContent("녹화 모드", value: recordingModeViewModel.settings.mode.title)
+                    // Task 042 requirement 5: shows the user-facing output mode, never
+                    // the internal Single/Dual RecordingMode concept.
+                    LabeledContent("저장 방식", value: outputModeViewModel.settings.outputMode.title)
                     LabeledContent("화질", value: activeQuality?.title ?? "--")
                     LabeledContent("FPS", value: activeFPS?.title ?? "--")
                 }

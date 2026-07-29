@@ -42,8 +42,8 @@ struct StorageDestinationView: View {
                     NavigationLink("녹화 프레임레이트") {
                         RecordingFPSView()
                     }
-                    NavigationLink("녹화 모드") {
-                        RecordingModeView()
+                    NavigationLink("저장 방식") {
+                        RecordingOutputModeView()
                     }
                     Toggle("촬영 가이드 표시", isOn: $guidelineViewModel.settings.isEnabled)
                 } header: {

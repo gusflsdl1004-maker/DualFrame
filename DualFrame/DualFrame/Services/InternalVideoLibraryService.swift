@@ -207,7 +207,8 @@ actor InternalVideoLibraryService {
                 recordingMode: group.recordingMode,
                 duration: group.duration,
                 long: resolve(group.longRecording),
-                short: resolve(group.shortRecording)
+                short: resolve(group.shortRecording),
+                outputMode: group.outputMode
             )
         }
 
@@ -225,7 +226,8 @@ actor InternalVideoLibraryService {
                 recordingMode: .single,
                 duration: record.duration,
                 long: .succeeded(record),
-                short: .none
+                short: .none,
+                outputMode: .longOnly
             )
         }
 
@@ -291,7 +293,8 @@ actor InternalVideoLibraryService {
                     recordingMode: .dual,
                     duration: long.duration,
                     long: .succeeded(long),
-                    short: .succeeded(short)
+                    short: .succeeded(short),
+                    outputMode: nil
                 ))
             } else {
                 groups.append(ResolvedRecordingGroup(
@@ -300,7 +303,8 @@ actor InternalVideoLibraryService {
                     recordingMode: .single,
                     duration: record.duration,
                     long: .succeeded(record),
-                    short: .none
+                    short: .none,
+                    outputMode: nil
                 ))
             }
         }

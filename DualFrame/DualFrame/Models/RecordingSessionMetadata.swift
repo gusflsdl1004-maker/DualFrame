@@ -21,4 +21,9 @@ nonisolated struct RecordingSessionMetadata: Equatable {
     let recordingMode: RecordingMode
     let selectedQuality: RecordingQuality
     let selectedFPS: RecordingFPS
+    /// Task 042: the user-facing output mode this session was started with — captured
+    /// once here (same reasoning as `recordingMode`/`selectedQuality`/`selectedFPS`
+    /// already being captured at start time) so a settings change mid-recording can
+    /// never retroactively relabel a `RecordingGroup` after the fact.
+    let outputMode: RecordingOutputMode
 }

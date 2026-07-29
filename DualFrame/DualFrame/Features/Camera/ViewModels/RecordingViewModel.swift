@@ -152,12 +152,16 @@ final class RecordingViewModel: ObservableObject {
             // starts — every output this recording produces will be tagged with this
             // sessionID by `InternalVideoLibraryService`, without `RecordingService`
             // ever needing to know sessions exist.
+            // Task 042: outputMode captured here too, same reasoning — a settings
+            // change mid-recording must never retroactively relabel this session's
+            // RecordingGroup.
             let metadata = RecordingSessionMetadata(
                 sessionID: UUID(),
                 startedAt: Date(),
                 recordingMode: mode,
                 selectedQuality: await service.activeQuality,
-                selectedFPS: await service.activeFPS
+                selectedFPS: await service.activeFPS,
+                outputMode: RecordingOutputModeSettingsService().load().outputMode
             )
             currentSessionMetadata = metadata
             currentSessionID = metadata.sessionID
@@ -367,7 +371,8 @@ final class RecordingViewModel: ObservableObject {
             recordingMode: session.recordingMode,
             longRecording: longMember,
             shortRecording: shortMember,
-            duration: endTime.timeIntervalSince(startTime)
+            duration: endTime.timeIntervalSince(startTime),
+            outputMode: session.outputMode
         )
         await groupService.save(group)
     }

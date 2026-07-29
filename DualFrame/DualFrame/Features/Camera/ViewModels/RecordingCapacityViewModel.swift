@@ -59,10 +59,11 @@ final class RecordingCapacityViewModel: ObservableObject {
 
     /// Requirement 3/6: called once a second by the caller's own polling loop (idle
     /// or recording) — since this always re-reads live free space and recomputes from
-    /// whatever `recordingMode`/`activeQuality`/`activeFPS` are passed in, a settings
-    /// change or actual disk consumption is reflected within one second, with no
-    /// separate "did settings change" plumbing needed.
-    func refresh(recordingMode: RecordingMode, activeQuality: RecordingQuality?, activeFPS: RecordingFPS?) {
+    /// whatever `outputMode`/`activeQuality`/`activeFPS` are passed in, a settings
+    /// change (Task 042's Long만/Short만/Long+Short 저장 choice included) or actual
+    /// disk consumption is reflected within one second, with no separate
+    /// "did settings change" plumbing needed.
+    func refresh(outputMode: RecordingOutputMode, activeQuality: RecordingQuality?, activeFPS: RecordingFPS?) {
         let snapshot = storageService.currentSnapshot()
         availableBytes = snapshot?.availableBytes
 
@@ -71,7 +72,7 @@ final class RecordingCapacityViewModel: ObservableObject {
             return
         }
 
-        let bitrateBps = totalBitrateBps(recordingMode: recordingMode, activeQuality: activeQuality, activeFPS: activeFPS)
+        let bitrateBps = totalBitrateBps(outputMode: outputMode, activeQuality: activeQuality, activeFPS: activeFPS)
         guard bitrateBps > 0 else {
             estimatedSecondsRemaining = nil
             return
@@ -80,20 +81,31 @@ final class RecordingCapacityViewModel: ObservableObject {
         estimatedSecondsRemaining = Int((Double(available) * 8) / bitrateBps)
     }
 
-    /// 듀얼 저장 고려: sums each active writer's estimated bitrate. `.dual` mode's two
-    /// writers use `OutputProfile.longForm`/`.shortForm`'s fixed dimensions — not the
-    /// user's quality/FPS preference — matching `RecordingService.targetProfiles`'s
-    /// actual `.dual` behavior (`.single`'s ad-hoc profile is the only one that honors
-    /// `activeQuality`/`activeFPS`; `.dual` doesn't yet, per rule 43's
-    /// architecture-only status).
-    private func totalBitrateBps(recordingMode: RecordingMode, activeQuality: RecordingQuality?, activeFPS: RecordingFPS?) -> Double {
-        switch recordingMode {
-        case .single:
+    /// 듀얼 저장 고려 (Task 042 requirement 6, followed literally): Long만 → Long
+    /// bitrate only, Short만 → Short bitrate only, 둘 다 → Long + Short summed.
+    ///
+    /// Known limitation (see the Task 042 report): for `.shortOnly` this is the
+    /// bitrate the *chosen output* would need — not necessarily what's actually
+    /// written to disk today, since `RecordingService` has no real short-only
+    /// capability yet and a `.shortOnly` recording currently still writes *both*
+    /// files under the hood (`RecordingOutputMode.underlyingRecordingMode`). This
+    /// estimate will under-report actual disk consumption for `.shortOnly` until a
+    /// future task gives `RecordingService` real short-only support.
+    private func totalBitrateBps(outputMode: RecordingOutputMode, activeQuality: RecordingQuality?, activeFPS: RecordingFPS?) -> Double {
+        switch outputMode {
+        case .longOnly:
             guard let activeQuality, let activeFPS else { return 0 }
             let dimensions = activeQuality.dimensions
             return bitrateService.estimatedWriterBitrateBps(width: dimensions.width, height: dimensions.height, fps: activeFPS)
 
-        case .dual:
+        case .shortOnly:
+            return bitrateService.estimatedWriterBitrateBps(
+                width: OutputProfile.shortForm.resolution.width,
+                height: OutputProfile.shortForm.resolution.height,
+                fps: OutputProfile.shortForm.fps
+            )
+
+        case .both:
             let longBitrate = bitrateService.estimatedWriterBitrateBps(
                 width: OutputProfile.longForm.resolution.width,
                 height: OutputProfile.longForm.resolution.height,

@@ -13,7 +13,13 @@ struct CameraPreviewView: View {
     @StateObject private var recordingViewModel: RecordingViewModel
     @StateObject private var externalStorageViewModel = ExternalStorageViewModel()
     @StateObject private var interruptionMonitor = RecordingInterruptionMonitor()
+    /// Task 042: kept only for the Debug panels (`RecordingDebugView`/
+    /// `HealthDashboardView`/`CrashReportExportView`), which still show the internal
+    /// Single/Dual concept for diagnostics — never shown anywhere a user sees
+    /// (requirement 2). `outputModeViewModel` below is the user-facing replacement.
     @StateObject private var recordingModeViewModel = RecordingModeViewModel()
+    /// Task 042: the user-facing "저장 방식" choice (Long만/Short만/Long+Short 저장).
+    @StateObject private var outputModeViewModel = RecordingOutputModeViewModel()
     @StateObject private var storageSettingsViewModel = StorageSettingsViewModel()
     @StateObject private var orientationManager = OrientationManager()
     /// Task 040: whether the Long/Short framing guide overlay is shown.
@@ -113,20 +119,26 @@ struct CameraPreviewView: View {
                 }
             )
         }
-        // Task 041: independent 1-second polling loop, same pattern as
+        // Task 041/042: independent 1-second polling loop, same pattern as
         // RecordingDebugView's — re-reads live free space and the currently-active
-        // mode/quality/FPS every second, so both real disk consumption during a
-        // recording and any settings change while idle are reflected within a second.
-        // While actively recording, reads the mode a recording actually started with
-        // (dualRecordingCoordinator.mode) instead of the live Settings preference, so
-        // a mid-recording settings change (which has no effect on the recording
-        // already in progress) can't produce a misleading estimate.
+        // output mode/quality/FPS every second, so both real disk consumption during a
+        // recording and any settings change while idle (Long만/Short만/Long+Short 저장
+        // included) are reflected within a second. While actively recording, derives
+        // the effective output mode from the real underlying RecordingMode the
+        // recording actually started with (dualRecordingCoordinator.mode) rather than
+        // the live Settings preference, so a mid-recording settings change (which has
+        // no effect on the recording already in progress) can't produce a misleading
+        // estimate — `.single` → `.longOnly`, `.dual` → `.both` (the two real
+        // behaviors `RecordingService` has today; see `RecordingOutputMode`'s docs).
         .task {
             while !Task.isCancelled {
-                let effectiveMode = recordingViewModel.isRecording
-                    ? await dualRecordingCoordinator.mode
-                    : recordingModeViewModel.settings.mode
-                capacityViewModel.refresh(recordingMode: effectiveMode, activeQuality: activeQuality, activeFPS: activeFPS)
+                let effectiveOutputMode: RecordingOutputMode
+                if recordingViewModel.isRecording {
+                    effectiveOutputMode = await dualRecordingCoordinator.mode == .dual ? .both : .longOnly
+                } else {
+                    effectiveOutputMode = outputModeViewModel.settings.outputMode
+                }
+                capacityViewModel.refresh(outputMode: effectiveOutputMode, activeQuality: activeQuality, activeFPS: activeFPS)
                 try? await Task.sleep(for: .seconds(1))
             }
         }
@@ -148,7 +160,7 @@ struct CameraPreviewView: View {
         }
         .sheet(isPresented: $isSettingsSummaryPresented) {
             RecordingSettingsSummaryView(
-                recordingModeViewModel: recordingModeViewModel,
+                outputModeViewModel: outputModeViewModel,
                 storageSettingsViewModel: storageSettingsViewModel,
                 orientationManager: orientationManager,
                 cameraPosition: cameraPosition,
@@ -241,7 +253,9 @@ struct CameraPreviewView: View {
                     if let activeFPS {
                         Text(activeFPS.title)
                     }
-                    Text(recordingModeViewModel.settings.mode.title)
+                    // Task 042 requirement 1: the main camera screen now shows the
+                    // user-facing output mode, never "Single Recording"/"Dual Recording".
+                    Text(outputModeViewModel.settings.outputMode.title)
                 }
                 .font(.caption.bold())
                 .padding(.horizontal, 12)
