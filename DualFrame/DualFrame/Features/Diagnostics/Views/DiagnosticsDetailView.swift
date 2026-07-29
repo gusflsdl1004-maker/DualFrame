@@ -31,6 +31,8 @@ struct DiagnosticsDetailView: View {
                 LabeledContent("남은 저장 공간", value: formattedStorage)
             }
 
+            writerStatsSection
+
             Section("복구") {
                 LabeledContent("체크포인트 저장 횟수", value: "\(diagnostics.checkpointCount)")
                 LabeledContent("복구 상태", value: diagnostics.recoveryStatus.title)
@@ -50,6 +52,27 @@ struct DiagnosticsDetailView: View {
 
     private var formattedMemory: String {
         ByteCountFormatter.string(fromByteCount: Int64(diagnostics.peakMemoryUsageBytes), countStyle: .memory)
+    }
+
+    /// Task 059 items 1/2/4: the per-writer census, in Release.
+    @ViewBuilder
+    private var writerStatsSection: some View {
+        if let stats = diagnostics.writerStats, !stats.isEmpty {
+            Section("Writer 별 append 통계") {
+                ForEach(stats) { stat in
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(stat.outputName).font(.headline)
+                        Text("시도 \(stat.attempts) · 성공 \(stat.appended) · notReady \(stat.notReady)")
+                            .font(.caption)
+                        Text(String(format: "수락률 %.1f%% · 평균 append %.2fms",
+                                    stat.acceptanceRate * 100, stat.averageAppendMilliseconds))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    .padding(.vertical, 2)
+                }
+            }
+        }
     }
 
     private var formattedStorage: String {
@@ -75,7 +98,8 @@ struct DiagnosticsDetailView: View {
             recoveryStatus: .completedNormally,
             deliveredVideoFrames: 7_500,
             droppedBeforeConsumer: 0,
-            savedNominalFrameRate: 59.94
+            savedNominalFrameRate: 59.94,
+            writerStats: nil
         ))
     }
 }

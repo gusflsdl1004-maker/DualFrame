@@ -53,6 +53,10 @@ nonisolated struct RecordingDiagnostics: Codable, Equatable, Identifiable {
     /// `nominalFrameRate` read back from the saved file — the number that finally
     /// decides whether 60fps was achieved.
     let savedNominalFrameRate: Float
+    /// Task 059: per-writer accept/reject census. Optional so diagnostics saved before
+    /// this task still decode unchanged (synthesised Decodable treats a missing key as
+    /// nil) — no migration.
+    let writerStats: [WriterAppendStats]?
 
     /// Arrival rate implied by the frames that actually reached the writer.
     var measuredArrivalFPS: Double {

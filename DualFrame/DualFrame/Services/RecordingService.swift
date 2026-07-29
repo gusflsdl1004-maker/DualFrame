@@ -65,6 +65,16 @@ actor RecordingService {
         /// Counting both makes that visible instead of surfacing as an opaque failure.
         var appendedVideoFrames = 0
         var skippedVideoFrames = 0
+        /// Task 059 items 1/2/4, recorded in **every** configuration — Release is where
+        /// the 36fps is, so these have to survive there.
+        /// Frames this writer was offered at all.
+        var appendAttempts = 0
+        /// Frames refused because `isReadyForMoreMediaData` was false. A high count here
+        /// with a low `averageAppendSeconds` is the signature of encoder backpressure:
+        /// the writer is not slow to accept a frame, it simply will not accept one.
+        var notReadyCount = 0
+        /// Cumulative time spent inside this writer's own append call.
+        var appendDurationTotal: TimeInterval = 0
         /// Non-nil only for the short-form output (Task 021) — long-form and `.single`
         /// mode leave both of these `nil`, so `append(_:isVideo:)` takes the exact same
         /// unmodified-sample-buffer path it always has for them.
@@ -135,6 +145,8 @@ actor RecordingService {
     /// written, in every configuration — this is the number that decides whether 60fps
     /// was actually achieved, and it has to be available in Release.
     private(set) var lastSavedNominalFrameRate: Float = 0
+    /// Task 059: per-writer accept/reject census for the recording that just finished.
+    private(set) var lastWriterAppendStats: [WriterAppendStats] = []
 
     #if DEBUG
     /// Task 044: counters backing `logVideoSampleBufferStage(_:)` only — never read
@@ -617,6 +629,21 @@ actor RecordingService {
 
         var anySucceeded = false
 
+        // Task 059: snapshot before any teardown clears `writerContexts`.
+        lastWriterAppendStats = writerContexts
+            .map { profile, context in
+                WriterAppendStats(
+                    outputName: profile.outputName,
+                    attempts: context.appendAttempts,
+                    appended: context.appendedVideoFrames,
+                    notReady: context.notReadyCount,
+                    averageAppendSeconds: context.appendedVideoFrames > 0
+                        ? context.appendDurationTotal / Double(context.appendedVideoFrames)
+                        : 0
+                )
+            }
+            .sorted { $0.outputName < $1.outputName }
+
         for profile in writerContexts.keys {
             guard let context = writerContexts[profile] else { continue }
             writerStatuses[profile]?.state = .stopping
@@ -993,9 +1020,12 @@ actor RecordingService {
                 writerContexts[profile] = context
             }
 
+            if isVideo { writerContexts[profile]?.appendAttempts += 1 }
+
             guard writer.status == .writing, input.isReadyForMoreMediaData else {
                 if isVideo {
                     writerContexts[profile]?.skippedVideoFrames += 1
+                    writerContexts[profile]?.notReadyCount += 1
                     #if DEBUG
                     debugTimings[profile, default: ProfileTimingStats()].notReadyCount += 1
                     #endif
@@ -1058,6 +1088,9 @@ actor RecordingService {
                 }
             }
             #endif
+            if isVideo, let writeDuration = result.writeDuration {
+                writerContexts[result.profile]?.appendDurationTotal += writeDuration
+            }
             await performanceMonitor.recordWriteLatency(result.totalDuration)
             if writerContexts[result.profile]?.writer.status == .failed {
                 markWriterFailed(result.profile, error: .writeFailed, startupReason: .appendFailed)
