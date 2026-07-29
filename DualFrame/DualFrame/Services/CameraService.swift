@@ -325,6 +325,17 @@ actor CameraService {
             videoOutput.deliversPreviewSizedOutputBuffers = false
         }
         videoOutput.automaticallyConfiguresOutputBufferDimensions = false
+
+        // Task 055 item 1: previously never set, so it defaulted to `true` and
+        // AVFoundation discarded any frame that became ready while a pool buffer was
+        // unavailable — the `lateDropped` count that climbed 38 -> 126 -> 412 -> 662.
+        //
+        // Setting this to `false` only changes what AVFoundation does when it cannot
+        // hand a frame over: queue it instead of discarding it. On its own that would
+        // be *worse*, because the frames would pile up. It is only safe together with
+        // the buffer-depth change below, which is what stops us holding the pool
+        // hostage in the first place.
+        videoOutput.alwaysDiscardsLateVideoFrames = false
     }
 
     /// Task 029: writes to the same shared `RecordingDiagnosticsLogService` instance
@@ -850,6 +861,20 @@ private nonisolated final class SampleBufferOutputForwarder: NSObject,
 
     private static let flushInterval = 30
 
+    /// Task 055 items 3/4/5: **the fix.**
+    ///
+    /// Every queued `CMSampleBuffer` keeps a `CVPixelBuffer` checked out of
+    /// `AVCaptureVideoDataOutput`'s internal pool, and that pool is small and fixed. At
+    /// 4K a depth of 12 (set in Task 047b) meant holding up to twelve pool slots at all
+    /// times, so the pool ran dry and AVFoundation had nowhere to render the next frame
+    /// — which is precisely what it reports as a late drop.
+    ///
+    /// The depth was chosen to absorb a slow consumer, but Task 053 measured the
+    /// consumer at ~2ms per frame against a 16.67ms budget. It was never slow, so the
+    /// queue bought nothing and cost pool slots continuously. Two is enough to cover
+    /// one frame in flight plus one arriving.
+    private static let videoBufferDepth = 2
+
     #if DEBUG
     /// Delegate-side stats. Written only inside `captureOutput`, which AVFoundation
     /// serialises on `sampleBufferCallbackQueue`, so there is exactly one writer and no
@@ -864,6 +889,15 @@ private nonisolated final class SampleBufferOutputForwarder: NSObject,
     private nonisolated(unsafe) var yieldDropped = 0
     private nonisolated(unsafe) var didLogConfiguration = false
     private nonisolated(unsafe) var lateDropCount = 0
+    /// Task 055 items 3/4/5: pool pressure. `videoYieldedTotal` is written only on the
+    /// capture queue and `videoReleasedTotal` only on the consumer, so each has one
+    /// writer; the difference is how many capture-pool buffers this code is holding at
+    /// that instant. If the late drops were caused by us starving the pool, this is the
+    /// number that has to come down.
+    private nonisolated(unsafe) var videoYieldedTotal = 0
+    private nonisolated(unsafe) var videoReleasedTotal = 0
+    private nonisolated(unsafe) var inFlightMax = 0
+    private nonisolated(unsafe) var didLogPool = false
 
     /// Consumer-side stats. Written only inside the single video consumer task.
     private var deliveryCount = 0
@@ -872,6 +906,10 @@ private nonisolated final class SampleBufferOutputForwarder: NSObject,
     private var preAppendTotal: TimeInterval = 0
     private var endToEndTotal: TimeInterval = 0
     private var endToEndMax: TimeInterval = 0
+    /// Item 4: how long each capture buffer stays alive in our hands — capture-queue
+    /// entry until the moment we drop the last reference to it.
+    private var lifetimeTotal: TimeInterval = 0
+    private var lifetimeMax: TimeInterval = 0
     #endif
 
     /// Kept so the configuration dump can report what AVFoundation was actually
@@ -891,7 +929,7 @@ private nonisolated final class SampleBufferOutputForwarder: NSObject,
         self.callbackQueueLabel = callbackQueueLabel
 
         let (videoStream, videoContinuation) = AsyncStream<TimedBuffer>.makeStream(
-            bufferingPolicy: .bufferingNewest(12)
+            bufferingPolicy: .bufferingNewest(Self.videoBufferDepth)
         )
         let (audioStream, audioContinuation) = AsyncStream<CMSampleBuffer>.makeStream(
             bufferingPolicy: .bufferingNewest(24)
@@ -912,6 +950,9 @@ private nonisolated final class SampleBufferOutputForwarder: NSObject,
                 // 4. immediately before the actor call.
                 let beforeAppend = Date()
                 await recordingService.appendVideoSampleBuffer(timed.buffer, enqueuedAt: beforeAppend)
+                // The consumer's reference to `timed` goes away at the end of this
+                // iteration, returning the pixel buffer to the capture pool.
+                self.videoReleasedTotal += 1
                 self.recordDelivery(
                     capturedAt: timed.capturedAt,
                     yieldedAt: timed.yieldedAt,
@@ -956,6 +997,10 @@ private nonisolated final class SampleBufferOutputForwarder: NSObject,
         endToEndTotal += endToEnd
         endToEndMax = max(endToEndMax, endToEnd)
 
+        let lifetime = Date().timeIntervalSince(capturedAt)
+        lifetimeTotal += lifetime
+        lifetimeMax = max(lifetimeMax, lifetime)
+
         guard deliveryCount % 120 == 0 else { return }
         let n = Double(deliveryCount)
         print(String(
@@ -964,6 +1009,13 @@ private nonisolated final class SampleBufferOutputForwarder: NSObject,
             streamLatencyTotal / n * 1000, streamLatencyMax * 1000,
             preAppendTotal / n * 1000,
             endToEndTotal / n * 1000, endToEndMax * 1000
+        ))
+        print(String(
+            format: "[Task055-Pool] bufferDepth=%d  inFlight=%d max=%d  bufferLifetime avg=%.3fms max=%.3fms  yielded=%d released=%d",
+            Self.videoBufferDepth,
+            videoYieldedTotal - videoReleasedTotal, inFlightMax,
+            lifetimeTotal / n * 1000, lifetimeMax * 1000,
+            videoYieldedTotal, videoReleasedTotal
         ))
     }
     #endif
@@ -992,8 +1044,10 @@ private nonisolated final class SampleBufferOutputForwarder: NSObject,
             // 2. about to hand it over.
             let yieldAt = Date()
             yieldDelayTotal += yieldAt.timeIntervalSince(entry)
+            logPoolOnce(sampleBuffer)
             let result = videoContinuation.yield(TimedBuffer(buffer: sampleBuffer, capturedAt: entry, yieldedAt: yieldAt))
-            if case .dropped = result { yieldDropped += 1 }
+            if case .dropped = result { yieldDropped += 1 } else { videoYieldedTotal += 1 }
+            inFlightMax = max(inFlightMax, videoYieldedTotal - videoReleasedTotal)
 
             let execution = Date().timeIntervalSince(entry)
             executionTotal += execution
@@ -1021,6 +1075,33 @@ private nonisolated final class SampleBufferOutputForwarder: NSObject,
     }
 
     #if DEBUG
+    /// Task 055 items 2/3: the capture pool a delivered buffer actually came from,
+    /// with its attributes. `AVCaptureVideoDataOutput` does not expose its pool, but
+    /// every buffer it hands over carries a reference to it, so this reads the real
+    /// one rather than inferring it.
+    private func logPoolOnce(_ sampleBuffer: CMSampleBuffer) {
+        guard !didLogPool else { return }
+        didLogPool = true
+        guard let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else {
+            print("[Task055-Pool] no CVImageBuffer on the sample buffer")
+            return
+        }
+        // There is no public API to read AVCaptureVideoDataOutput's pool directly, so
+        // the pool's *size* cannot be printed. What is observable is each buffer's
+        // shape and whether it is IOSurface-backed (capture pools always are), plus —
+        // the number that actually matters — how many of them this code is holding at
+        // once, reported in the periodic [Task055-Pool] line below.
+        let width = CVPixelBufferGetWidth(pixelBuffer)
+        let height = CVPixelBufferGetHeight(pixelBuffer)
+        let format = CVPixelBufferGetPixelFormatType(pixelBuffer)
+        let hasIOSurface = CVPixelBufferGetIOSurface(pixelBuffer) != nil
+        let formatString = String(bytes: [
+            UInt8((format >> 24) & 0xFF), UInt8((format >> 16) & 0xFF),
+            UInt8((format >> 8) & 0xFF), UInt8(format & 0xFF)
+        ], encoding: .ascii) ?? "\(format)"
+        print("[Task055-Pool] captureBuffer=\(width)x\(height) pixelFormat=\(formatString) ioSurfaceBacked=\(hasIOSurface)")
+    }
+
     /// The output's real configuration, printed once. `alwaysDiscardsLateVideoFrames`
     /// is the one that matters most here: it defaults to `true`, which tells
     /// AVFoundation to discard any frame that becomes available while the delegate is
