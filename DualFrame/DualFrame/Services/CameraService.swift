@@ -110,7 +110,9 @@ actor CameraService {
         self.positionSettingsService = positionSettingsService
         outputForwarder = SampleBufferOutputForwarder(
             recordingService: recordingService,
-            performanceMonitor: recordingService.performanceMonitor
+            performanceMonitor: recordingService.performanceMonitor,
+            videoOutput: videoOutput,
+            callbackQueueLabel: sampleBufferQueue.label
         )
     }
 
@@ -823,51 +825,72 @@ private nonisolated final class SampleBufferOutputForwarder: NSObject,
     AVCaptureVideoDataOutputSampleBufferDelegate,
     AVCaptureAudioDataOutputSampleBufferDelegate {
 
+    /// Task 054: a buffer plus the timestamps taken on the capture queue, carried
+    /// through the stream so the consumer can measure the hand-off without reading any
+    /// delegate-owned state across threads.
+    private struct TimedBuffer {
+        let buffer: CMSampleBuffer
+        #if DEBUG
+        /// 1. `captureOutput(_:didOutput:)` entry.
+        let capturedAt: Date
+        /// 2. immediately before `yield`.
+        let yieldedAt: Date
+        #endif
+    }
+
     private let recordingService: RecordingService
     private let performanceMonitor: RecordingPerformanceMonitor
 
-    /// Task 052: **separate** streams for video and audio.
-    ///
-    /// Task 047b put both on one serial stream with one consumer, to guarantee
-    /// ordering. That is what limits arrival to ~33-36fps against a 60fps target: an
-    /// audio buffer arriving between two video frames blocks the next video frame for
-    /// the whole of its own `RecordingService.append` (which loops every writer). Audio
-    /// arrives at roughly the same rate as video, so video throughput was being roughly
-    /// halved — which is exactly the measured figure.
-    ///
-    /// Splitting them is safe: ordering only has to hold *within* one
-    /// `AVAssetWriterInput`, and each stream still has exactly one consumer, so video
-    /// frames still reach the writer in capture order. The video and audio inputs are
-    /// independent and are driven by their own presentation timestamps, so there is no
-    /// cross-stream ordering requirement to preserve.
-    private let videoContinuation: AsyncStream<CMSampleBuffer>.Continuation
+    private let videoContinuation: AsyncStream<TimedBuffer>.Continuation
     private let audioContinuation: AsyncStream<CMSampleBuffer>.Continuation
-    private let videoConsumer: Task<Void, Never>
-    private let audioConsumer: Task<Void, Never>
+    /// `var` because the consumers capture `self` (for the Debug delivery stats), so
+    /// they can only be created after `super.init()`.
+    private var videoConsumer: Task<Void, Never>?
+    private var audioConsumer: Task<Void, Never>?
 
-    /// Task 052: counted here rather than by awaiting the monitor per buffer — see
-    /// `flushInterval`. Only ever touched from the single video consumer.
-    private var videoConsumed = 0
-    /// Frames the bounded stream discarded because the consumer was behind. This is the
-    /// number that distinguishes "the camera produced fewer frames" from "we could not
-    /// drain them fast enough" — the former is a capture problem, the latter is ours.
-    private nonisolated(unsafe) var videoYieldDropped = 0
-    private nonisolated(unsafe) var videoYielded = 0
-
-    /// How many buffers between pushes to `RecordingPerformanceMonitor`. Task 047b
-    /// awaited that actor twice per buffer (`frameSpawned`/`frameCompleted`) purely for
-    /// counters — at 60fps video plus audio that is hundreds of extra suspensions a
-    /// second on the critical path, for two integer increments.
     private static let flushInterval = 30
 
-    init(recordingService: RecordingService, performanceMonitor: RecordingPerformanceMonitor) {
+    #if DEBUG
+    /// Delegate-side stats. Written only inside `captureOutput`, which AVFoundation
+    /// serialises on `sampleBufferCallbackQueue`, so there is exactly one writer and no
+    /// cross-thread access — the consumer never reads these.
+    private nonisolated(unsafe) var lastCallbackEntry: Date?
+    private nonisolated(unsafe) var callbackCount = 0
+    private nonisolated(unsafe) var intervalTotal: TimeInterval = 0
+    private nonisolated(unsafe) var intervalMax: TimeInterval = 0
+    private nonisolated(unsafe) var executionTotal: TimeInterval = 0
+    private nonisolated(unsafe) var executionMax: TimeInterval = 0
+    private nonisolated(unsafe) var yieldDelayTotal: TimeInterval = 0
+    private nonisolated(unsafe) var yieldDropped = 0
+    private nonisolated(unsafe) var didLogConfiguration = false
+    private nonisolated(unsafe) var lateDropCount = 0
+
+    /// Consumer-side stats. Written only inside the single video consumer task.
+    private var deliveryCount = 0
+    private var streamLatencyTotal: TimeInterval = 0
+    private var streamLatencyMax: TimeInterval = 0
+    private var preAppendTotal: TimeInterval = 0
+    private var endToEndTotal: TimeInterval = 0
+    private var endToEndMax: TimeInterval = 0
+    #endif
+
+    /// Kept so the configuration dump can report what AVFoundation was actually
+    /// configured with, rather than what the code intended.
+    private weak var videoOutput: AVCaptureVideoDataOutput?
+    private let callbackQueueLabel: String
+
+    init(
+        recordingService: RecordingService,
+        performanceMonitor: RecordingPerformanceMonitor,
+        videoOutput: AVCaptureVideoDataOutput? = nil,
+        callbackQueueLabel: String = "unknown"
+    ) {
         self.recordingService = recordingService
         self.performanceMonitor = performanceMonitor
+        self.videoOutput = videoOutput
+        self.callbackQueueLabel = callbackQueueLabel
 
-        // Video gets its own budget now that audio cannot consume it. 12 frames is a
-        // fifth of a second at 60fps — enough to absorb a hiccup, small enough that the
-        // capture pool is never starved.
-        let (videoStream, videoContinuation) = AsyncStream<CMSampleBuffer>.makeStream(
+        let (videoStream, videoContinuation) = AsyncStream<TimedBuffer>.makeStream(
             bufferingPolicy: .bufferingNewest(12)
         )
         let (audioStream, audioContinuation) = AsyncStream<CMSampleBuffer>.makeStream(
@@ -876,18 +899,28 @@ private nonisolated final class SampleBufferOutputForwarder: NSObject,
         self.videoContinuation = videoContinuation
         self.audioContinuation = audioContinuation
 
-        videoConsumer = Task {
+        super.init()
+
+        videoConsumer = Task { [recordingService, performanceMonitor] in
             var sinceFlush = 0
-            for await sampleBuffer in videoStream {
-                // Task 053 item 6: the instant this buffer was handed to the actor.
-                // The gap between this and the actor actually starting is the queue
-                // wait — measured inside RecordingService.
+            for await timed in videoStream {
                 #if DEBUG
-                let enqueuedAt = Date()
-                #else
-                let enqueuedAt: Date? = nil
+                // 3. the consumer received it.
+                let receivedAt = Date()
                 #endif
-                await recordingService.appendVideoSampleBuffer(sampleBuffer, enqueuedAt: enqueuedAt)
+                #if DEBUG
+                // 4. immediately before the actor call.
+                let beforeAppend = Date()
+                await recordingService.appendVideoSampleBuffer(timed.buffer, enqueuedAt: beforeAppend)
+                self.recordDelivery(
+                    capturedAt: timed.capturedAt,
+                    yieldedAt: timed.yieldedAt,
+                    receivedAt: receivedAt,
+                    beforeAppend: beforeAppend
+                )
+                #else
+                await recordingService.appendVideoSampleBuffer(timed.buffer)
+                #endif
                 sinceFlush += 1
                 if sinceFlush >= Self.flushInterval {
                     await performanceMonitor.framesProcessed(sinceFlush)
@@ -896,7 +929,7 @@ private nonisolated final class SampleBufferOutputForwarder: NSObject,
             }
         }
 
-        audioConsumer = Task {
+        audioConsumer = Task { [recordingService] in
             for await sampleBuffer in audioStream {
                 await recordingService.appendAudioSampleBuffer(sampleBuffer)
             }
@@ -906,9 +939,34 @@ private nonisolated final class SampleBufferOutputForwarder: NSObject,
     deinit {
         videoContinuation.finish()
         audioContinuation.finish()
-        videoConsumer.cancel()
-        audioConsumer.cancel()
+        videoConsumer?.cancel()
+        audioConsumer?.cancel()
     }
+
+    #if DEBUG
+    /// Task 054 stages 2->3->4, accumulated on the consumer only.
+    private func recordDelivery(capturedAt: Date, yieldedAt: Date, receivedAt: Date, beforeAppend: Date) {
+        deliveryCount += 1
+        let streamLatency = receivedAt.timeIntervalSince(yieldedAt)
+        let preAppend = beforeAppend.timeIntervalSince(receivedAt)
+        let endToEnd = beforeAppend.timeIntervalSince(capturedAt)
+        streamLatencyTotal += streamLatency
+        streamLatencyMax = max(streamLatencyMax, streamLatency)
+        preAppendTotal += preAppend
+        endToEndTotal += endToEnd
+        endToEndMax = max(endToEndMax, endToEnd)
+
+        guard deliveryCount % 120 == 0 else { return }
+        let n = Double(deliveryCount)
+        print(String(
+            format: "[Task054-Delivery] n=%d  yield->consumer avg=%.3fms max=%.3fms | consumer->append avg=%.3fms | captureEntry->append avg=%.3fms max=%.3fms",
+            deliveryCount,
+            streamLatencyTotal / n * 1000, streamLatencyMax * 1000,
+            preAppendTotal / n * 1000,
+            endToEndTotal / n * 1000, endToEndMax * 1000
+        ))
+    }
+    #endif
 
     func captureOutput(
         _ output: AVCaptureOutput,
@@ -916,22 +974,70 @@ private nonisolated final class SampleBufferOutputForwarder: NSObject,
         from connection: AVCaptureConnection
     ) {
         if output is AVCaptureVideoDataOutput {
-            // `yield` reports whether the buffer was actually enqueued. Counting the
-            // discards here is what proves where 60fps becomes 36fps: if `dropped` is
-            // high the consumer is the bottleneck, if it is ~0 the camera itself is
-            // delivering fewer frames.
-            let result = videoContinuation.yield(sampleBuffer)
-            videoYielded += 1
-            if case .dropped = result { videoYieldDropped += 1 }
             #if DEBUG
-            if videoYielded % 120 == 0 {
-                print("[Task052-Pipeline] videoYielded=\(videoYielded) droppedBeforeConsumer=\(videoYieldDropped) (\(String(format: "%.1f", Double(videoYieldDropped) / Double(videoYielded) * 100))%)")
+            // 1. delegate entry, and the gap since the previous one. If this interval
+            // sits near 16.7ms the camera IS delivering 60fps and the loss is
+            // downstream; if it sits near 22-25ms the camera itself is producing fewer
+            // frames and nothing after this point can recover them.
+            let entry = Date()
+            if let last = lastCallbackEntry {
+                let interval = entry.timeIntervalSince(last)
+                intervalTotal += interval
+                intervalMax = max(intervalMax, interval)
             }
+            lastCallbackEntry = entry
+            callbackCount += 1
+            logConfigurationOnce(output: output)
+
+            // 2. about to hand it over.
+            let yieldAt = Date()
+            yieldDelayTotal += yieldAt.timeIntervalSince(entry)
+            let result = videoContinuation.yield(TimedBuffer(buffer: sampleBuffer, capturedAt: entry, yieldedAt: yieldAt))
+            if case .dropped = result { yieldDropped += 1 }
+
+            let execution = Date().timeIntervalSince(entry)
+            executionTotal += execution
+            executionMax = max(executionMax, execution)
+
+            if callbackCount % 120 == 0 {
+                let n = Double(callbackCount - 1)
+                let intervalAvg = n > 0 ? intervalTotal / n * 1000 : 0
+                print(String(
+                    format: "[Task054-Capture] callbacks=%d  interval avg=%.3fms max=%.3fms (=> %.1ffps) | execution avg=%.3fms max=%.3fms | entry->yield avg=%.3fms | yieldDropped=%d lateDropped=%d",
+                    callbackCount,
+                    intervalAvg, intervalMax * 1000,
+                    intervalAvg > 0 ? 1000 / intervalAvg : 0,
+                    executionTotal / Double(callbackCount) * 1000, executionMax * 1000,
+                    yieldDelayTotal / Double(callbackCount) * 1000,
+                    yieldDropped, lateDropCount
+                ))
+            }
+            #else
+            videoContinuation.yield(TimedBuffer(buffer: sampleBuffer))
             #endif
         } else if output is AVCaptureAudioDataOutput {
             audioContinuation.yield(sampleBuffer)
         }
     }
+
+    #if DEBUG
+    /// The output's real configuration, printed once. `alwaysDiscardsLateVideoFrames`
+    /// is the one that matters most here: it defaults to `true`, which tells
+    /// AVFoundation to discard any frame that becomes available while the delegate is
+    /// still executing the previous one — frames lost before this code ever sees them,
+    /// and invisible to every timer downstream.
+    private func logConfigurationOnce(output: AVCaptureOutput) {
+        guard !didLogConfiguration else { return }
+        didLogConfiguration = true
+        guard let videoDataOutput = output as? AVCaptureVideoDataOutput else { return }
+        print("""
+        [Task054-Config] alwaysDiscardsLateVideoFrames=\(videoDataOutput.alwaysDiscardsLateVideoFrames)
+        [Task054-Config] sampleBufferCallbackQueue=\(callbackQueueLabel)
+        [Task054-Config] videoSettings=\(videoDataOutput.videoSettings ?? [:])
+        [Task054-Config] automaticallyConfiguresOutputBufferDimensions=\(videoDataOutput.automaticallyConfiguresOutputBufferDimensions) deliversPreviewSizedOutputBuffers=\(videoDataOutput.deliversPreviewSizedOutputBuffers)
+        """)
+    }
+    #endif
 
     /// AVFoundation calls this instead of `didOutput` when it has to drop a sample —
     /// e.g. because the pipeline (recording write, in our case) couldn't keep up.
@@ -942,6 +1048,9 @@ private nonisolated final class SampleBufferOutputForwarder: NSObject,
     ) {
         let performanceMonitor = performanceMonitor
         if output is AVCaptureVideoDataOutput {
+            #if DEBUG
+            lateDropCount += 1
+            #endif
             Task { await performanceMonitor.recordDroppedVideoFrame() }
         } else if output is AVCaptureAudioDataOutput {
             Task { await performanceMonitor.recordDroppedAudioBuffer() }
