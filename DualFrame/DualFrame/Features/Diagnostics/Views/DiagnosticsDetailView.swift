@@ -84,6 +84,17 @@ struct DiagnosticsDetailView: View {
                                     stat.acceptanceRate * 100, stat.averageAppendMilliseconds))
                             .font(.caption)
                             .foregroundStyle(.secondary)
+                        // Task 061 items 1/2: zero for Long-form, non-zero for
+                        // Short-form — the gap is the extra per-frame cost of dual.
+                        if stat.averageCropSeconds > 0 {
+                            Text(String(format: "crop %.2fms (render %.2f · pool %.2f) · 프레임당 합계 %.2fms",
+                                        stat.averageCropMilliseconds,
+                                        stat.averageCropRenderMilliseconds,
+                                        stat.averageCropPoolMilliseconds,
+                                        stat.totalPerFrameMilliseconds))
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
                     }
                     .padding(.vertical, 2)
                 }

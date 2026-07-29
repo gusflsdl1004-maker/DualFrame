@@ -23,6 +23,12 @@ nonisolated struct WriterAppendStats: Codable, Equatable, Identifiable {
     let appended: Int
     let notReady: Int
     let averageAppendSeconds: TimeInterval
+    /// Task 061 items 1/2: short-form only. Long-form never enters the crop path, so
+    /// these are zero for it — the difference between the two rows is precisely the
+    /// extra work Long+Short does per frame.
+    let averageCropSeconds: TimeInterval
+    let averageCropRenderSeconds: TimeInterval
+    let averageCropPoolSeconds: TimeInterval
 
     var id: String { outputName }
 
@@ -32,4 +38,9 @@ nonisolated struct WriterAppendStats: Codable, Equatable, Identifiable {
     }
 
     var averageAppendMilliseconds: Double { averageAppendSeconds * 1000 }
+    var averageCropMilliseconds: Double { averageCropSeconds * 1000 }
+    var averageCropRenderMilliseconds: Double { averageCropRenderSeconds * 1000 }
+    var averageCropPoolMilliseconds: Double { averageCropPoolSeconds * 1000 }
+    /// Everything this writer costs per accepted frame.
+    var totalPerFrameMilliseconds: Double { averageCropMilliseconds + averageAppendMilliseconds }
 }

@@ -39,16 +39,17 @@ nonisolated final class VideoFrameCropper {
     private var cachedPool: CVPixelBufferPool?
     private var cachedPoolSize: CGSize?
 
-    #if DEBUG
-    /// Task 053 items 2/4: the crop's two internal phases, timed separately so
+    /// Task 061 item 2: the crop's two internal phases, timed separately so
     /// "crop time" can be split into pixel-buffer allocation versus the CoreImage
     /// render. Written on every call, read by `RecordingService` immediately after —
     /// safe because `RecordingService` is an actor and never calls this concurrently
     /// with itself (the same reasoning that already permits `cachedPool`).
     /// Measurement only: no call site behaviour changes.
+    /// Recorded in every configuration now, not just Debug: the Long-only vs
+    /// Long+Short difference is a Release symptom, so the cost that explains it has to
+    /// be measurable in Release.
     private(set) var lastPoolDuration: TimeInterval = 0
     private(set) var lastRenderDuration: TimeInterval = 0
-    #endif
 
     /// Returns a new pixel buffer at `configuration.targetSize`, containing the
     /// center-cropped-and-scaled contents of `pixelBuffer` — never stretched, since the
@@ -81,23 +82,17 @@ nonisolated final class VideoFrameCropper {
             .transformed(by: CGAffineTransform(translationX: -cropRect.origin.x, y: -cropRect.origin.y))
             .transformed(by: CGAffineTransform(scaleX: scale, y: scale))
 
-        #if DEBUG
         let poolStart = Date()
-        #endif
         guard let pool = pixelBufferPool(for: configuration.targetSize) else { return nil }
 
         var outputBuffer: CVPixelBuffer?
         guard CVPixelBufferPoolCreatePixelBuffer(nil, pool, &outputBuffer) == kCVReturnSuccess,
               let outputBuffer else { return nil }
-        #if DEBUG
         lastPoolDuration = Date().timeIntervalSince(poolStart)
         let renderStart = Date()
-        #endif
 
         context.render(croppedImage, to: outputBuffer)
-        #if DEBUG
         lastRenderDuration = Date().timeIntervalSince(renderStart)
-        #endif
         return outputBuffer
     }
 

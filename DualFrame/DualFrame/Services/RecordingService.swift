@@ -75,6 +75,12 @@ actor RecordingService {
         var notReadyCount = 0
         /// Cumulative time spent inside this writer's own append call.
         var appendDurationTotal: TimeInterval = 0
+        /// Task 061 item 2: short-form only — the crop and its two internal phases.
+        /// Long-form never enters that path, so these stay zero for it, which is itself
+        /// the answer to item 1.
+        var cropDurationTotal: TimeInterval = 0
+        var cropRenderDurationTotal: TimeInterval = 0
+        var cropPoolDurationTotal: TimeInterval = 0
         /// Non-nil only for the short-form output (Task 021) — long-form and `.single`
         /// mode leave both of these `nil`, so `append(_:isVideo:)` takes the exact same
         /// unmodified-sample-buffer path it always has for them.
@@ -639,6 +645,15 @@ actor RecordingService {
                     notReady: context.notReadyCount,
                     averageAppendSeconds: context.appendedVideoFrames > 0
                         ? context.appendDurationTotal / Double(context.appendedVideoFrames)
+                        : 0,
+                    averageCropSeconds: context.appendedVideoFrames > 0
+                        ? context.cropDurationTotal / Double(context.appendedVideoFrames)
+                        : 0,
+                    averageCropRenderSeconds: context.appendedVideoFrames > 0
+                        ? context.cropRenderDurationTotal / Double(context.appendedVideoFrames)
+                        : 0,
+                    averageCropPoolSeconds: context.appendedVideoFrames > 0
+                        ? context.cropPoolDurationTotal / Double(context.appendedVideoFrames)
                         : 0
                 )
             }
@@ -1091,6 +1106,11 @@ actor RecordingService {
             if isVideo, let writeDuration = result.writeDuration {
                 writerContexts[result.profile]?.appendDurationTotal += writeDuration
             }
+            if isVideo, let cropDuration = result.cropDuration {
+                writerContexts[result.profile]?.cropDurationTotal += cropDuration
+                writerContexts[result.profile]?.cropRenderDurationTotal += result.cropRenderDuration
+                writerContexts[result.profile]?.cropPoolDurationTotal += result.cropPoolDuration
+            }
             await performanceMonitor.recordWriteLatency(result.totalDuration)
             if writerContexts[result.profile]?.writer.status == .failed {
                 markWriterFailed(result.profile, error: .writeFailed, startupReason: .appendFailed)
@@ -1162,13 +1182,8 @@ actor RecordingService {
             let cropStart = Date()
             let croppedBuffer = cropper.croppedPixelBuffer(from: sourcePixelBuffer, configuration: cropConfiguration)
             let cropDuration = Date().timeIntervalSince(cropStart)
-            #if DEBUG
             let poolDuration = cropper.lastPoolDuration
             let renderDuration = cropper.lastRenderDuration
-            #else
-            let poolDuration: TimeInterval = 0
-            let renderDuration: TimeInterval = 0
-            #endif
 
             guard let croppedBuffer else {
                 var result = WriterAppendResult(profile: profile, outcome: .skipped, totalDuration: Date().timeIntervalSince(start))
