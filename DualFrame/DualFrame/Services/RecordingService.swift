@@ -382,6 +382,37 @@ actor RecordingService {
         // preferredTransform, so the visually-presented size is reported too.
         let presentedSize = naturalSize.applying(transform)
         print("[Task044-Debug] STAGE 7 FILE     profile=\(profile.outputName) naturalSize=\(Int(naturalSize.width))x\(Int(naturalSize.height)) presentedSize=\(Int(abs(presentedSize.width)))x\(Int(abs(presentedSize.height))) nominalFrameRate=\(String(format: "%.2f", nominalFrameRate))fps url=\(url.lastPathComponent)")
+
+        // Task 051 requirement 3: the bitrate the file *actually* came out at, next to
+        // the one the writer was configured with. This is the measurement that settles
+        // "is AVVideoAverageBitRateKey actually being applied?" — if `configured` moves
+        // with the quality preset but `actualVideoTrack` does not, the encoder is
+        // ignoring the setting; if both move but the picture still looks the same, the
+        // bitrate is applied and the calculation itself needs tuning instead.
+        let format = effectiveWriterFormat(for: profile)
+        let configured = bitrateService.videoBitrate(
+            width: format.resolution.width,
+            height: format.resolution.height,
+            fps: format.fps
+        )
+        // `estimatedDataRate` is the track's own measured average, independent of the
+        // container overhead that a file-size calculation would fold in.
+        let actualTrackRate = (try? await track.load(.estimatedDataRate)).map(Double.init) ?? 0
+        let fileBytes = ((try? FileManager.default.attributesOfItem(atPath: url.path))?[.size] as? Int64) ?? 0
+        let duration = (try? await asset.load(.duration).seconds) ?? 0
+        let wholeFileRate = duration > 0 ? Double(fileBytes) * 8 / duration : 0
+
+        print(String(
+            format: "[Task051-Bitrate] profile=%@ preset=%@ configured=%.1fMbps actualVideoTrack=%.1fMbps wholeFile=%.1fMbps ratio=%.2f duration=%.1fs size=%.1fMB",
+            profile.outputName,
+            bitrateService.currentPreset.title,
+            Double(configured) / 1_000_000,
+            actualTrackRate / 1_000_000,
+            wholeFileRate / 1_000_000,
+            configured > 0 ? actualTrackRate / Double(configured) : 0,
+            duration,
+            Double(fileBytes) / 1_000_000
+        ))
     }
 
     /// Task 044 requirement 1/2: the "SampleBuffer" stage of the requested trace —
