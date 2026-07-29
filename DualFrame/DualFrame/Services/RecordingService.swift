@@ -961,6 +961,23 @@ actor RecordingService {
         }
         #endif
 
+        // Task 058 item 6: the two writers used to be serviced by one serial loop on
+        // this actor, so a frame cost long + short. At 4K60 that is ~28ms, which is
+        // 36fps — the rate the saved file actually came out at. Long-form waited for
+        // short-form's CoreImage crop, and short-form waited for long-form's 4K encode,
+        // every single frame, for no reason: they write to different files through
+        // different AVAssetWriterInputs and share nothing but the source buffer.
+        //
+        // They now run concurrently, so a frame costs max(long, short) instead.
+        // Ordering is still exact: this whole group completes before `append` returns,
+        // and the single consumer awaits `append` per frame, so writer N+1 never starts
+        // before writer N has finished for the previous frame.
+        //
+        // Each child touches exactly one writer's own input, and only short-form uses
+        // `frameCropper`, so no object is shared mutably across the children.
+        var startFailures: [OutputProfile] = []
+        var readyProfiles: [OutputProfile] = []
+
         for profile in writerContexts.keys {
             guard var context = writerContexts[profile], !context.hasFailed else { continue }
             let writer = context.writer
@@ -968,7 +985,7 @@ actor RecordingService {
 
             if !context.isSessionStarted {
                 guard writer.startWriting() else {
-                    markWriterFailed(profile, error: .writeFailed, startupReason: .sessionNotPrepared)
+                    startFailures.append(profile)
                     continue
                 }
                 writer.startSession(atSourceTime: CMSampleBufferGetPresentationTimeStamp(sampleBuffer))
@@ -977,94 +994,76 @@ actor RecordingService {
             }
 
             guard writer.status == .writing, input.isReadyForMoreMediaData else {
-                // Task 047: this `continue` used to be completely silent. For
-                // short-form under a 4K load it is the common path — its frames go
-                // through a synchronous crop, so its input falls behind and every
-                // skipped frame vanished without a trace, leaving `finishWriting()` to
-                // fail opaquely on an empty video track. Now counted per writer and
-                // surfaced in `stopRecording`.
                 if isVideo {
                     writerContexts[profile]?.skippedVideoFrames += 1
                     #if DEBUG
-                    // Task 048: "Writer 대기 시간" — this writer refused the frame
-                    // because it hadn't finished the previous one.
                     debugTimings[profile, default: ProfileTimingStats()].notReadyCount += 1
                     #endif
                 }
                 continue
             }
+            readyProfiles.append(profile)
+        }
 
-            let writeStart = Date()
-            if isVideo, let cropConfiguration = context.cropConfiguration, let adaptor = context.pixelBufferAdaptor {
-                // Task 021: the only path that differs from pre-Task-021 behavior — used
-                // exclusively for the short-form output's video. `nil` from the cropper
-                // means this single frame gets dropped, not that the writer failed; only
-                // an actual `adaptor.append` rejection counts as a writer-level failure.
-                if let sourcePixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) {
-                    // Task 048: crop timed on its own, separately from the append that
-                    // follows — the whole point is to tell those two apart.
-                    #if DEBUG
-                    let cropStart = Date()
-                    #endif
-                    let croppedBuffer = frameCropper.croppedPixelBuffer(from: sourcePixelBuffer, configuration: cropConfiguration)
-                    #if DEBUG
-                    let cropDuration = Date().timeIntervalSince(cropStart)
-                    debugTimings[profile, default: ProfileTimingStats()].cropTotal += cropDuration
-                    debugTimings[profile, default: ProfileTimingStats()].cropMax = max(
-                        debugTimings[profile, default: ProfileTimingStats()].cropMax,
-                        cropDuration
+        for profile in startFailures {
+            markWriterFailed(profile, error: .writeFailed, startupReason: .sessionNotPrepared)
+        }
+
+        let cropper = frameCropper
+        let results = await withTaskGroup(of: WriterAppendResult.self) { group in
+            for profile in readyProfiles {
+                guard let context = writerContexts[profile] else { continue }
+                let input = isVideo ? context.videoInput : context.audioInput
+                let crop = context.cropConfiguration
+                let adaptor = context.pixelBufferAdaptor
+                group.addTask {
+                    Self.performAppend(
+                        profile: profile,
+                        sampleBuffer: sampleBuffer,
+                        isVideo: isVideo,
+                        input: input,
+                        cropConfiguration: crop,
+                        adaptor: adaptor,
+                        cropper: cropper
                     )
-                    // Task 053 items 2/4: the crop as a whole, plus its two internal
-                    // phases read straight from the cropper.
-                    debugStages.crop.record(cropDuration)
-                    debugStages.cropPool.record(frameCropper.lastPoolDuration)
-                    debugStages.cropRender.record(frameCropper.lastRenderDuration)
-                    #endif
-
-                    if let croppedBuffer {
-                        #if DEBUG
-                        let adaptorStart = Date()
-                        #endif
-                        let appended = adaptor.append(croppedBuffer, withPresentationTime: CMSampleBufferGetPresentationTimeStamp(sampleBuffer))
-                        #if DEBUG
-                        recordDebugWrite(profile: profile, duration: Date().timeIntervalSince(adaptorStart))
-                        #endif
-                        if appended {
-                            writerContexts[profile]?.appendedVideoFrames += 1
-                        } else {
-                            markWriterFailed(profile, error: .writeFailed, startupReason: .appendFailed)
-                        }
-                    } else {
-                        // Cropper returned nil — one dropped frame, not a writer failure
-                        // (unchanged), but no longer invisible.
-                        writerContexts[profile]?.skippedVideoFrames += 1
-                    }
-                } else {
-                    writerContexts[profile]?.skippedVideoFrames += 1
-                }
-            } else {
-                // Unchanged since before Task 021: long-form, `.single` mode, and every
-                // audio append always take this exact path.
-                #if DEBUG
-                let inputStart = Date()
-                #endif
-                input.append(sampleBuffer)
-                if isVideo {
-                    // Counted in every configuration, not just Debug — `stopRecording`
-                    // reports it as part of the non-Debug failure diagnostics.
-                    writerContexts[profile]?.appendedVideoFrames += 1
-                    #if DEBUG
-                    recordDebugWrite(profile: profile, duration: Date().timeIntervalSince(inputStart))
-                    #endif
                 }
             }
-            await performanceMonitor.recordWriteLatency(Date().timeIntervalSince(writeStart))
-            lastAppendedTimestamp = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
+            var collected: [WriterAppendResult] = []
+            for await result in group { collected.append(result) }
+            return collected
+        }
 
-            if writer.status == .failed {
-                markWriterFailed(profile, error: .writeFailed, startupReason: .appendFailed)
+        for result in results {
+            switch result.outcome {
+            case .appended:
+                if isVideo { writerContexts[result.profile]?.appendedVideoFrames += 1 }
+            case .skipped:
+                if isVideo { writerContexts[result.profile]?.skippedVideoFrames += 1 }
+            case .failed:
+                markWriterFailed(result.profile, error: .writeFailed, startupReason: .appendFailed)
+            }
+            #if DEBUG
+            if isVideo {
+                if let cropDuration = result.cropDuration {
+                    debugTimings[result.profile, default: ProfileTimingStats()].cropTotal += cropDuration
+                    debugTimings[result.profile, default: ProfileTimingStats()].cropMax = max(
+                        debugTimings[result.profile, default: ProfileTimingStats()].cropMax, cropDuration
+                    )
+                    debugStages.crop.record(cropDuration)
+                    debugStages.cropPool.record(result.cropPoolDuration)
+                    debugStages.cropRender.record(result.cropRenderDuration)
+                }
+                if let writeDuration = result.writeDuration {
+                    recordDebugWrite(profile: result.profile, duration: writeDuration)
+                }
+            }
+            #endif
+            await performanceMonitor.recordWriteLatency(result.totalDuration)
+            if writerContexts[result.profile]?.writer.status == .failed {
+                markWriterFailed(result.profile, error: .writeFailed, startupReason: .appendFailed)
             }
         }
+        lastAppendedTimestamp = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
 
         // Requirement 6's boundary: only when literally every active writer has failed
         // does the overall session stop — a single writer failing must never affect the
@@ -1091,6 +1090,87 @@ actor RecordingService {
             await performanceMonitor.stopMonitoring()
             setState(.failed)
         }
+    }
+
+
+    /// Task 058 item 6: what one writer did with one frame, so the concurrent children
+    /// can report back and the actor applies every state change itself.
+    private struct WriterAppendResult: Sendable {
+        enum Outcome: Sendable { case appended, skipped, failed }
+        let profile: OutputProfile
+        let outcome: Outcome
+        let totalDuration: TimeInterval
+        var cropDuration: TimeInterval?
+        var cropPoolDuration: TimeInterval = 0
+        var cropRenderDuration: TimeInterval = 0
+        var writeDuration: TimeInterval?
+    }
+
+    /// One writer's work for one frame, off the actor so the writers can overlap.
+    /// `nonisolated` and static: it touches only the arguments handed to it, and each
+    /// call owns a different `AVAssetWriterInput`. Short-form is the only caller that
+    /// passes a `cropConfiguration`, so `cropper` is never used by two children at once.
+    private nonisolated static func performAppend(
+        profile: OutputProfile,
+        sampleBuffer: CMSampleBuffer,
+        isVideo: Bool,
+        input: AVAssetWriterInput,
+        cropConfiguration: CropConfiguration?,
+        adaptor: AVAssetWriterInputPixelBufferAdaptor?,
+        cropper: VideoFrameCropper
+    ) -> WriterAppendResult {
+        let start = Date()
+        let presentationTime = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
+
+        if isVideo, let cropConfiguration, let adaptor {
+            guard let sourcePixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else {
+                return WriterAppendResult(profile: profile, outcome: .skipped, totalDuration: Date().timeIntervalSince(start))
+            }
+            let cropStart = Date()
+            let croppedBuffer = cropper.croppedPixelBuffer(from: sourcePixelBuffer, configuration: cropConfiguration)
+            let cropDuration = Date().timeIntervalSince(cropStart)
+            #if DEBUG
+            let poolDuration = cropper.lastPoolDuration
+            let renderDuration = cropper.lastRenderDuration
+            #else
+            let poolDuration: TimeInterval = 0
+            let renderDuration: TimeInterval = 0
+            #endif
+
+            guard let croppedBuffer else {
+                var result = WriterAppendResult(profile: profile, outcome: .skipped, totalDuration: Date().timeIntervalSince(start))
+                result.cropDuration = cropDuration
+                result.cropPoolDuration = poolDuration
+                result.cropRenderDuration = renderDuration
+                return result
+            }
+            let writeStart = Date()
+            let appended = adaptor.append(croppedBuffer, withPresentationTime: presentationTime)
+            let writeDuration = Date().timeIntervalSince(writeStart)
+            var result = WriterAppendResult(
+                profile: profile,
+                outcome: appended ? .appended : .failed,
+                totalDuration: Date().timeIntervalSince(start)
+            )
+            result.cropDuration = cropDuration
+            result.cropPoolDuration = poolDuration
+            result.cropRenderDuration = renderDuration
+            result.writeDuration = writeDuration
+            return result
+        }
+
+        // Long-form, `.single` mode, and every audio append: the original buffer,
+        // untouched, exactly as before.
+        let writeStart = Date()
+        input.append(sampleBuffer)
+        let writeDuration = Date().timeIntervalSince(writeStart)
+        var result = WriterAppendResult(
+            profile: profile,
+            outcome: isVideo ? .appended : .skipped,
+            totalDuration: Date().timeIntervalSince(start)
+        )
+        result.writeDuration = isVideo ? writeDuration : nil
+        return result
     }
 
     /// Task 029 requirement 2: `startupReason` is purely additive diagnostic detail —
