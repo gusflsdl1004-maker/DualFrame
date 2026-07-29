@@ -48,6 +48,18 @@ final class RecordingViewModel: ObservableObject {
         return AppStrings.RecordingStatus.paused
     }
 
+    /// Task 045 requirement 4: `displayStatusText` only when it actually tells the user
+    /// something — `nil` in the idle "준비 완료" state, which on a live camera preview
+    /// is pure noise (the viewfinder being visible already says the camera is ready,
+    /// and Apple's own Camera app shows nothing here). Every other state — preparing,
+    /// recording, paused, stopping, finished, failed — is a real event worth a badge.
+    ///
+    /// `statusText`/`displayStatusText` themselves are unchanged, so the Debug panels
+    /// and diagnostics that read them still see the full state including `.idle`.
+    var visibleStatusText: String? {
+        state == .idle ? nil : displayStatusText
+    }
+
     var formattedDuration: String { Self.format(seconds: duration) }
 
     var formattedFileSize: String {

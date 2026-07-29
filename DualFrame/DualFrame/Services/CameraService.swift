@@ -178,8 +178,13 @@ actor CameraService {
         // revert the frame duration just written — the suspected cause of "60fps
         // selected, 29.98fps recorded". Wrapping it makes the format and frame
         // duration commit atomically as one reconfiguration.
+        // Task 045: the mirroring lookup's `await` is resolved *before* the
+        // configuration transaction opens, so the transaction below contains no
+        // suspension point and commits atomically.
+        let shouldMirror = await orientationManager.shouldMirrorRecording(for: device.position)
         session.beginConfiguration()
-        await applyDeviceSpecificSettings(device: device)
+        applyFormatAndFrameRate(device: device)
+        applyRecordingMirroring(device: device, shouldMirror: shouldMirror)
         session.commitConfiguration()
         await recordingService.updateRecordingFormat(quality: activeQuality, fps: activeFPS)
         #if DEBUG
@@ -331,6 +336,22 @@ actor CameraService {
     /// `videoSupportedFrameRateRanges` both match what the user selected — the actual
     /// device capability list, not a preset abstraction.
     private func applyDeviceSpecificSettings(device: AVCaptureDevice) async {
+        applyFormatAndFrameRate(device: device)
+
+        // Task 045: this `await` used to sit inside this method, which callers wrap in
+        // `session.beginConfiguration()`/`commitConfiguration()`. On an actor an
+        // `await` is a suspension point, so the capture session could sit in a
+        // half-open configuration transaction while other actor methods interleaved —
+        // exactly the kind of window in which AVFoundation can re-resolve the session
+        // and discard the format/frame duration just written. Hoisted out so the
+        // configuration transaction now contains no suspension points at all.
+        applyRecordingMirroring(device: device, shouldMirror: await orientationManager.shouldMirrorRecording(for: device.position))
+    }
+
+    /// Task 045: the synchronous half of `applyDeviceSpecificSettings(device:)` —
+    /// everything that must happen atomically inside one session configuration
+    /// transaction, with no `await` anywhere in it.
+    private func applyFormatAndFrameRate(device: AVCaptureDevice) {
         let requestedQuality = qualitySettingsService.load().selectedQuality
         let requestedFPS = fpsSettingsService.load().selectedFPS
         let selection = Self.selectFormat(quality: requestedQuality, fps: requestedFPS, device: device)
@@ -344,9 +365,7 @@ actor CameraService {
             // set *after* it — never before, or the requested rate is silently
             // discarded and the format's default (typically 30fps, reported as ~29.97)
             // is what actually gets captured.
-            let frameDuration = CMTime(value: 1, timescale: Int32(selection.resolvedFPS.rawValue))
-            device.activeVideoMinFrameDuration = frameDuration
-            device.activeVideoMaxFrameDuration = frameDuration
+            applyFrameDuration(selection.resolvedFPS, to: device)
             device.unlockForConfiguration()
             activeQuality = selection.resolvedQuality
             qualityFallbackOccurred = selection.qualityFallbackOccurred
@@ -367,16 +386,28 @@ actor CameraService {
         // session/device format is reconfigured, so setting it once in `configure()`
         // is not enough.
         applyFullSizeBufferDelivery()
+    }
 
-        // Requirement 3/4 (Task 022, now actually exercised for a front camera too):
-        // the *recorded* connection must never mirror, regardless of AVFoundation's
-        // automatic-mirroring defaults. This only affects the data output feeding
-        // `RecordingService` — it doesn't touch the preview layer's own connection (no
-        // UI change beyond the toggle button itself).
-        if let recordingConnection = videoOutput.connection(with: .video) {
-            recordingConnection.automaticallyAdjustsVideoMirroring = false
-            recordingConnection.isVideoMirrored = await orientationManager.shouldMirrorRecording(for: device.position)
-        }
+    /// Task 045: pins both frame-duration bounds to `fps`. Factored out because it has
+    /// to be re-applied at several points that each independently reset it —
+    /// `activeFormat` assignment, and a virtual device switching constituent lens on a
+    /// zoom change (`setZoomFactor(_:)`). Caller must already hold
+    /// `lockForConfiguration()`.
+    private func applyFrameDuration(_ fps: RecordingFPS, to device: AVCaptureDevice) {
+        let frameDuration = CMTime(value: 1, timescale: Int32(fps.rawValue))
+        device.activeVideoMinFrameDuration = frameDuration
+        device.activeVideoMaxFrameDuration = frameDuration
+    }
+
+    /// Requirement 3/4 (Task 022, now actually exercised for a front camera too):
+    /// the *recorded* connection must never mirror, regardless of AVFoundation's
+    /// automatic-mirroring defaults. This only affects the data output feeding
+    /// `RecordingService` — it doesn't touch the preview layer's own connection (no
+    /// UI change beyond the toggle button itself).
+    private func applyRecordingMirroring(device: AVCaptureDevice, shouldMirror: Bool) {
+        guard let recordingConnection = videoOutput.connection(with: .video) else { return }
+        recordingConnection.automaticallyAdjustsVideoMirroring = false
+        recordingConnection.isVideoMirrored = shouldMirror
     }
 
     /// Task 027 requirement 3: switches the active camera. Only ever safe to call
@@ -425,25 +456,66 @@ actor CameraService {
         positionSettingsService.save(CameraPositionSettings(selectedPosition: position))
     }
 
-    /// Task 043 requirement 3/4: applies a new zoom factor, clamped to what the device
-    /// currently supports. Called for every input mode — quick-select buttons, the
-    /// slider, and pinch — so there is exactly one place that actually touches
-    /// `AVCaptureDevice.videoZoomFactor`. Setting it directly (not via
-    /// `ramp(toVideoZoomFactor:rate:)`) matches how a live pinch gesture needs to track
-    /// the user's fingers with no animation lag; button/slider taps get the same
-    /// instant jump rather than Apple Camera's smooth animated transition — a
-    /// deliberately simple first cut (see the Task 043 report's Known Issues).
-    func setZoomFactor(_ factor: CGFloat) {
+    /// Task 045 requirement 3: applies a new zoom factor, clamped to what the device
+    /// currently supports. The single place that touches
+    /// `AVCaptureDevice.videoZoomFactor`, for every input mode.
+    ///
+    /// `animated` picks between the two behaviours Apple Camera itself uses:
+    /// - `true` (quick-select lens buttons): `ramp(toVideoZoomFactor:withRate:)`, which
+    ///   animates smoothly to the target instead of jump-cutting the framing.
+    /// - `false` (pinch and slider drag): a direct assignment, because those must
+    ///   track the user's finger frame-for-frame — ramping a continuous gesture would
+    ///   lag behind and fight each successive update.
+    ///
+    /// Any zoom change can move a *virtual* device across a lens switch-over point,
+    /// which re-selects the constituent lens and resets that device's frame-duration
+    /// bounds — so the requested frame rate is re-pinned afterwards (Task 045
+    /// requirement 2). Without this, zooming during a 60fps recording could silently
+    /// drop the capture to the new lens's default rate.
+    func setZoomFactor(_ factor: CGFloat, animated: Bool = false) {
         guard let device = videoDevice else { return }
         let clamped = min(max(factor, minZoomFactor), maxZoomFactor)
+        let crossesLensSwitchOver = Self.crossesLensSwitchOver(
+            from: currentZoomFactor,
+            to: clamped,
+            device: device
+        )
         do {
             try device.lockForConfiguration()
-            device.videoZoomFactor = clamped
+            if animated {
+                device.ramp(toVideoZoomFactor: clamped, withRate: Self.zoomRampRate)
+            } else {
+                device.cancelVideoZoomRamp()
+                device.videoZoomFactor = clamped
+            }
+            if crossesLensSwitchOver {
+                applyFrameDuration(activeFPS, to: device)
+            }
             device.unlockForConfiguration()
             currentZoomFactor = clamped
         } catch {
             logStartupEvent("Zoom Configuration Failed")
         }
+    }
+
+    /// How fast `ramp(toVideoZoomFactor:withRate:)` moves, in powers of two per
+    /// second. 4.0 covers a 0.5×→3× move in roughly half a second — close to Apple
+    /// Camera's lens-button feel without being slow enough to miss a shot.
+    private static let zoomRampRate: Float = 4.0
+
+    /// Whether moving between two zoom factors crosses one of the device's
+    /// constituent-lens switch-over points — i.e. whether the physical lens in use is
+    /// about to change. Always `false` on a single-lens device, which has none.
+    private nonisolated static func crossesLensSwitchOver(
+        from oldFactor: CGFloat,
+        to newFactor: CGFloat,
+        device: AVCaptureDevice
+    ) -> Bool {
+        let lower = min(oldFactor, newFactor)
+        let upper = max(oldFactor, newFactor)
+        return device.virtualDeviceSwitchOverVideoZoomFactors
+            .map { CGFloat(truncating: $0) }
+            .contains { lower < $0 && $0 <= upper }
     }
 
     /// Task 044 requirement 3: rebuilds `zoomOptions`/`minZoomFactor`/`maxZoomFactor`/

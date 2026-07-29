@@ -256,14 +256,18 @@ struct CameraPreviewView: View {
         #endif
     }
 
-    /// Task 043 requirement 3/4: the one place that turns a UI gesture/tap into a
-    /// `CameraService.setZoomFactor(_:)` call — used by the quick-select buttons, the
-    /// slider, and the pinch gesture alike. Updates the local `currentZoomFactor`
-    /// immediately (so the slider/buttons/pinch all feel instant) rather than waiting
+    /// Task 045 requirement 3: the one place that turns a UI gesture/tap into a
+    /// `CameraService.setZoomFactor(_:animated:)` call — used by the quick-select
+    /// buttons, the slider, and the pinch gesture alike. Updates the local
+    /// `currentZoomFactor` immediately (so all three feel instant) rather than waiting
     /// for the 1-second polling loop to pick up the actor's value.
-    private func setZoom(_ factor: CGFloat) {
+    ///
+    /// `animated` is only ever true for a discrete lens-button tap; continuous input
+    /// (slider drag, pinch) must not ramp — see `CameraService.setZoomFactor`.
+    private func setZoom(_ factor: CGFloat, animated: Bool = false) {
         currentZoomFactor = min(max(factor, minZoomFactor), maxZoomFactor)
-        Task { await cameraService.setZoomFactor(currentZoomFactor) }
+        let target = currentZoomFactor
+        Task { await cameraService.setZoomFactor(target, animated: animated) }
     }
 
     private func isSelectedZoomOption(_ option: CameraZoomOption) -> Bool {
@@ -278,7 +282,11 @@ struct CameraPreviewView: View {
         VStack(spacing: 8) {
             if maxZoomFactor > minZoomFactor {
                 Slider(
-                    value: Binding(get: { currentZoomFactor }, set: setZoom),
+                    value: Binding(
+                        get: { currentZoomFactor },
+                        // Continuous drag — never ramped (see `setZoom`).
+                        set: { setZoom($0, animated: false) }
+                    ),
                     in: minZoomFactor...maxZoomFactor
                 )
                 .frame(width: 220)
@@ -288,7 +296,8 @@ struct CameraPreviewView: View {
             HStack(spacing: 12) {
                 ForEach(zoomOptions) { option in
                     Button {
-                        setZoom(option.factor)
+                        // Requirement 3: discrete lens button → smooth ramp.
+                        setZoom(option.factor, animated: true)
                     } label: {
                         Text("\(option.label)×")
                             .font(.caption.bold())
@@ -335,31 +344,56 @@ struct CameraPreviewView: View {
         }
     }
 
+    /// Task 045 requirement 4: one status label. `lineLimit(1)` plus
+    /// `fixedSize(horizontal: true, ...)` is what actually prevents the Korean
+    /// mid-word wrapping — it tells SwiftUI to give the label its full intrinsic
+    /// width rather than compressing it until the text has to break between
+    /// characters.
+    private func statusChip(_ text: String, emphasized: Bool = false) -> some View {
+        Text(text)
+            .font(.caption.bold())
+            .lineLimit(1)
+            .fixedSize(horizontal: true, vertical: false)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 5)
+            .background(
+                emphasized ? Color.red.opacity(0.85) : Color.black.opacity(0.5),
+                in: Capsule()
+            )
+            .foregroundStyle(.white)
+    }
+
     private var statusBar: some View {
         VStack(alignment: .leading, spacing: 6) {
-            HStack {
-                HStack(spacing: 6) {
-                    Text(recordingViewModel.displayStatusText)
-                    if let activeQuality {
-                        // Task 038 requirement 2: shows the readable quality tier
-                        // (e.g. "Full HD (1080p)") instead of raw pixel dimensions —
-                        // simpler at a glance, same underlying value.
-                        Text(activeQuality.title)
+            HStack(alignment: .top) {
+                // Task 045 requirement 4: previously one long HStack of four Texts in
+                // a single Capsule. In portrait that row is wider than the screen, and
+                // because each label is Korean, SwiftUI wrapped it *inside* words
+                // ("준비 완/료") — Korean has no spaces to break on, so the only break
+                // opportunity is between characters. Split into independently-sized
+                // capsules laid out by a wrapping HStack, each pinned to one line, so
+                // a label either fits whole or moves to the next row — never splits.
+                VStack(alignment: .leading, spacing: 4) {
+                    if let statusText = recordingViewModel.visibleStatusText {
+                        statusChip(statusText, emphasized: true)
                     }
-                    if let activeFPS {
-                        Text(activeFPS.title)
+                    HStack(spacing: 4) {
+                        if let activeQuality {
+                            // Task 038 requirement 2: readable quality tier (e.g.
+                            // "Full HD (1080p)") instead of raw pixel dimensions.
+                            statusChip(activeQuality.title)
+                        }
+                        if let activeFPS {
+                            statusChip(activeFPS.title)
+                        }
                     }
-                    // Task 042 requirement 1: the main camera screen now shows the
-                    // user-facing output mode, never "Single Recording"/"Dual Recording".
-                    Text(outputModeViewModel.settings.outputMode.title)
+                    // Task 042 requirement 1: user-facing output mode, never
+                    // "Single Recording"/"Dual Recording".
+                    statusChip(outputModeViewModel.settings.outputMode.title)
                 }
-                .font(.caption.bold())
-                .padding(.horizontal, 12)
-                .padding(.vertical, 6)
-                .background(.black.opacity(0.5), in: Capsule())
-                .foregroundStyle(.white)
+                .fixedSize(horizontal: false, vertical: true)
 
-                Spacer()
+                Spacer(minLength: 8)
 
                 // Task 038 requirement 2: icon buttons enlarged (10 → 14 padding) for
                 // easier tapping, matching the Camera app's touch-target sizing.
