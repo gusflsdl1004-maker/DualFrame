@@ -170,7 +170,7 @@ actor CameraService {
     /// `applyDeviceSpecificSettings` unchanged rather than duplicating its format-search
     /// logic (requirement: 필요 최소 범위만 수정).
     func refreshRecordingFormat() async {
-        guard let device = videoDevice else { return }
+        guard var device = videoDevice else { return }
         // Task 044 requirement 1: this runs while the session is already *running*
         // (unlike `configure()`, whose caller wraps it). Changing `activeFormat`/frame
         // durations on a live session outside a configuration block lets the session
@@ -183,6 +183,15 @@ actor CameraService {
         // suspension point and commits atomically.
         let shouldMirror = await orientationManager.shouldMirrorRecording(for: device.position)
         session.beginConfiguration()
+        // Task 047: the bound device is only chosen in `configure()`, once per launch.
+        // Since a device can be incapable of a given quality+FPS pairing entirely (a
+        // virtual multi-lens device has no 4K60 format at all — see
+        // `bestAvailableDevice(for:quality:fps:)`), a Settings change made after launch
+        // has to be able to change *which device is bound*, not just its format —
+        // otherwise the requested rate would silently fall back exactly as before.
+        if let rebound = rebindDeviceIfNeeded() {
+            device = rebound
+        }
         applyFormatAndFrameRate(device: device)
         applyRecordingMirroring(device: device, shouldMirror: shouldMirror)
         session.commitConfiguration()
@@ -240,7 +249,14 @@ actor CameraService {
         // constituent lenses as it crosses each lens's zoom range) is what makes zoom
         // able to reach more than one lens in the first place; falls back to the plain
         // wide-angle camera on devices with only one rear lens (e.g. iPhone SE).
-        guard let device = Self.bestAvailableDevice(for: avCapturePosition(for: requestedPosition)) else {
+        // Task 047: the device is chosen against the requested quality/FPS, because a
+        // virtual multi-lens device may not offer the combination at all (see
+        // `bestAvailableDevice(for:quality:fps:)`).
+        guard let device = Self.bestAvailableDevice(
+            for: avCapturePosition(for: requestedPosition),
+            quality: qualitySettingsService.load().selectedQuality,
+            fps: fpsSettingsService.load().selectedFPS
+        ) else {
             logStartupEvent("Camera Unavailable", detail: requestedPosition.title)
             throw CameraServiceError.deviceUnavailable
         }
@@ -348,6 +364,48 @@ actor CameraService {
         applyRecordingMirroring(device: device, shouldMirror: await orientationManager.shouldMirrorRecording(for: device.position))
     }
 
+    /// Task 047: swaps the session's video input to a device that can actually deliver
+    /// the currently-requested quality+FPS, when the bound one cannot and another can.
+    /// Returns the newly bound device, or `nil` if nothing changed.
+    ///
+    /// Caller must already be inside a `session.beginConfiguration()` transaction —
+    /// this deliberately does not open its own, so the input swap and the
+    /// format/frame-rate application that follows commit together as one
+    /// reconfiguration rather than two.
+    ///
+    /// Only ever swaps between cameras on the *same* position: `avCapturePosition(for:)`
+    /// is derived from the current device, so this never silently flips front/back.
+    /// The zoom capability set is rebuilt for the new device, since its lens
+    /// configuration differs by definition.
+    private func rebindDeviceIfNeeded() -> AVCaptureDevice? {
+        guard let currentDevice = videoDevice else { return nil }
+        let quality = qualitySettingsService.load().selectedQuality
+        let fps = fpsSettingsService.load().selectedFPS
+
+        guard !Self.supportsExactly(quality: quality, fps: fps, device: currentDevice),
+              let candidate = Self.bestAvailableDevice(for: currentDevice.position, quality: quality, fps: fps),
+              candidate.uniqueID != currentDevice.uniqueID,
+              Self.supportsExactly(quality: quality, fps: fps, device: candidate),
+              let newInput = try? AVCaptureDeviceInput(device: candidate),
+              let currentInput = session.inputs
+                  .compactMap({ $0 as? AVCaptureDeviceInput })
+                  .first(where: { $0.device.hasMediaType(.video) })
+        else { return nil }
+
+        session.removeInput(currentInput)
+        guard session.canAddInput(newInput) else {
+            // Put the working input back rather than leaving the session with no
+            // camera — never lose the ability to record (CLAUDE.md priority 1/2).
+            session.addInput(currentInput)
+            return nil
+        }
+        session.addInput(newInput)
+        videoDevice = candidate
+        setUpZoomCapabilities(device: candidate)
+        logStartupEvent("Camera Rebound", detail: candidate.deviceType.rawValue)
+        return candidate
+    }
+
     /// Task 045: the synchronous half of `applyDeviceSpecificSettings(device:)` —
     /// everything that must happen atomically inside one session configuration
     /// transaction, with no `await` anywhere in it.
@@ -420,7 +478,11 @@ actor CameraService {
         }
         guard currentPosition != position else { return }
 
-        guard let newDevice = Self.bestAvailableDevice(for: avCapturePosition(for: position)) else {
+        guard let newDevice = Self.bestAvailableDevice(
+            for: avCapturePosition(for: position),
+            quality: qualitySettingsService.load().selectedQuality,
+            fps: fpsSettingsService.load().selectedFPS
+        ) else {
             throw CameraServiceError.deviceUnavailable
         }
         let newInput = try AVCaptureDeviceInput(device: newDevice)
@@ -552,25 +614,74 @@ actor CameraService {
         #endif
     }
 
-    /// Task 043 requirement 3/5: the richest available camera for `position` — tries
-    /// virtual multi-lens device types first (triple → dual-wide → dual), falling back
-    /// to the single wide-angle lens every iPhone has. `AVCaptureDevice.DiscoverySession
-    /// .devices` is not guaranteed to respect `deviceTypes`' ordering, so this searches
-    /// in explicit preference order itself rather than trusting the array's order.
-    private nonisolated static func bestAvailableDevice(for position: AVCaptureDevice.Position) -> AVCaptureDevice? {
+    /// The camera to bind for `position`, preferring richer multi-lens devices (triple
+    /// → dual-wide → dual → single wide) so zoom can reach ultra-wide/telephoto.
+    ///
+    /// Task 047: **now format-aware**, which is the fix for "60FPS selected, 30fps
+    /// recorded". The real-device log proved the cause:
+    ///
+    ///     ZOOM  deviceType=AVCaptureDeviceTypeBuiltInDualWideCamera
+    ///     STAGE 3 DEVICE  activeFormat=3840x2160
+    ///                     supportedFrameRateRanges=[2.0-30.0]
+    ///
+    /// A *virtual* multi-lens device exposes a restricted format list — it has to
+    /// support seamless switching between its constituent lenses — and on this device
+    /// its 4K formats top out at 30fps, even though the standalone
+    /// `.builtInWideAngleCamera` supports 4K60. Task 043 switched from the wide-angle
+    /// camera to the richest virtual device purely to enable multi-lens zoom, and in
+    /// doing so silently removed 4K60 from the reachable format list. Everything
+    /// downstream then behaved correctly and honestly: `selectFormat` reported
+    /// `fpsFallback=true`, and the 30fps propagated all the way to the file.
+    ///
+    /// So the choice of device and the choice of format are not independent, and
+    /// picking the device first — as this used to — cannot be right. This now returns
+    /// the richest device that can *actually deliver* the requested quality+FPS, and
+    /// only falls back to "richest available regardless" when no device can (so an
+    /// unsupported request still degrades exactly as before rather than failing).
+    ///
+    /// Trade-off, per CLAUDE.md's ordering (recording correctness over UI/features):
+    /// when the requested combination is only available on the single-lens camera, the
+    /// user gets the resolution and frame rate they asked for and loses the extra lens
+    /// buttons for that session. `zoomOptions` already derives itself from whichever
+    /// device is bound, so the UI follows automatically.
+    private nonisolated static func bestAvailableDevice(
+        for position: AVCaptureDevice.Position,
+        quality: RecordingQuality,
+        fps: RecordingFPS
+    ) -> AVCaptureDevice? {
         let preferredTypes: [AVCaptureDevice.DeviceType] = [
             .builtInTripleCamera,
             .builtInDualWideCamera,
             .builtInDualCamera,
             .builtInWideAngleCamera
         ]
+        // `AVCaptureDevice.DiscoverySession.devices` is not guaranteed to respect
+        // `deviceTypes`' ordering, so preference order is applied explicitly here.
         let discovery = AVCaptureDevice.DiscoverySession(deviceTypes: preferredTypes, mediaType: .video, position: position)
-        for type in preferredTypes {
-            if let device = discovery.devices.first(where: { $0.deviceType == type }) {
-                return device
+        let orderedDevices = preferredTypes.compactMap { type in
+            discovery.devices.first(where: { $0.deviceType == type })
+        }
+
+        if let exactMatch = orderedDevices.first(where: { supportsExactly(quality: quality, fps: fps, device: $0) }) {
+            return exactMatch
+        }
+        return orderedDevices.first ?? discovery.devices.first
+    }
+
+    /// Whether `device` has a format at exactly `quality`'s dimensions whose supported
+    /// frame-rate ranges cover `fps` — the same pairing `selectFormat(quality:fps:device:)`
+    /// looks for, asked of a device before it is bound rather than after.
+    private nonisolated static func supportsExactly(
+        quality: RecordingQuality,
+        fps: RecordingFPS,
+        device: AVCaptureDevice
+    ) -> Bool {
+        let requestedRate = Double(fps.rawValue)
+        return formats(on: device, matching: quality).contains { format in
+            format.videoSupportedFrameRateRanges.contains {
+                requestedRate >= $0.minFrameRate && requestedRate <= $0.maxFrameRate
             }
         }
-        return discovery.devices.first
     }
 
     /// Task 044 requirement 3: the raw `videoZoomFactor` that corresponds to the
