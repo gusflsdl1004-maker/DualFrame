@@ -38,7 +38,30 @@ struct DiagnosticsDetailView: View {
                     if let preset = diagnostics.bitratePreset {
                         LabeledContent("비트레이트 프리셋", value: preset.title)
                     }
-                    if let format = diagnostics.savedVideoFormat, !format.isEmpty {
+                    // Task 065 item 1: what the selection decided, before the file
+                    // existed. If this says `hvc1` but 저장된 포맷 below says `avc1`,
+                    // something overrode the codec after we asked for it; if this
+                    // itself says `avc1`, the selection is what needs fixing — and the
+                    // dimensions@fps in the line say why (a 4K30 decision is correct).
+                    if let decisions = diagnostics.encoderDecisions, !decisions.isEmpty {
+                        ForEach(decisions, id: \.self) { decision in
+                            Text(decision)
+                                .font(.caption.monospaced())
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    // Task 065: every writer's actual result, not just the long-form's.
+                    if let formats = diagnostics.savedVideoFormatsByProfile, !formats.isEmpty {
+                        ForEach(formats.sorted(by: { $0.key < $1.key }), id: \.key) { name, format in
+                            LabeledContent(name) {
+                                Text(format)
+                                    .font(.caption.monospaced())
+                            }
+                            if let rate = diagnostics.savedFrameRatesByProfile?[name] {
+                                LabeledContent("  └ 저장 FPS", value: String(format: "%.2f fps", rate))
+                            }
+                        }
+                    } else if let format = diagnostics.savedVideoFormat, !format.isEmpty {
                         LabeledContent("저장된 포맷", value: format)
                             .font(.caption.monospaced())
                     }
@@ -160,7 +183,10 @@ struct DiagnosticsDetailView: View {
             videoCodecPreference: .auto,
             keyFrameIntervalSeconds: 1,
             bitratePreset: .high,
-            savedVideoFormat: "hvc1 profile=1 tier=Main level=5.1"
+            savedVideoFormat: "hvc1 profile=1 tier=Main level=5.1",
+            encoderDecisions: ["Long-form: auto 3840x2160@60 → hvc1"],
+            savedVideoFormatsByProfile: ["Long-form": "hvc1 profile=1 tier=Main level=5.1"],
+            savedFrameRatesByProfile: ["Long-form": 59.94]
         ))
     }
 }

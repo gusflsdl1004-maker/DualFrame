@@ -160,6 +160,22 @@ actor RecordingService {
     /// rather than inference — the writer is told a codec, but the level is chosen by
     /// VideoToolbox and is never visible from the settings dictionary.
     private(set) var lastSavedVideoFormat = ""
+    /// Task 065 item 1: what `.auto` decided, per writer, at the moment the writer was
+    /// built — e.g. `Long-form: auto 3840x2160@60 → hvc1`.
+    ///
+    /// This is deliberately separate from `lastSavedVideoFormat`, which is read back out
+    /// of the finished file. Together they answer two different questions that have been
+    /// conflated: *what did this app ask for* and *what did the encoder produce*. If the
+    /// decision says `hvc1` and the file says `avc1`, the codec was overridden below us;
+    /// if the decision itself says `avc1`, the selection logic (or the format it was
+    /// given) is what needs fixing.
+    private(set) var encoderDecisions: [String] = []
+    /// Task 065: per-writer readback, keyed by `OutputProfile.outputName`. The
+    /// single-value `lastSaved…` properties above hold the long-form/single writer's
+    /// values; these hold every writer's, so the short-form's codec and rate are visible
+    /// too instead of overwriting the long-form's at random.
+    private(set) var savedVideoFormatsByProfile: [String: String] = [:]
+    private(set) var savedFrameRatesByProfile: [String: Float] = [:]
     /// Task 059: per-writer accept/reject census for the recording that just finished.
     private(set) var lastWriterAppendStats: [WriterAppendStats] = []
 
@@ -730,13 +746,30 @@ actor RecordingService {
             lastValidationResult = result
 
             if let track = try? await AVURLAsset(url: context.outputURL).loadTracks(withMediaType: .video).first {
+                // Task 065: **`writerContexts.keys` is a Dictionary — its order is not
+                // defined.** These two used to be assigned unconditionally on every
+                // iteration, so in `.dual` mode they ended up holding whichever writer
+                // happened to be processed last. That means the long-standing
+                // "Long + Short = 36.6fps" figure may have been the *short-form's*
+                // 1080×1920 rate rather than the 4K long-form's, and which one it was
+                // could differ between runs.
+                //
+                // Both are now recorded per profile. The single-value properties keep
+                // their existing meaning — the long-form (or single-mode) writer — by
+                // being assigned only for the profile that is not the short-form, which
+                // is the same test `effectiveWriterFormat` and the crop path already use.
+                let isPrimary = profile != .shortForm
+
                 if let rate = try? await track.load(.nominalFrameRate) {
-                    lastSavedNominalFrameRate = rate
+                    savedFrameRatesByProfile[profile.outputName] = rate
+                    if isPrimary { lastSavedNominalFrameRate = rate }
                 }
                 // Task 064 item 5: what the encoder actually produced, not what it was asked for.
                 if let descriptions = try? await track.load(.formatDescriptions),
                    let description = descriptions.first {
-                    lastSavedVideoFormat = Self.describeVideoFormat(description)
+                    let described = Self.describeVideoFormat(description)
+                    savedVideoFormatsByProfile[profile.outputName] = described
+                    if isPrimary { lastSavedVideoFormat = described }
                 }
             }
 
@@ -867,6 +900,13 @@ actor RecordingService {
     private func setUpWriters() {
         writerContexts = [:]
         writerStatuses = [:]
+        // Task 065: one entry per writer built in this recording, so a stale decision
+        // or readback from the previous recording can never be reported against these
+        // numbers.
+        encoderDecisions = []
+        savedVideoFormatsByProfile = [:]
+        savedFrameRatesByProfile = [:]
+        lastSavedVideoFormat = ""
 
         for profile in targetProfiles {
             do {
@@ -959,42 +999,86 @@ actor RecordingService {
         // `.auto` resolves per output, so the 4K60 long-form gets HEVC while a 1080p
         // short-form or a 4K30 recording stays on the more compatible H.264.
         let encoderSettings = encoderSettingsService.load()
-        let codec = encoderSettings.codec.resolvedCodec(
+        var codec = encoderSettings.codec.resolvedCodec(
             width: format.resolution.width,
             height: format.resolution.height,
             fps: format.fps.rawValue
         )
-        let videoSettings: [String: Any] = [
-            AVVideoCodecKey: codec,
-            AVVideoWidthKey: format.resolution.width,
-            AVVideoHeightKey: format.resolution.height,
-            AVVideoCompressionPropertiesKey: [
-                AVVideoAverageBitRateKey: averageBitrate,
-                // Task 044 requirement 1: tells the encoder what source rate to expect.
-                // Without it the H.264 encoder assumes a default (30fps) when choosing
-                // keyframe placement and rate control, which can end up reflected in
-                // the written file's nominal frame rate even when 60fps of buffers
-                // arrive.
-                AVVideoExpectedSourceFrameRateKey: format.fps.rawValue,
-                // Task 064 item 3: was a hardcoded 1 second. An I-frame at 4K costs far
-                // more than a P-frame, so this is a real lever on encoder throughput —
-                // and a real trade-off, since a truncated file loses at most one
-                // interval (CLAUDE.md rule 1). Default stays 1 second.
-                AVVideoMaxKeyFrameIntervalDurationKey: encoderSettings.keyFrameInterval.rawValue,
-                // Task 064 item 4 (compression-property audit): this was never set, so
-                // it defaulted to `true` and the encoder was free to emit B-frames.
-                // B-frames require the encoder to hold and reorder frames, which costs
-                // throughput and adds latency, and they buy nothing here: this is
-                // real-time capture (`expectsMediaDataInRealTime = true`) written
-                // straight to disk, not an offline export. Apple's guidance for
-                // real-time encoding is to disable reordering.
-                //
-                // Trade-off, stated rather than hidden: at a fixed bitrate, dropping
-                // B-frames costs a little compression efficiency. Recording stability
-                // outranks that (CLAUDE.md rules 2/3).
-                AVVideoAllowFrameReorderingKey: false
+
+        // Task 065 item 1: the decision is recorded, not inferred later.
+        //
+        // `.auto` reads `format`, which comes from `activeQuality`/`activeFPS` — the
+        // values the capture session actually resolved, not what the user picked. If
+        // FPS fell back to 30 because the bound device has no 4K60 format, then 4K30 is
+        // within H.264's Level 5.1 ceiling and `.auto` will *correctly* choose H.264.
+        // That would look identical to "the auto logic is broken" from the outside, so
+        // the dimensions and rate the decision was made on are recorded alongside it.
+        var decision = "\(profile.outputName): \(encoderSettings.codec.shortTitle) "
+            + "\(format.resolution.width)x\(format.resolution.height)@\(format.fps.rawValue) → \(codec.rawValue)"
+
+        // Built as a function of the codec so the dictionary tested by `canApply` below
+        // and the one handed to `AVAssetWriterInput` are the same dictionary by
+        // construction — testing settings that differ from the ones actually used would
+        // make the check worse than useless.
+        func makeVideoSettings(_ codec: AVVideoCodecType) -> [String: Any] {
+            [
+                AVVideoCodecKey: codec,
+                AVVideoWidthKey: format.resolution.width,
+                AVVideoHeightKey: format.resolution.height,
+                AVVideoCompressionPropertiesKey: [
+                    AVVideoAverageBitRateKey: averageBitrate,
+                    // Task 044 requirement 1: tells the encoder what source rate to
+                    // expect. Without it the H.264 encoder assumes a default (30fps)
+                    // when choosing keyframe placement and rate control, which can end
+                    // up reflected in the written file's nominal frame rate even when
+                    // 60fps of buffers arrive.
+                    AVVideoExpectedSourceFrameRateKey: format.fps.rawValue,
+                    // Task 064 item 3: was a hardcoded 1 second. An I-frame at 4K costs
+                    // far more than a P-frame, so this is a real lever on encoder
+                    // throughput — and a real trade-off, since a truncated file loses at
+                    // most one interval (CLAUDE.md rule 1). Default stays 1 second.
+                    AVVideoMaxKeyFrameIntervalDurationKey: encoderSettings.keyFrameInterval.rawValue,
+                    // Task 064 item 4 (compression-property audit): this was never set,
+                    // so it defaulted to `true` and the encoder was free to emit
+                    // B-frames. B-frames require the encoder to hold and reorder frames,
+                    // which costs throughput and adds latency, and they buy nothing
+                    // here: this is real-time capture (`expectsMediaDataInRealTime =
+                    // true`) written straight to disk, not an offline export. Apple's
+                    // guidance for real-time encoding is to disable reordering.
+                    //
+                    // Trade-off, stated rather than hidden: at a fixed bitrate, dropping
+                    // B-frames costs a little compression efficiency. Recording
+                    // stability outranks that (CLAUDE.md rules 2/3).
+                    AVVideoAllowFrameReorderingKey: false
+                ]
             ]
-        ]
+        }
+
+        // Task 065: `AVAssetWriter.canApply(outputSettings:forMediaType:)` is the
+        // documented way to ask whether a settings dictionary is usable *before*
+        // building an input from it. Without it, an unsupported codec surfaces as
+        // `canAdd` returning false and the whole recording failing to start — a codec
+        // experiment must never be able to cost a recording (CLAUDE.md rule 1).
+        //
+        // The fallback is recorded rather than silent. A silent fallback to H.264 would
+        // look exactly like `.auto` failing to choose HEVC, and telling those two apart
+        // is the entire point of this task.
+        if !writer.canApply(outputSettings: makeVideoSettings(codec), forMediaType: .video) {
+            let fallback: AVVideoCodecType = codec == .hevc ? .h264 : .hevc
+            if writer.canApply(outputSettings: makeVideoSettings(fallback), forMediaType: .video) {
+                decision += " ⚠︎ 적용 불가 → \(fallback.rawValue)"
+                codec = fallback
+            } else {
+                decision += " ⚠︎ 둘 다 적용 불가 (그대로 진행)"
+            }
+        }
+        encoderDecisions.append(decision)
+        logEvent("Encoder", detail: decision)
+        #if DEBUG
+        debugLog("[Task065-Codec] \(decision)")
+        #endif
+
+        let videoSettings = makeVideoSettings(codec)
         #if DEBUG
         // Task 044 requirement 1/2: the "Writer" stage — printed from the exact
         // dictionary handed to AVAssetWriterInput, not re-derived from activeQuality,

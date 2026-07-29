@@ -74,7 +74,19 @@ nonisolated struct RecordingDiagnostics: Codable, Equatable, Identifiable {
     let keyFrameIntervalSeconds: Int?
     let bitratePreset: BitratePreset?
     /// e.g. `hvc1 profile=1 tier=Main level=5.1` or `avc1 profile=100 level=5.1`.
+    /// The long-form (or single-mode) writer's, never the short-form's.
     let savedVideoFormat: String?
+    /// Task 065: what the codec selection decided, per writer, at the moment each writer
+    /// was built — e.g. `Long-form: auto 3840x2160@60 → hvc1`.
+    ///
+    /// Paired with `savedVideoFormat`, which is read back out of the finished file, this
+    /// separates two questions that have been conflated: what this app asked for, and
+    /// what the encoder produced. Optional so older records still decode.
+    let encoderDecisions: [String]?
+    /// Task 065: every writer's readback, keyed by profile name — so the short-form's
+    /// codec and rate are visible rather than silently replacing the long-form's.
+    let savedVideoFormatsByProfile: [String: String]?
+    let savedFrameRatesByProfile: [String: Float]?
 
     /// Arrival rate implied by the frames that actually reached the writer.
     var measuredArrivalFPS: Double {

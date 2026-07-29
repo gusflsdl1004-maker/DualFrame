@@ -343,7 +343,10 @@ final class RecordingViewModel: ObservableObject {
             videoCodecPreference: encoderSettingsService.load().codec,
             keyFrameIntervalSeconds: encoderSettingsService.load().keyFrameInterval.rawValue,
             bitratePreset: bitratePresetSettingsService.load().preset,
-            savedVideoFormat: await service.lastSavedVideoFormat
+            savedVideoFormat: await service.lastSavedVideoFormat,
+            encoderDecisions: await service.encoderDecisions,
+            savedVideoFormatsByProfile: await service.savedVideoFormatsByProfile,
+            savedFrameRatesByProfile: await service.savedFrameRatesByProfile
         )
         await diagnosticsService.save(diagnostics)
     }
