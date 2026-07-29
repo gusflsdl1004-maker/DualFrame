@@ -119,6 +119,31 @@ actor RecordingService {
     /// by any non-debug code path.
     private var debugVideoBufferCount = 0
     private var debugFirstBufferTime: CMTime?
+
+    /// Task 048: per-writer timing, to locate the bottleneck rather than infer it.
+    /// Kept in its own Debug-only dictionary rather than added to `WriterContext`, so
+    /// the recording path carries no measurement state in Release at all.
+    private struct ProfileTimingStats {
+        var appendedFrames = 0
+        /// Time inside `VideoFrameCropper.croppedPixelBuffer` (short-form only).
+        var cropTotal: TimeInterval = 0
+        var cropMax: TimeInterval = 0
+        /// Time inside `AVAssetWriterInput.append`/`AVAssetWriterInputPixelBufferAdaptor.append`.
+        var writeTotal: TimeInterval = 0
+        var writeMax: TimeInterval = 0
+        /// Frames this writer refused because `isReadyForMoreMediaData` was false —
+        /// i.e. the writer made the pipeline wait.
+        var notReadyCount = 0
+        /// Longest stretch this writer went without accepting a frame.
+        var lastAcceptedAt: Date?
+        var maxStarvationGap: TimeInterval = 0
+    }
+    private var debugTimings: [OutputProfile: ProfileTimingStats] = [:]
+    /// Wall-clock time `append(_:isVideo:)` occupied the actor, across all writers —
+    /// the figure that matters for whether the actor itself is the bottleneck.
+    private var debugActorHoldTotal: TimeInterval = 0
+    private var debugActorHoldMax: TimeInterval = 0
+    private var debugActorHoldSamples = 0
     #endif
 
     init(libraryService: InternalVideoLibraryService) {
@@ -214,6 +239,11 @@ actor RecordingService {
         #if DEBUG
         debugVideoBufferCount = 0
         debugFirstBufferTime = nil
+        // Task 048: timings are per-recording, never carried across sessions.
+        debugTimings = [:]
+        debugActorHoldTotal = 0
+        debugActorHoldMax = 0
+        debugActorHoldSamples = 0
         #endif
 
         // Warn-only check (requirement 13) — never blocks preparing or recording.
@@ -286,6 +316,51 @@ actor RecordingService {
     }
 
     #if DEBUG
+    /// Task 048: records one write duration and the gap since this writer last
+    /// accepted a frame (its starvation interval).
+    private func recordDebugWrite(profile: OutputProfile, duration: TimeInterval) {
+        var stats = debugTimings[profile] ?? ProfileTimingStats()
+        stats.appendedFrames += 1
+        stats.writeTotal += duration
+        stats.writeMax = max(stats.writeMax, duration)
+        let now = Date()
+        if let last = stats.lastAcceptedAt {
+            stats.maxStarvationGap = max(stats.maxStarvationGap, now.timeIntervalSince(last))
+        }
+        stats.lastAcceptedAt = now
+        debugTimings[profile] = stats
+    }
+
+    /// Task 048: per-writer bottleneck breakdown. Printed periodically during the
+    /// recording and once more at the end, so a long recording shows whether the cost
+    /// is steady or degrades as the writers fall behind.
+    ///
+    /// How to read it: at 60fps the pipeline has 16.7ms per frame (33.3ms at 30fps),
+    /// and because every writer is serviced on the same actor, `actorHold` is the
+    /// figure that has to stay under that budget — not any individual writer's.
+    /// `crop` vs `write` says which half of short-form's work dominates; `notReady`
+    /// counts frames a writer refused outright.
+    private func logTimingBreakdown(label: String) {
+        let frameBudgetMs = 1000.0 / Double(activeFPS.rawValue)
+        let avgHold = debugActorHoldSamples > 0 ? debugActorHoldTotal / Double(debugActorHoldSamples) * 1000 : 0
+        print(String(
+            format: "[Task048-Perf] %@ actorHold avg=%.2fms max=%.2fms budget=%.2fms samples=%d",
+            label, avgHold, debugActorHoldMax * 1000, frameBudgetMs, debugActorHoldSamples
+        ))
+
+        for (profile, stats) in debugTimings.sorted(by: { $0.key.outputName < $1.key.outputName }) {
+            let avgCrop = stats.appendedFrames > 0 ? stats.cropTotal / Double(stats.appendedFrames) * 1000 : 0
+            let avgWrite = stats.appendedFrames > 0 ? stats.writeTotal / Double(stats.appendedFrames) * 1000 : 0
+            print(String(
+                format: "[Task048-Perf] %@ %@ frames=%d crop avg=%.2fms max=%.2fms | write avg=%.2fms max=%.2fms | notReady=%d maxGap=%.0fms",
+                label, profile.outputName, stats.appendedFrames,
+                avgCrop, stats.cropMax * 1000,
+                avgWrite, stats.writeMax * 1000,
+                stats.notReadyCount, stats.maxStarvationGap * 1000
+            ))
+        }
+    }
+
     /// Task 044 requirement 1/2/4: the final "File" stage — reads the just-written
     /// file's own track metadata, so the saved resolution and nominal frame rate can
     /// be compared against every earlier stage without leaving the app or running
@@ -338,6 +413,9 @@ actor RecordingService {
         guard elapsed > 0 else { return }
         let measuredFPS = Double(debugVideoBufferCount - 1) / elapsed
         print("[Task044-Debug] STAGE 5 BUFFER#\(debugVideoBufferCount) measuredArrivalFPS=\(String(format: "%.2f", measuredFPS)) over \(String(format: "%.1f", elapsed))s CMSampleBuffer=\(formatDimensions.map { "\($0.width)x\($0.height)" } ?? "nil") CVPixelBuffer=\(pixelWidth)x\(pixelHeight)")
+        // Task 048: printed on the same cadence as the arrival-rate sample, so the
+        // measured FPS and the cost breakdown that explains it sit together.
+        logTimingBreakdown(label: "@\(debugVideoBufferCount)")
     }
     #endif
 
@@ -351,6 +429,12 @@ actor RecordingService {
         setState(.stopping)
         stopCheckpointing()
         await performanceMonitor.stopMonitoring()
+
+        #if DEBUG
+        // Task 048: the whole-recording totals, printed before any writer is finished
+        // so the numbers describe the recording itself rather than teardown.
+        logTimingBreakdown(label: "FINAL")
+        #endif
 
         var anySucceeded = false
 
@@ -661,6 +745,22 @@ actor RecordingService {
         // paused (requirement 5 from Task 017: never corrupt the existing recording).
         guard state == .recording, !isPaused else { return }
 
+        #if DEBUG
+        // Task 048: measures how long this call occupies the actor. Every writer's
+        // work is serialized here, so if this exceeds the frame interval (16.7ms at
+        // 60fps, 33.3ms at 30fps) the actor itself is the bottleneck, regardless of
+        // how fast any individual writer is.
+        let actorHoldStart = isVideo ? Date() : nil
+        defer {
+            if let actorHoldStart {
+                let held = Date().timeIntervalSince(actorHoldStart)
+                debugActorHoldTotal += held
+                debugActorHoldMax = max(debugActorHoldMax, held)
+                debugActorHoldSamples += 1
+            }
+        }
+        #endif
+
         for profile in writerContexts.keys {
             guard var context = writerContexts[profile], !context.hasFailed else { continue }
             let writer = context.writer
@@ -685,6 +785,11 @@ actor RecordingService {
                 // surfaced in `stopRecording`.
                 if isVideo {
                     writerContexts[profile]?.skippedVideoFrames += 1
+                    #if DEBUG
+                    // Task 048: "Writer 대기 시간" — this writer refused the frame
+                    // because it hadn't finished the previous one.
+                    debugTimings[profile, default: ProfileTimingStats()].notReadyCount += 1
+                    #endif
                 }
                 continue
             }
@@ -695,23 +800,58 @@ actor RecordingService {
                 // exclusively for the short-form output's video. `nil` from the cropper
                 // means this single frame gets dropped, not that the writer failed; only
                 // an actual `adaptor.append` rejection counts as a writer-level failure.
-                if let sourcePixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer),
-                   let croppedBuffer = frameCropper.croppedPixelBuffer(from: sourcePixelBuffer, configuration: cropConfiguration) {
-                    let appended = adaptor.append(croppedBuffer, withPresentationTime: CMSampleBufferGetPresentationTimeStamp(sampleBuffer))
-                    if appended {
-                        writerContexts[profile]?.appendedVideoFrames += 1
+                if let sourcePixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) {
+                    // Task 048: crop timed on its own, separately from the append that
+                    // follows — the whole point is to tell those two apart.
+                    #if DEBUG
+                    let cropStart = Date()
+                    #endif
+                    let croppedBuffer = frameCropper.croppedPixelBuffer(from: sourcePixelBuffer, configuration: cropConfiguration)
+                    #if DEBUG
+                    let cropDuration = Date().timeIntervalSince(cropStart)
+                    debugTimings[profile, default: ProfileTimingStats()].cropTotal += cropDuration
+                    debugTimings[profile, default: ProfileTimingStats()].cropMax = max(
+                        debugTimings[profile, default: ProfileTimingStats()].cropMax,
+                        cropDuration
+                    )
+                    #endif
+
+                    if let croppedBuffer {
+                        #if DEBUG
+                        let adaptorStart = Date()
+                        #endif
+                        let appended = adaptor.append(croppedBuffer, withPresentationTime: CMSampleBufferGetPresentationTimeStamp(sampleBuffer))
+                        #if DEBUG
+                        recordDebugWrite(profile: profile, duration: Date().timeIntervalSince(adaptorStart))
+                        #endif
+                        if appended {
+                            writerContexts[profile]?.appendedVideoFrames += 1
+                        } else {
+                            markWriterFailed(profile, error: .writeFailed, startupReason: .appendFailed)
+                        }
                     } else {
-                        markWriterFailed(profile, error: .writeFailed, startupReason: .appendFailed)
+                        // Cropper returned nil — one dropped frame, not a writer failure
+                        // (unchanged), but no longer invisible.
+                        writerContexts[profile]?.skippedVideoFrames += 1
                     }
                 } else {
-                    // Cropper returned nil — one dropped frame, not a writer failure
-                    // (unchanged), but no longer invisible.
                     writerContexts[profile]?.skippedVideoFrames += 1
                 }
             } else {
                 // Unchanged since before Task 021: long-form, `.single` mode, and every
                 // audio append always take this exact path.
+                #if DEBUG
+                let inputStart = Date()
+                #endif
                 input.append(sampleBuffer)
+                if isVideo {
+                    // Counted in every configuration, not just Debug — `stopRecording`
+                    // reports it as part of the non-Debug failure diagnostics.
+                    writerContexts[profile]?.appendedVideoFrames += 1
+                    #if DEBUG
+                    recordDebugWrite(profile: profile, duration: Date().timeIntervalSince(inputStart))
+                    #endif
+                }
             }
             await performanceMonitor.recordWriteLatency(Date().timeIntervalSince(writeStart))
             lastAppendedTimestamp = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
