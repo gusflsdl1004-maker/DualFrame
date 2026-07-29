@@ -54,6 +54,9 @@ actor CameraService {
     /// The highest `videoZoomFactor` `videoDevice` currently accepts, including
     /// digital zoom beyond the last physical lens (requirement 4).
     private(set) var maxZoomFactor: CGFloat = 1.0
+    /// Task 044: the raw `videoZoomFactor` that the user thinks of as "1×" — the wide
+    /// lens. Not always 1.0: see `baseZoomFactor(for:)`.
+    private(set) var baseZoomFactor: CGFloat = 1.0
     /// Quick-select buttons for the lenses `videoDevice` actually has (requirement 5)
     /// — always just `["1"]` for a single-lens device (e.g. iPhone SE).
     private(set) var zoomOptions: [CameraZoomOption] = [CameraZoomOption(id: "wide", factor: 1.0, label: "1")]
@@ -168,18 +171,55 @@ actor CameraService {
     /// logic (requirement: 필요 최소 범위만 수정).
     func refreshRecordingFormat() async {
         guard let device = videoDevice else { return }
+        // Task 044 requirement 1: this runs while the session is already *running*
+        // (unlike `configure()`, whose caller wraps it). Changing `activeFormat`/frame
+        // durations on a live session outside a configuration block lets the session
+        // re-resolve its own configuration around the change, which can silently
+        // revert the frame duration just written — the suspected cause of "60fps
+        // selected, 29.98fps recorded". Wrapping it makes the format and frame
+        // duration commit atomically as one reconfiguration.
+        session.beginConfiguration()
         await applyDeviceSpecificSettings(device: device)
+        session.commitConfiguration()
         await recordingService.updateRecordingFormat(quality: activeQuality, fps: activeFPS)
         #if DEBUG
-        // Task 043 follow-up: printed right after this actor's own activeQuality/
-        // activeFPS and RecordingService's copy are both updated for this recording,
-        // alongside the actual AVCaptureDevice.activeFormat.formatDescription — so all
-        // four values can be diffed against each other, and against a real-device
-        // exported file's metadata, before trusting the 4K fix.
-        let dims = CMVideoFormatDescriptionGetDimensions(device.activeFormat.formatDescription)
-        print("[Task043-4K-Debug] CameraService.activeQuality=\(activeQuality.title) (\(activeQuality.dimensions.width)x\(activeQuality.dimensions.height)) CameraService.activeFPS=\(activeFPS.rawValue) AVCaptureDevice.activeFormat.formatDescription=\(device.activeFormat.formatDescription) parsedDimensions=\(dims.width)x\(dims.height)")
+        logFormatStage(device: device)
         #endif
     }
+
+    #if DEBUG
+    /// Task 044 requirement 1/2: the "설정 → Device" half of the requested
+    /// stage-by-stage trace, printed once per recording right before the writer is
+    /// built. The "SampleBuffer → Writer" half is printed by `RecordingService`
+    /// (same `[Task044-Debug]` tag), and the final "File" stage is whatever the
+    /// exported file's own metadata reports.
+    private func logFormatStage(device: AVCaptureDevice) {
+        let formatDimensions = CMVideoFormatDescriptionGetDimensions(device.activeFormat.formatDescription)
+        let minDuration = device.activeVideoMinFrameDuration
+        let maxDuration = device.activeVideoMaxFrameDuration
+        let minFPS = minDuration.seconds > 0 ? 1 / minDuration.seconds : 0
+        let maxFPS = maxDuration.seconds > 0 ? 1 / maxDuration.seconds : 0
+        let supportedRanges = device.activeFormat.videoSupportedFrameRateRanges
+            .map { "\($0.minFrameRate)-\($0.maxFrameRate)" }
+            .joined(separator: ",")
+
+        print("""
+        [Task044-Debug] STAGE 1 SETTINGS  requestedQuality=\(qualitySettingsService.load().selectedQuality.title) requestedFPS=\(fpsSettingsService.load().selectedFPS.rawValue)
+        [Task044-Debug] STAGE 2 RESOLVED  CameraService.activeQuality=\(activeQuality.title) (\(activeQuality.dimensions.width)x\(activeQuality.dimensions.height)) CameraService.activeFPS=\(activeFPS.rawValue) qualityFallback=\(qualityFallbackOccurred) fpsFallback=\(fpsFallbackOccurred)
+        [Task044-Debug] STAGE 3 DEVICE    activeFormat=\(formatDimensions.width)x\(formatDimensions.height) supportedFrameRateRanges=[\(supportedRanges)] activeVideoMinFrameDuration=\(minDuration.value)/\(minDuration.timescale) (=\(String(format: "%.2f", minFPS))fps) activeVideoMaxFrameDuration=\(maxDuration.value)/\(maxDuration.timescale) (=\(String(format: "%.2f", maxFPS))fps)
+        [Task044-Debug] STAGE 3 DEVICE    sessionPreset=\(session.sessionPreset.rawValue) formatDescription=\(device.activeFormat.formatDescription)
+        [Task044-Debug] STAGE 4 OUTPUT    automaticallyConfiguresOutputBufferDimensions=\(videoOutput.automaticallyConfiguresOutputBufferDimensions) deliversPreviewSizedOutputBuffers=\(videoOutput.deliversPreviewSizedOutputBuffers) videoSettings=\(videoOutput.videoSettings ?? [:])
+        """)
+
+        if let connection = videoOutput.connection(with: .video) {
+            // AVCaptureConnection's own videoMin/MaxFrameDuration are unavailable on
+            // iOS — AVCaptureDevice.activeVideoMin/MaxFrameDuration (STAGE 3 above) is
+            // the only frame-duration control on this platform, so there is no
+            // separate connection-level rate that could be overriding it.
+            print("[Task044-Debug] STAGE 4 CONNECTION isActive=\(connection.isActive) isEnabled=\(connection.isEnabled) isVideoMirrored=\(connection.isVideoMirrored) (frame duration is device-level only on iOS)")
+        }
+    }
+    #endif
 
     private func configure() async throws {
         session.beginConfiguration()
@@ -221,6 +261,7 @@ actor CameraService {
             throw CameraServiceError.cannotAddOutput
         }
         session.addOutput(videoOutput)
+        applyFullSizeBufferDelivery()
 
         audioOutput.setSampleBufferDelegate(outputForwarder, queue: sampleBufferQueue)
         if session.canAddOutput(audioOutput) {
@@ -231,6 +272,30 @@ actor CameraService {
         setUpZoomCapabilities(device: device)
         isConfigured = true
         logStartupEvent("Camera Configured", detail: requestedPosition.title)
+    }
+
+    /// Task 044 requirement 2: the prime suspect for "device.activeFormat says
+    /// 3840x2160 but the saved file is 1920x1080".
+    ///
+    /// `AVCaptureVideoDataOutput.automaticallyConfiguresOutputBufferDimensions`
+    /// defaults to `true`, which lets AVFoundation choose the dimensions of the
+    /// `CMSampleBuffer`s it hands to the delegate independently of the capture
+    /// device's `activeFormat` — in practice it can deliver downscaled (often
+    /// preview-sized) buffers. Every log this project added in Task 043 measured
+    /// either end of that gap (the device format on one side, the writer's
+    /// `AVVideoWidthKey` on the other) and both correctly said 4K, because the
+    /// downscale happens *between* them, in the buffers themselves.
+    ///
+    /// Setting this to `false` (and explicitly opting out of preview-sized buffers)
+    /// is what makes the data output deliver buffers at the active format's full
+    /// dimensions. Must be set *after* the output is added to the session, and
+    /// re-applied whenever the session is reconfigured — hence the call from both
+    /// `configure()` and `applyDeviceSpecificSettings(device:)`.
+    private func applyFullSizeBufferDelivery() {
+        if videoOutput.deliversPreviewSizedOutputBuffers {
+            videoOutput.deliversPreviewSizedOutputBuffers = false
+        }
+        videoOutput.automaticallyConfiguresOutputBufferDimensions = false
     }
 
     /// Task 029: writes to the same shared `RecordingDiagnosticsLogService` instance
@@ -274,6 +339,11 @@ actor CameraService {
         do {
             try device.lockForConfiguration()
             device.activeFormat = selection.format
+            // Task 044 requirement 1: assigning `activeFormat` resets the device's
+            // frame-duration properties to that format's defaults, so these must be
+            // set *after* it — never before, or the requested rate is silently
+            // discarded and the format's default (typically 30fps, reported as ~29.97)
+            // is what actually gets captured.
             let frameDuration = CMTime(value: 1, timescale: Int32(selection.resolvedFPS.rawValue))
             device.activeVideoMinFrameDuration = frameDuration
             device.activeVideoMaxFrameDuration = frameDuration
@@ -291,6 +361,12 @@ actor CameraService {
             activeFPS = .fps30
             fpsFallbackOccurred = true
         }
+
+        // Task 044 requirement 2: re-assert full-size buffer delivery after every
+        // format change — AVFoundation resets output-buffer configuration when the
+        // session/device format is reconfigured, so setting it once in `configure()`
+        // is not enough.
+        applyFullSizeBufferDelivery()
 
         // Requirement 3/4 (Task 022, now actually exercised for a front camera too):
         // the *recorded* connection must never mirror, regardless of AVFoundation's
@@ -370,24 +446,38 @@ actor CameraService {
         }
     }
 
-    /// Task 043 requirement 3/5: rebuilds `zoomOptions`/`minZoomFactor`/
-    /// `maxZoomFactor` for `device` and resets `currentZoomFactor` to 1.0 (the wide
-    /// lens) — called only when `device` itself has just changed (`configure()`,
+    /// Task 044 requirement 3: rebuilds `zoomOptions`/`minZoomFactor`/`maxZoomFactor`/
+    /// `baseZoomFactor` for `device` and resets the zoom to the *wide* lens — called
+    /// only when `device` itself has just changed (`configure()`,
     /// `switchCamera(to:)`), deliberately never from `refreshRecordingFormat()`, so a
     /// quality/FPS refresh right before a recording can never reset the zoom level the
     /// user actually framed their shot with.
+    ///
+    /// Note the reset target is `baseZoomFactor`, not the literal `1.0` Task 043 used:
+    /// on a virtual device that includes an ultra-wide lens, `videoZoomFactor == 1.0`
+    /// is the *ultra-wide* (a "0.5×" view), so the old code silently started every
+    /// session zoomed all the way out.
     private func setUpZoomCapabilities(device: AVCaptureDevice) {
         minZoomFactor = device.minAvailableVideoZoomFactor
         maxZoomFactor = device.maxAvailableVideoZoomFactor
+        baseZoomFactor = Self.baseZoomFactor(for: device)
         zoomOptions = Self.zoomOptions(for: device)
-        currentZoomFactor = 1.0
+        currentZoomFactor = baseZoomFactor
         do {
             try device.lockForConfiguration()
-            device.videoZoomFactor = 1.0
+            device.videoZoomFactor = baseZoomFactor
             device.unlockForConfiguration()
         } catch {
             logStartupEvent("Zoom Reset Failed")
         }
+        #if DEBUG
+        let constituents = device.constituentDevices.map(\.deviceType.rawValue).joined(separator: ",")
+        let switchOvers = device.virtualDeviceSwitchOverVideoZoomFactors.map { "\($0)" }.joined(separator: ",")
+        print("""
+        [Task044-Debug] ZOOM deviceType=\(device.deviceType.rawValue) constituentDevices=[\(constituents)] virtualDeviceSwitchOverVideoZoomFactors=[\(switchOvers)]
+        [Task044-Debug] ZOOM minAvailable=\(minZoomFactor) maxAvailable=\(maxZoomFactor) baseZoomFactor(1x)=\(baseZoomFactor) buttons=\(zoomOptions.map { "\($0.label)x@\($0.factor)" }.joined(separator: " "))
+        """)
+        #endif
     }
 
     /// Task 043 requirement 3/5: the richest available camera for `position` — tries
@@ -411,37 +501,79 @@ actor CameraService {
         return discovery.devices.first
     }
 
-    /// Task 043 requirement 5: derives quick-select zoom buttons from `device`'s actual
-    /// constituent lenses — a single-lens device (no `constituentDevices`, e.g. iPhone
-    /// SE) gets only "1"; a device with an ultra-wide constituent gets a button at
-    /// `minAvailableVideoZoomFactor` (its ultra-wide's natural field of view, which for
-    /// every current iPhone is exactly 0.5x); a device with a telephoto constituent
-    /// gets a button at the last virtual-device switch-over factor, which is exactly
-    /// the telephoto's marked optical zoom (2x/3x/5x depending on the model) — the same
-    /// technique Apple's own Camera app derives its lens buttons from.
+    /// Task 044 requirement 3: the raw `videoZoomFactor` that corresponds to the
+    /// **wide** lens — i.e. what a user calls "1×".
+    ///
+    /// This is the correction at the heart of the "only 2 zoom buttons" bug. On a
+    /// virtual multi-lens device, `videoZoomFactor` is expressed relative to the
+    /// *widest constituent lens*, not the wide one. On a triple-camera iPhone the
+    /// ultra-wide is the base, so `videoZoomFactor == 1.0` is the "0.5×" view and the
+    /// wide lens actually begins at `virtualDeviceSwitchOverVideoZoomFactors[0]`
+    /// (typically 2.0). Task 043 assumed 1.0 was always the wide lens, so it emitted
+    /// an ultra-wide button labelled "1" *and* a hardcoded wide button also labelled
+    /// "1" — duplicate, wrongly-labelled entries instead of the expected 0.5/1/3.
+    ///
+    /// When there's no ultra-wide constituent the device already starts at the wide
+    /// lens, so the base is simply 1.0.
+    private nonisolated static func baseZoomFactor(for device: AVCaptureDevice) -> CGFloat {
+        guard device.constituentDevices.contains(where: { $0.deviceType == .builtInUltraWideCamera }),
+              let firstSwitchOver = device.virtualDeviceSwitchOverVideoZoomFactors.first else {
+            return 1.0
+        }
+        return CGFloat(truncating: firstSwitchOver)
+    }
+
+    /// Task 044 requirement 3: one quick-select button per lens the device actually
+    /// has, labelled the way a user expects (0.5 / 1 / 2 / 3 …) rather than in raw
+    /// `videoZoomFactor` units.
+    ///
+    /// Derived entirely from the device's own capability data — never a hardcoded list
+    /// of models: the ultra-wide (when present) sits at `minAvailableVideoZoomFactor`,
+    /// and *every* entry in `virtualDeviceSwitchOverVideoZoomFactors` marks where the
+    /// next physical lens takes over, so a device with more lenses automatically gets
+    /// more buttons. Task 043 only ever looked at the single largest switch-over
+    /// factor, which is why intermediate lenses went missing.
+    ///
+    /// A 2× button is added on top when the device can reach it but has no physical
+    /// lens there — the same digital-crop convenience button Apple's Camera app shows
+    /// on Pro models.
     private nonisolated static func zoomOptions(for device: AVCaptureDevice) -> [CameraZoomOption] {
+        let base = baseZoomFactor(for: device)
+
         guard !device.constituentDevices.isEmpty else {
-            return [CameraZoomOption(id: "wide", factor: 1.0, label: "1")]
+            return [CameraZoomOption(id: "wide", factor: base, label: "1")]
         }
 
-        var options: [CameraZoomOption] = []
+        var factors: [CGFloat] = []
         if device.constituentDevices.contains(where: { $0.deviceType == .builtInUltraWideCamera }) {
-            let factor = device.minAvailableVideoZoomFactor
-            options.append(CameraZoomOption(id: "ultraWide", factor: factor, label: formattedFactor(factor)))
+            factors.append(device.minAvailableVideoZoomFactor)
+        }
+        factors.append(base)
+        factors.append(contentsOf: device.virtualDeviceSwitchOverVideoZoomFactors
+            .map { CGFloat(truncating: $0) }
+            .filter { $0 > base })
+
+        // Digital 2× convenience button, only when no physical lens already sits there.
+        let twoTimes = base * 2
+        if twoTimes <= device.maxAvailableVideoZoomFactor,
+           !factors.contains(where: { abs($0 - twoTimes) < 0.05 }) {
+            factors.append(twoTimes)
         }
 
-        options.append(CameraZoomOption(id: "wide", factor: 1.0, label: "1"))
-
-        if device.constituentDevices.contains(where: { $0.deviceType == .builtInTelephotoCamera }),
-           let teleFactor = device.virtualDeviceSwitchOverVideoZoomFactors.map({ CGFloat(truncating: $0) }).max() {
-            options.append(CameraZoomOption(id: "telephoto", factor: teleFactor, label: formattedFactor(teleFactor)))
-        }
-
-        return options
+        return factors
+            .sorted()
+            .map { factor in
+                CameraZoomOption(
+                    id: "zoom-\(factor)",
+                    factor: factor,
+                    label: formattedFactor(factor / base)
+                )
+            }
     }
 
     /// "0.5" / "1" / "3" — one decimal place, trailing ".0" dropped, matching how
-    /// Apple's own Camera app labels its lens buttons.
+    /// Apple's own Camera app labels its lens buttons. Takes an already
+    /// base-normalised (user-facing) value, not a raw `videoZoomFactor`.
     private nonisolated static func formattedFactor(_ factor: CGFloat) -> String {
         let rounded = (factor * 10).rounded() / 10
         if rounded == rounded.rounded() {

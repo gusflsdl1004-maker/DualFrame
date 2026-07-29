@@ -106,6 +106,13 @@ actor RecordingService {
     /// recording — surfaced in the diagnostics report.
     private(set) var checkpointSaveCount = 0
 
+    #if DEBUG
+    /// Task 044: counters backing `logVideoSampleBufferStage(_:)` only — never read
+    /// by any non-debug code path.
+    private var debugVideoBufferCount = 0
+    private var debugFirstBufferTime: CMTime?
+    #endif
+
     init(libraryService: InternalVideoLibraryService) {
         self.libraryService = libraryService
     }
@@ -196,6 +203,10 @@ actor RecordingService {
         recordingStartTime = nil
         isPaused = false
         checkpointSaveCount = 0
+        #if DEBUG
+        debugVideoBufferCount = 0
+        debugFirstBufferTime = nil
+        #endif
 
         // Warn-only check (requirement 13) — never blocks preparing or recording.
         await performanceMonitor.checkAvailableStorage()
@@ -256,12 +267,71 @@ actor RecordingService {
     }
 
     func appendVideoSampleBuffer(_ sampleBuffer: CMSampleBuffer) async {
+        #if DEBUG
+        logVideoSampleBufferStage(sampleBuffer)
+        #endif
         await append(sampleBuffer, isVideo: true)
     }
 
     func appendAudioSampleBuffer(_ sampleBuffer: CMSampleBuffer) async {
         await append(sampleBuffer, isVideo: false)
     }
+
+    #if DEBUG
+    /// Task 044 requirement 1/2/4: the final "File" stage — reads the just-written
+    /// file's own track metadata, so the saved resolution and nominal frame rate can
+    /// be compared against every earlier stage without leaving the app or running
+    /// ffprobe by hand. This is the value that must read 3840x2160 / 60fps for the
+    /// bug to be considered fixed.
+    private func logFinishedFileStage(profile: OutputProfile, url: URL) async {
+        let asset = AVURLAsset(url: url)
+        guard let track = try? await asset.loadTracks(withMediaType: .video).first,
+              let naturalSize = try? await track.load(.naturalSize),
+              let nominalFrameRate = try? await track.load(.nominalFrameRate),
+              let transform = try? await track.load(.preferredTransform) else {
+            print("[Task044-Debug] STAGE 7 FILE     profile=\(profile.outputName) — could not read video track metadata")
+            return
+        }
+        // naturalSize is pre-transform; a portrait recording carries its rotation in
+        // preferredTransform, so the visually-presented size is reported too.
+        let presentedSize = naturalSize.applying(transform)
+        print("[Task044-Debug] STAGE 7 FILE     profile=\(profile.outputName) naturalSize=\(Int(naturalSize.width))x\(Int(naturalSize.height)) presentedSize=\(Int(abs(presentedSize.width)))x\(Int(abs(presentedSize.height))) nominalFrameRate=\(String(format: "%.2f", nominalFrameRate))fps url=\(url.lastPathComponent)")
+    }
+
+    /// Task 044 requirement 1/2: the "SampleBuffer" stage of the requested trace —
+    /// the one link that was never instrumented, and the only place that can prove
+    /// whether the buffers actually arriving are the size/rate the device claims.
+    ///
+    /// Logs the first buffer of each recording (its real dimensions, both from the
+    /// format description and the backing `CVPixelBuffer`), then every 120th buffer
+    /// with the measured arrival rate — deliberately not every frame, which at 60fps
+    /// would flood the console badly enough to distort the timing being measured.
+    private func logVideoSampleBufferStage(_ sampleBuffer: CMSampleBuffer) {
+        guard state == .recording else { return }
+
+        let presentationTime = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
+        debugVideoBufferCount += 1
+
+        let formatDimensions = CMSampleBufferGetFormatDescription(sampleBuffer)
+            .map { CMVideoFormatDescriptionGetDimensions($0) }
+        let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer)
+        let pixelWidth = pixelBuffer.map { CVPixelBufferGetWidth($0) } ?? -1
+        let pixelHeight = pixelBuffer.map { CVPixelBufferGetHeight($0) } ?? -1
+
+        if debugVideoBufferCount == 1 {
+            debugFirstBufferTime = presentationTime
+            print("[Task044-Debug] STAGE 5 BUFFER#1  CMSampleBuffer=\(formatDimensions.map { "\($0.width)x\($0.height)" } ?? "nil") CVPixelBuffer=\(pixelWidth)x\(pixelHeight) writerExpects=\(activeQuality.dimensions.width)x\(activeQuality.dimensions.height) @\(activeFPS.rawValue)fps")
+            return
+        }
+
+        guard debugVideoBufferCount % 120 == 0,
+              let firstTime = debugFirstBufferTime else { return }
+        let elapsed = presentationTime.seconds - firstTime.seconds
+        guard elapsed > 0 else { return }
+        let measuredFPS = Double(debugVideoBufferCount - 1) / elapsed
+        print("[Task044-Debug] STAGE 5 BUFFER#\(debugVideoBufferCount) measuredArrivalFPS=\(String(format: "%.2f", measuredFPS)) over \(String(format: "%.1f", elapsed))s CMSampleBuffer=\(formatDimensions.map { "\($0.width)x\($0.height)" } ?? "nil") CVPixelBuffer=\(pixelWidth)x\(pixelHeight)")
+    }
+    #endif
 
     /// Finishes writing and validates each active writer's file independently
     /// (requirement 7) — a failure in one never skips or cancels another.
@@ -324,6 +394,10 @@ actor RecordingService {
             let result = await validator.validate(fileURL: context.outputURL, expectsAudioTrack: expectsAudioTrack)
             writerStatuses[profile]?.validationResult = result
             lastValidationResult = result
+
+            #if DEBUG
+            await logFinishedFileStage(profile: profile, url: context.outputURL)
+            #endif
 
             guard result.isValid else {
                 let error = result.error ?? .validationFailed
@@ -425,14 +499,20 @@ actor RecordingService {
         let videoSettings: [String: Any] = [
             AVVideoCodecKey: AVVideoCodecType.h264,
             AVVideoWidthKey: profile.resolution.width,
-            AVVideoHeightKey: profile.resolution.height
+            AVVideoHeightKey: profile.resolution.height,
+            // Task 044 requirement 1: tells the encoder what source rate to expect.
+            // Without it the H.264 encoder assumes a default (30fps) when choosing
+            // keyframe placement and rate control, which can end up reflected in the
+            // written file's nominal frame rate even when 60fps of buffers arrive.
+            AVVideoCompressionPropertiesKey: [
+                AVVideoExpectedSourceFrameRateKey: profile.fps.rawValue
+            ]
         ]
         #if DEBUG
-        // Task 043 follow-up: printed from the exact dictionary handed to
-        // AVAssetWriterInput — not re-derived from activeQuality — so this is the
-        // literal value the writer was actually configured with, for comparing
-        // against a real-device exported file's metadata before trusting the 4K fix.
-        print("[Task043-4K-Debug] RecordingService.activeQuality=\(activeQuality.title) (\(activeQuality.dimensions.width)x\(activeQuality.dimensions.height)) RecordingService.activeFPS=\(activeFPS.rawValue) profile=\(profile.outputName) AVVideoWidthKey=\(profile.resolution.width) AVVideoHeightKey=\(profile.resolution.height)")
+        // Task 044 requirement 1/2: the "Writer" stage — printed from the exact
+        // dictionary handed to AVAssetWriterInput, not re-derived from activeQuality,
+        // so this is literally what the writer was configured with.
+        print("[Task044-Debug] STAGE 6 WRITER   profile=\(profile.outputName) AVVideoWidthKey=\(profile.resolution.width) AVVideoHeightKey=\(profile.resolution.height) AVVideoExpectedSourceFrameRateKey=\(profile.fps.rawValue) | RecordingService.activeQuality=\(activeQuality.title) RecordingService.activeFPS=\(activeFPS.rawValue)")
         #endif
         let videoWriterInput = AVAssetWriterInput(mediaType: .video, outputSettings: videoSettings)
         videoWriterInput.expectsMediaDataInRealTime = true
