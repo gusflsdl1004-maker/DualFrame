@@ -18,6 +18,8 @@ struct CameraPreviewView: View {
     @StateObject private var orientationManager = OrientationManager()
     /// Task 040: whether the Long/Short framing guide overlay is shown.
     @StateObject private var guidelineViewModel = RecordingGuidelineViewModel()
+    /// Task 041: live storage + estimated recording time.
+    @StateObject private var capacityViewModel = RecordingCapacityViewModel()
     @State private var cameraService: CameraService
     @State private var libraryService: InternalVideoLibraryService
     @State private var dualRecordingCoordinator: DualRecordingCoordinator
@@ -110,6 +112,23 @@ struct CameraPreviewView: View {
                     recordingViewModel.handleInterruptionEnded()
                 }
             )
+        }
+        // Task 041: independent 1-second polling loop, same pattern as
+        // RecordingDebugView's — re-reads live free space and the currently-active
+        // mode/quality/FPS every second, so both real disk consumption during a
+        // recording and any settings change while idle are reflected within a second.
+        // While actively recording, reads the mode a recording actually started with
+        // (dualRecordingCoordinator.mode) instead of the live Settings preference, so
+        // a mid-recording settings change (which has no effect on the recording
+        // already in progress) can't produce a misleading estimate.
+        .task {
+            while !Task.isCancelled {
+                let effectiveMode = recordingViewModel.isRecording
+                    ? await dualRecordingCoordinator.mode
+                    : recordingModeViewModel.settings.mode
+                capacityViewModel.refresh(recordingMode: effectiveMode, activeQuality: activeQuality, activeFPS: activeFPS)
+                try? await Task.sleep(for: .seconds(1))
+            }
         }
         .onDisappear {
             interruptionMonitor.stopObserving()
@@ -314,6 +333,8 @@ struct CameraPreviewView: View {
                 #endif
             }
 
+            capacityBadge
+
             if qualityFallbackOccurred, let activeQuality {
                 Text("이 기기에서 지원하지 않는 화질이라 \(activeQuality.title)(으)로 대신 녹화합니다.")
                     .font(.caption2)
@@ -341,10 +362,51 @@ struct CameraPreviewView: View {
                     .foregroundStyle(.yellow)
             }
 
+            // Task 041 requirement 5: recording would fail outright — a clearer,
+            // upfront message rather than only surfacing this after a failed attempt.
+            if capacityViewModel.isStorageInsufficientToRecord {
+                Text("저장 공간이 부족하여 녹화를 시작할 수 없습니다.")
+                    .font(.caption2.bold())
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 6)
+                    .background(.black.opacity(0.5), in: Capsule())
+                    .foregroundStyle(.red)
+            }
+
             interruptionBanner
         }
         .padding(.horizontal, 16)
         .padding(.top, 8)
+    }
+
+    /// Task 041: "남은 저장 공간 / 예상 촬영 가능" — updated every second by the
+    /// polling `.task` above, independent of the recording pipeline.
+    private var capacityBadge: some View {
+        HStack {
+            VStack(alignment: .leading, spacing: 1) {
+                Text("남은 저장 공간")
+                Text(capacityViewModel.formattedAvailableSpace).bold()
+            }
+            Spacer()
+            VStack(alignment: .trailing, spacing: 1) {
+                Text("예상 촬영 가능")
+                Text(capacityViewModel.formattedEstimatedTime).bold().monospacedDigit()
+            }
+        }
+        .font(.caption2)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
+        .background(.black.opacity(0.5), in: Capsule())
+        .foregroundStyle(capacityWarningColor)
+    }
+
+    /// Requirement 4: 5분 이하 → 노란색, 1분 이하 → 빨간색.
+    private var capacityWarningColor: Color {
+        switch capacityViewModel.warningLevel {
+        case .normal: .white
+        case .low: .yellow
+        case .critical: .red
+        }
     }
 
     @ViewBuilder
