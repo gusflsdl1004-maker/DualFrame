@@ -27,15 +27,6 @@ final class RecordingViewModel: ObservableObject {
     /// Task 026: exposed for the debug-only verification view — non-nil for exactly
     /// the lifetime of `currentSessionMetadata` below.
     @Published private(set) var currentSessionID: UUID?
-    /// Task 069: post-processing short-form generation, which now runs *after* the
-    /// long-form file is finished, validated and imported. The long-form recording is
-    /// already safe on disk before this leaves `.idle`, so nothing here can endanger it.
-    @Published private(set) var shortGenerationState: ShortGenerationState = .idle
-    /// The last generation's cost, for the diagnostics record.
-    private var lastShortGenerationMetrics: ShortGenerationMetrics?
-    /// Held so `cancelShortGeneration()` has something to cancel. Cancellation is
-    /// cooperative and checked between frames inside `ShortGenerationService`.
-    private var shortGenerationTask: Task<Void, Never>?
 
     /// Task 038 requirement 3: READY→준비 완료, RECORDING→녹화 중, FAILED→녹화 실패, etc.
     var statusText: String {
@@ -125,11 +116,10 @@ final class RecordingViewModel: ObservableObject {
     /// the only thing that acts on these.
     private let encoderSettingsService = VideoEncoderSettingsService()
     private let bitratePresetSettingsService = BitratePresetSettingsService()
-    /// Task 069: post-processing short-form generation. Completely separate from
-    /// `RecordingService` — it never sees a capture buffer and only runs once recording
-    /// has stopped, which is what keeps long-form capture at Long-Only performance.
-    private let shortGenerationService = ShortGenerationService()
-    private let cropBackendSettingsService = CropBackendSettingsService()
+    /// Task 070: generation is handed to this and never awaited. Weak because it is
+    /// owned by the app root and outlives this view model by design — a strong reference
+    /// here would invert that ownership.
+    weak var shortGenerationCoordinator: ShortGenerationCoordinator?
     private var durationTask: Task<Void, Never>?
     private var interruptionOccurredThisSession = false
     /// Task 024: created once per recording in `startRecording()`, cleared once
@@ -256,6 +246,8 @@ final class RecordingViewModel: ObservableObject {
         await refreshDualStatuses()
 
         let endTime = Date()
+        // Captured before `endCurrentSession()` clears it — the hand-off below needs it.
+        let session = currentSessionMetadata
 
         // Task 069: surfaced *before* short-form generation starts, not after. By this
         // line the long-form file is written, validated and imported — this task's
@@ -267,154 +259,38 @@ final class RecordingViewModel: ObservableObject {
             errorMessage = await service.lastError?.message
         }
 
-        // Runs to completion (or failure, or cancellation) before the session is closed,
-        // so the generated short-form file is imported while `beginSession` is still
-        // active and therefore carries this recording's `sessionID` — the identifier
-        // `RecordingGroup` is built from (CLAUDE.md rules 59-62). Nothing here is
-        // inferred from timing or filename.
-        await runShortGeneration()
-
-        // Saved after generation so one diagnostics record covers the whole session,
-        // real-time capture and post-processing together.
+        // Task 070 requirement 1: the recording flow ends here. Diagnostics and the group
+        // are written immediately rather than after generation, so an app killed during
+        // generation still leaves a complete, grouped long-form recording behind.
         await recordDiagnostics(startTime: startTime, endTime: endTime)
         await recordGroup(startTime: startTime, endTime: endTime)
         await endCurrentSession()
+
+        // Requirement 2: handed off and deliberately **not** awaited — the user is free
+        // the moment the long-form file is safe.
+        handOffShortGeneration(startTime: startTime, endTime: endTime, session: session)
     }
 
-    /// Task 069 Phase 3: stops generation without touching the long-form recording.
-    ///
-    /// The long-form file was imported before generation began, so cancelling can only
-    /// discard the partially written short-form file — which `ShortGenerationService`
-    /// deletes itself rather than leaving a truncated result behind.
-    func cancelShortGeneration() {
-        shortGenerationTask?.cancel()
-    }
-
-    /// Clears the finished/cancelled/failed card. Never called while generating, so it
-    /// cannot be used to hide a run that is still in progress.
-    func dismissShortGenerationResult() {
-        guard !shortGenerationState.isGenerating else { return }
-        shortGenerationState = .idle
-    }
-
-    /// Re-runs a generation that failed or was cancelled. The long-form file is still
-    /// on disk, so this needs nothing from the recording session beyond its metadata.
-    func retryShortGeneration() {
-        guard !shortGenerationState.isGenerating else { return }
-        Task { [weak self] in
-            guard let self else { return }
-            // Re-open the session so the retried import is tagged with the same
-            // `sessionID` as the long-form record it belongs to. `beginSession` is
-            // idempotent for this purpose — it re-registers the same metadata.
-            if let session = currentSessionMetadata {
-                await libraryService.beginSession(session)
-            }
-            await runShortGeneration()
-            if let session = currentSessionMetadata {
-                await libraryService.endSession(session.sessionID)
-            }
-        }
-    }
-
-    /// Generates the short-form output from the finished long-form file.
-    ///
-    /// Does nothing unless the user actually asked for a short-form output and the
-    /// long-form recording succeeded — a failed recording has nothing to derive from.
-    private func runShortGeneration() async {
-        guard let session = currentSessionMetadata,
+    /// Requirement 2/3: passes the finished long-form file to `ShortGenerationCoordinator`
+    /// and returns. That coordinator is owned by the app root, so the job survives the
+    /// user leaving the camera screen.
+    private func handOffShortGeneration(startTime: Date, endTime: Date, session: RecordingSessionMetadata?) {
+        guard let session,
               session.recordingMode == .dual,
               state == .finished,
-              let sourceURL = lastRecordingURL else {
-            shortGenerationState = .idle
-            return
-        }
+              let sourceURL = lastRecordingURL,
+              let coordinator = shortGenerationCoordinator else { return }
 
-        shortGenerationState = .generating(progress: 0)
-        lastShortGenerationMetrics = nil
-
-        let profile = OutputProfile.shortForm
-        let targetSize = CGSize(width: profile.resolution.width, height: profile.resolution.height)
-        let configuration = CropConfiguration(targetSize: targetSize, strategy: .center)
-        let fps = await service.activeFPS
-        let backend = cropBackendSettingsService.load().backend
-        let codec = encoderSettingsService.load().codec.resolvedCodec(
-            width: profile.resolution.width,
-            height: profile.resolution.height,
-            fps: fps.rawValue
-        )
-        let outputURL = FileManager.default.temporaryDirectory
-            .appendingPathComponent("short-\(UUID().uuidString).mov")
-
-        let generator = shortGenerationService
-        let task = Task { [weak self] in
-            do {
-                let metrics = try await generator.generate(
-                    from: sourceURL,
-                    to: outputURL,
-                    configuration: configuration,
-                    fps: fps,
-                    codec: codec,
-                    backend: backend,
-                    onProgress: { [weak self] progress in
-                        Task { @MainActor in
-                            guard let self, self.shortGenerationState.isGenerating else { return }
-                            self.shortGenerationState = .generating(progress: progress)
-                        }
-                    }
-                )
-                await self?.finishShortGeneration(outputURL: outputURL, metrics: metrics)
-            } catch {
-                await self?.failShortGeneration(error: error)
-            }
+        Task { @MainActor in
+            coordinator.start(ShortGenerationCoordinator.Request(
+                sourceURL: sourceURL,
+                sessionID: session.sessionID,
+                sessionMetadata: session,
+                fps: await service.activeFPS,
+                recordingStartTime: startTime,
+                recordingDuration: endTime.timeIntervalSince(startTime)
+            ))
         }
-        shortGenerationTask = task
-        await task.value
-        shortGenerationTask = nil
-    }
-
-    /// Validates and imports the generated file, exactly like any other recording — so a
-    /// short-form output produced here is indistinguishable from one produced by the old
-    /// real-time pipeline as far as the library, grouping and export paths are concerned.
-    private func finishShortGeneration(outputURL: URL, metrics: ShortGenerationMetrics) async {
-        let validation = await RecordingValidator().validate(fileURL: outputURL, expectsAudioTrack: false)
-        guard validation.isValid else {
-            try? FileManager.default.removeItem(at: outputURL)
-            lastShortGenerationMetrics = ShortGenerationMetrics(
-                backend: metrics.backend,
-                frameCount: metrics.frameCount,
-                totalSeconds: metrics.totalSeconds,
-                cropSeconds: metrics.cropSeconds,
-                encodeSeconds: metrics.encodeSeconds,
-                succeeded: false,
-                sourceDurationSeconds: metrics.sourceDurationSeconds,
-                outputFrameRate: metrics.outputFrameRate
-            )
-            shortGenerationState = .failed(reason: validation.error?.message ?? "검증 실패")
-            return
-        }
-
-        do {
-            _ = try await libraryService.importRecording(from: outputURL, validation: validation)
-            lastShortGenerationMetrics = metrics
-            shortGenerationState = .finished
-        } catch {
-            try? FileManager.default.removeItem(at: outputURL)
-            shortGenerationState = .failed(reason: "라이브러리 저장 실패")
-        }
-    }
-
-    private func failShortGeneration(error: Error) async {
-        if let generationError = error as? ShortGenerationError, generationError == .cancelled {
-            shortGenerationState = .cancelled
-            return
-        }
-        if error is CancellationError {
-            shortGenerationState = .cancelled
-            return
-        }
-        shortGenerationState = .failed(
-            reason: (error as? LocalizedError)?.errorDescription ?? "\(error)"
-        )
     }
 
     /// Reads `RecordingService.writerStatuses` for the two known dual-mode profiles and
@@ -524,7 +400,9 @@ final class RecordingViewModel: ObservableObject {
             // built — not from the settings store, which the user may have toggled
             // between this recording ending and the diagnostics being written.
             cropBackend: await service.activeCropBackend,
-            shortGeneration: lastShortGenerationMetrics
+            // Task 070: filled in later by `ShortGenerationCoordinator`, which updates
+            // this record once generation finishes. Recording no longer waits for it.
+            shortGeneration: nil
         )
         await diagnosticsService.save(diagnostics)
     }
@@ -586,19 +464,13 @@ final class RecordingViewModel: ObservableObject {
             // post-processing actually produced, matched by `sessionID` +
             // `outputProfile` exactly as before — identifier-first, never inferred from
             // time or filename (CLAUDE.md rule 62).
-            switch shortGenerationState {
-            case .finished:
-                shortMember = sessionRecords
-                    .first { $0.outputProfile == .shortForm }
-                    .map { .succeeded(videoRecordID: $0.id) }
-            case .failed:
-                shortMember = .failed
-            case .idle, .generating, .cancelled:
-                // Cancelled is deliberately not `.failed`: the user chose it, and the
-                // short-form output can still be generated later from the long-form
-                // file, which is untouched.
-                shortMember = nil
-            }
+            // Task 070: the group is written the moment recording stops, before
+            // generation has produced anything, so an app killed mid-generation still
+            // leaves a complete long-form group behind — which was not true in Task 069,
+            // where the group waited for generation. The short-form member is filled in
+            // by `ShortGenerationCoordinator.attachShortToGroup` when the generated file
+            // is imported.
+            shortMember = nil
         }
 
         guard longMember != nil || shortMember != nil else { return }

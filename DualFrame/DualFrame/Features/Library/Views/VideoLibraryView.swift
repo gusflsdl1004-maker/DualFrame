@@ -18,7 +18,16 @@ import SwiftUI
 struct VideoLibraryView: View {
     @StateObject private var viewModel: VideoLibraryViewModel
 
-    init(libraryService: InternalVideoLibraryService, externalStorageViewModel: ExternalStorageViewModel) {
+    /// Task 070 requirement 5/6: nil in previews and any caller that does not have the
+    /// app-root coordinator; the badge simply does not appear then.
+    private var shortGenerationCoordinator: ShortGenerationCoordinator?
+
+    init(
+        libraryService: InternalVideoLibraryService,
+        externalStorageViewModel: ExternalStorageViewModel,
+        shortGenerationCoordinator: ShortGenerationCoordinator? = nil
+    ) {
+        self.shortGenerationCoordinator = shortGenerationCoordinator
         _viewModel = StateObject(wrappedValue: VideoLibraryViewModel(
             libraryService: libraryService,
             externalStorageViewModel: externalStorageViewModel
@@ -32,7 +41,11 @@ struct VideoLibraryView: View {
                     NavigationLink {
                         RecordingGroupDetailView(group: group, viewModel: viewModel)
                     } label: {
-                        RecordingGroupRow(group: group)
+                        RecordingGroupRow(
+                            group: group,
+                            isGeneratingShort: shortGenerationCoordinator?
+                                .isGenerating(forRecordingStartedAt: group.createdAt) ?? false
+                        )
                     }
                 }
                 .onDelete(perform: deleteGroups)
@@ -117,6 +130,10 @@ struct VideoLibraryView: View {
 /// One row in the grouped library list — requirement 4's "🎥 Recording / date / Long-form ✅ / Short-form ✅" layout.
 private struct RecordingGroupRow: View {
     let group: ResolvedRecordingGroup
+    /// Requirement 5: shown instead of the short-form status while a post-processing
+    /// job for this recording is still running, so an absent short-form output reads as
+    /// "being made" rather than "missing".
+    let isGeneratingShort: Bool
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -126,7 +143,15 @@ private struct RecordingGroupRow: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
             memberStatusRow(title: "롱폼", member: group.long)
-            memberStatusRow(title: "숏폼", member: group.displayedShort)
+            if isGeneratingShort {
+                Label("숏폼 — 생성 중", systemImage: "gearshape.arrow.trianglehead.2.clockwise.rotate.90")
+                    .font(.caption.bold())
+                    .foregroundStyle(.orange)
+            } else {
+                // Requirement 6: once generation lands, the group gains its short-form
+                // member and this reverts to the normal ready state automatically.
+                memberStatusRow(title: "숏폼", member: group.displayedShort)
+            }
         }
         .padding(.vertical, 4)
     }

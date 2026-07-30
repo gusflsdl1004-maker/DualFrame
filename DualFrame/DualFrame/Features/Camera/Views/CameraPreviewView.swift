@@ -71,8 +71,15 @@ struct CameraPreviewView: View {
     @State private var isCrashReportExportPresented = false
     #endif
 
-    init() {
-        let libraryService = InternalVideoLibraryService()
+    /// Task 070: owned by `ContentView`, not here — generation has to outlive this
+    /// screen (requirement 3).
+    @ObservedObject private var shortGenerationCoordinator: ShortGenerationCoordinator
+
+    init(
+        libraryService: InternalVideoLibraryService,
+        shortGenerationCoordinator: ShortGenerationCoordinator
+    ) {
+        self.shortGenerationCoordinator = shortGenerationCoordinator
         let recordingService = RecordingService(libraryService: libraryService)
         let coordinator = DualRecordingCoordinator(
             mode: RecordingModeSettingsService().load().mode,
@@ -80,12 +87,14 @@ struct CameraPreviewView: View {
         )
         let orientationManager = OrientationManager()
         let cameraService = CameraService(recordingService: recordingService, orientationManager: orientationManager)
-        _recordingViewModel = StateObject(wrappedValue: RecordingViewModel(
+        let viewModel = RecordingViewModel(
             service: recordingService,
             dualRecordingCoordinator: coordinator,
             cameraService: cameraService,
             libraryService: libraryService
-        ))
+        )
+        viewModel.shortGenerationCoordinator = shortGenerationCoordinator
+        _recordingViewModel = StateObject(wrappedValue: viewModel)
         _cameraService = State(wrappedValue: cameraService)
         _libraryService = State(wrappedValue: libraryService)
         _dualRecordingCoordinator = State(wrappedValue: coordinator)
@@ -227,14 +236,18 @@ struct CameraPreviewView: View {
         // a sheet so the camera stays visible behind it.
         .overlay {
             ShortGenerationOverlay(
-                state: recordingViewModel.shortGenerationState,
-                onCancel: { recordingViewModel.cancelShortGeneration() },
-                onRetry: { recordingViewModel.retryShortGeneration() },
-                onDismiss: { recordingViewModel.dismissShortGenerationResult() }
+                state: shortGenerationCoordinator.state,
+                onCancel: { shortGenerationCoordinator.cancel() },
+                onRetry: { shortGenerationCoordinator.retry() },
+                onDismiss: { shortGenerationCoordinator.dismissResult() }
             )
         }
         .sheet(isPresented: $isLibraryPresented) {
-            VideoLibraryView(libraryService: libraryService, externalStorageViewModel: externalStorageViewModel)
+            VideoLibraryView(
+                libraryService: libraryService,
+                externalStorageViewModel: externalStorageViewModel,
+                shortGenerationCoordinator: shortGenerationCoordinator
+            )
         }
         .sheet(isPresented: $isSettingsPresented) {
             StorageDestinationView(externalStorageViewModel: externalStorageViewModel)
@@ -850,5 +863,9 @@ struct CameraPreviewView: View {
 }
 
 #Preview {
-    CameraPreviewView()
+    let libraryService = InternalVideoLibraryService()
+    return CameraPreviewView(
+        libraryService: libraryService,
+        shortGenerationCoordinator: ShortGenerationCoordinator(libraryService: libraryService)
+    )
 }
