@@ -192,13 +192,73 @@ private struct RecordingGroupDetailView: View {
 
     var body: some View {
         List {
+            exportSection
             memberSection(title: "롱폼", member: group.long)
             memberSection(title: "숏폼", member: group.displayedShort)
         }
         .navigationTitle(group.createdAt.formatted(date: .abbreviated, time: .shortened))
         .sheet(item: $previewingRecord) { record in
+            // Requirement 2: the generated short-form file is previewable in-app before
+            // the user spends an ad on exporting it.
             VideoPlayer(player: AVPlayer(url: record.localURL))
                 .ignoresSafeArea()
+        }
+        .alert(
+            "저장",
+            isPresented: Binding(
+                get: { viewModel.lastExportMessage != nil },
+                set: { if !$0 { viewModel.lastExportMessage = nil } }
+            )
+        ) {
+            Button("확인", role: .cancel) { viewModel.lastExportMessage = nil }
+        } message: {
+            Text(viewModel.lastExportMessage ?? "")
+        }
+    }
+
+    /// Task 071 requirement 5: the three export targets, as one action each.
+    ///
+    /// A target whose file does not exist yet is disabled rather than hidden — a
+    /// short-form export that is merely still generating should read as "not ready",
+    /// not as "not a feature".
+    @ViewBuilder
+    private var exportSection: some View {
+        Section {
+            ForEach(ExportTarget.allCases) { target in
+                Button {
+                    Task { await viewModel.export(target: target, group: group) }
+                } label: {
+                    HStack {
+                        Label(target.title, systemImage: "square.and.arrow.up")
+                        Spacer()
+                        if viewModel.currentPlan == .free {
+                            // Stated up front, not discovered after tapping.
+                            Label("광고", systemImage: "play.rectangle")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                }
+                .disabled(viewModel.isPresentingAd || !isAvailable(target))
+            }
+        } header: {
+            Text("카메라롤로 저장")
+        } footer: {
+            if viewModel.isPresentingAd {
+                Text("광고 재생 중…")
+            } else if viewModel.currentPlan == .free {
+                Text("무료 플랜은 광고를 끝까지 시청해야 저장됩니다. 광고가 실패하거나 도중에 닫으면 저장되지 않으며, 앱 내 영상은 그대로 유지됩니다.")
+            } else {
+                Text("Pro 플랜은 광고 없이 바로 저장됩니다.")
+            }
+        }
+    }
+
+    private func isAvailable(_ target: ExportTarget) -> Bool {
+        switch target {
+        case .longOnly: group.long.record != nil
+        case .shortOnly: group.displayedShort.record != nil
+        case .longAndShort: group.long.record != nil && group.displayedShort.record != nil
         }
     }
 

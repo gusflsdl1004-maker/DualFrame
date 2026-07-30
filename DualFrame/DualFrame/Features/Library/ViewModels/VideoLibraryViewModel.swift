@@ -22,11 +22,22 @@ final class VideoLibraryViewModel: ObservableObject {
     @Published private(set) var pendingDestinationChoices: [StorageDestination]?
     /// True while `ExportCoordinator` is waiting for delete confirmation.
     @Published private(set) var isConfirmingDelete = false
+    /// Task 071: true while a rewarded ad is on screen, so the UI can disable export
+    /// controls instead of letting a second export start behind the ad.
+    @Published private(set) var isPresentingAd = false
+    /// The result of the last group-level export, for the banner. Cleared on dismiss.
+    @Published var lastExportMessage: String?
+    /// Task 071: shown in the UI so it is obvious which branch is in effect. Read
+    /// through `ExportManager`, which is the only type that knows the plan.
+    var currentPlan: UserPlan { exportManager.currentPlan }
 
     private let libraryService: InternalVideoLibraryService
     private let groupService: RecordingGroupService
     private let externalStorageViewModel: ExternalStorageViewModel
     private let exportCoordinator: ExportCoordinator
+    /// Task 071: plan gating lives entirely behind this. This view model does not read
+    /// `UserPlan` or know that ads exist beyond showing `isPresentingAd`.
+    private let exportManager: ExportManager
 
     private var destinationContinuation: CheckedContinuation<StorageDestination?, Never>?
     private var deleteConfirmationContinuation: CheckedContinuation<Bool, Never>?
@@ -35,12 +46,53 @@ final class VideoLibraryViewModel: ObservableObject {
         libraryService: InternalVideoLibraryService,
         externalStorageViewModel: ExternalStorageViewModel,
         groupService: RecordingGroupService = RecordingGroupService(),
-        exportCoordinator: ExportCoordinator? = nil
+        exportCoordinator: ExportCoordinator? = nil,
+        exportManager: ExportManager? = nil
     ) {
         self.libraryService = libraryService
         self.externalStorageViewModel = externalStorageViewModel
         self.groupService = groupService
-        self.exportCoordinator = exportCoordinator ?? ExportCoordinator(libraryService: libraryService)
+        let coordinator = exportCoordinator ?? ExportCoordinator(libraryService: libraryService)
+        self.exportCoordinator = coordinator
+        self.exportManager = exportManager ?? ExportManager(exportCoordinator: coordinator)
+    }
+
+    /// Task 071 requirement 4/5: the plan-gated export. Free users watch a rewarded ad
+    /// first and nothing is written unless they earn the reward; Pro exports straight
+    /// away. Which of those happens is decided inside `ExportManager` — this method is
+    /// identical for both.
+    func export(target: ExportTarget, group: ResolvedRecordingGroup) async {
+        let result = await exportManager.export(
+            target: target,
+            group: group,
+            externalDestinationURL: externalStorageViewModel.selectedURL,
+            chooseDestination: { [self] choices in await promptForDestination(choices) },
+            confirmDelete: { [self] in await promptForDeleteConfirmation() },
+            onAdPresenting: { [weak self] presenting in self?.isPresentingAd = presenting }
+        )
+
+        switch result {
+        case .success(let destinations):
+            lastExportMessage = "저장 완료 (\(destinations.count)개)"
+            await refresh()
+        case .partial(let exported, let failed):
+            // Reported as-is rather than as a plain failure: the exported files really
+            // are saved, and telling the user otherwise would be wrong. "실패 0" would
+            // be nonsense, so a partial caused purely by cancelling the destination
+            // picker is worded as cancellation rather than failure.
+            lastExportMessage = failed.isEmpty
+                ? "\(exported.count)개만 저장되었습니다. 나머지는 취소되었습니다."
+                : "일부만 저장되었습니다 — 성공 \(exported.count), 실패 \(failed.count)"
+            await refresh()
+        case .adNotRewarded(let reason):
+            lastExportMessage = reason
+        case .cancelled:
+            lastExportMessage = nil
+        case .failed:
+            lastExportMessage = "저장에 실패했습니다."
+        case .nothingToExport:
+            lastExportMessage = "저장할 영상이 아직 없습니다."
+        }
     }
 
     func exportState(for record: VideoRecord) -> ExportState {

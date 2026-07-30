@@ -24,6 +24,11 @@ struct DiagnosticsView: View {
     /// writers are built, so changing it here applies from the next recording.
     @State private var cropBackend = CropBackendSettingsService().load().backend
     private let cropBackendSettingsService = CropBackendSettingsService()
+    /// Task 071: plan and mock-ad behaviour. Placed here with the other switches rather
+    /// than in user-facing settings — a locally flippable "Pro" is a development
+    /// affordance, not an entitlement.
+    @State private var planSettings = UserPlanSettingsService().load()
+    private let planSettingsService = UserPlanSettingsService()
 
     var body: some View {
         List {
@@ -85,6 +90,27 @@ struct DiagnosticsView: View {
                 Text("Long만 저장에는 영향이 없습니다(crop을 하지 않음). Long + Short에서만 차이가 납니다. VideoToolbox 선택 시 Short 영상의 색·밝기와 선명도를 반드시 눈으로 확인하세요 — 빌드가 판정할 수 없는 항목입니다. 이상하면 CoreImage로 되돌리면 즉시 원복됩니다.")
             }
 
+            Section {
+                Picker("플랜", selection: $planSettings.plan) {
+                    ForEach(UserPlan.allCases) { plan in
+                        Text(plan.title).tag(plan)
+                    }
+                }
+                .pickerStyle(.segmented)
+                Picker("모의 광고 결과", selection: Binding(
+                    get: { planSettings.mockAdOutcome ?? .reward },
+                    set: { planSettings.mockAdOutcome = $0 }
+                )) {
+                    ForEach(MockAdOutcome.allCases) { outcome in
+                        Text(outcome.title).tag(outcome)
+                    }
+                }
+            } header: {
+                Text("플랜 / 광고 (Task 071)")
+            } footer: {
+                Text("무료 플랜은 카메라롤 저장 전에 리워드 광고를 봅니다. '도중 닫기'와 '로드 실패'는 저장을 거부하는 경로로, 반드시 두 경우 모두 앱 내 영상이 그대로 남는지 확인하세요. 녹화와 쇼츠 생성은 플랜과 무관하게 동작합니다.")
+            }
+
             // Task 062: the two conditions side by side, which is what the comparison
             // actually needs — scrolling between two detail screens loses the diff.
             Section {
@@ -123,6 +149,9 @@ struct DiagnosticsView: View {
         }
         .onChange(of: cropBackend) { _, newValue in
             cropBackendSettingsService.save(CropBackendSettings(backend: newValue))
+        }
+        .onChange(of: planSettings) { _, newValue in
+            planSettingsService.save(newValue)
         }
         .task {
             await viewModel.refresh()

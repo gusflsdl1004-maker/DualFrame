@@ -50,6 +50,15 @@ nonisolated enum ResolvedRecordingGroupMember: Equatable {
     /// shown — only this one slot degrades.
     case missing
     case succeeded(VideoRecord)
+
+    /// Task 071: the record if this member actually produced one, `nil` otherwise.
+    /// `ExportManager` uses this to resolve an `ExportTarget` into files — a target
+    /// naming a member that failed, is missing, or was never produced resolves to
+    /// nothing rather than silently exporting the other one.
+    var record: VideoRecord? {
+        if case .succeeded(let record) = self { return record }
+        return nil
+    }
 }
 
 /// A `RecordingGroup` with its members resolved to actual `VideoRecord`s, ready for
