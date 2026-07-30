@@ -130,10 +130,20 @@ struct DiagnosticsView: View {
     }
 
     private func conditionLabel(_ session: RecordingDiagnostics) -> String {
-        let outputs = switch session.writerStats?.count ?? 0 {
-        case 0: "조건 미기록"
-        case 1: "Long Only"
-        default: "Long + Short"
+        // Task 069: the writer count alone no longer identifies the condition. Dual now
+        // records with a single writer and derives the short-form output afterwards, so
+        // every new recording reports one writer. `shortGeneration` being present is
+        // what marks a Long + Short session now; the writer count is kept only to read
+        // records written before Task 069, where two writers really did run.
+        let outputs: String
+        if session.shortGeneration != nil {
+            outputs = "Long + Short (후처리)"
+        } else if (session.writerStats?.count ?? 0) >= 2 {
+            outputs = "Long + Short (실시간)"
+        } else if (session.writerStats?.count ?? 0) == 1 {
+            outputs = "Long Only"
+        } else {
+            outputs = "조건 미기록"
         }
         // Task 063: the capture setting is part of the condition, so a run can be told
         // apart from its own A/B counterpart without opening the detail screen.

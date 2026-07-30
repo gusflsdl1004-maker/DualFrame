@@ -33,14 +33,24 @@ struct DiagnosticsComparisonView: View {
         return sessions.filter { $0.lateFrameHandling == handlingFilter }
     }
 
-    /// Newest recording that ran a single writer.
-    private var longOnly: RecordingDiagnostics? {
-        filteredSessions.first { ($0.writerStats?.count ?? 0) == 1 }
+    /// Task 069: "produced a short-form output" is no longer the same as "ran two
+    /// writers". Since the architecture moved to post-processing, a Long + Short session
+    /// records with **one** writer and derives the short-form file afterwards, so the
+    /// writer count is 1 for both conditions and this screen would have matched nothing
+    /// at all. `shortGeneration` is the marker now; the writer count is retained only so
+    /// recordings made before Task 069 still classify correctly.
+    private static func producedShortForm(_ record: RecordingDiagnostics) -> Bool {
+        record.shortGeneration != nil || (record.writerStats?.count ?? 0) >= 2
     }
 
-    /// Newest recording that ran both writers.
+    /// Newest recording that produced only the long-form output.
+    private var longOnly: RecordingDiagnostics? {
+        filteredSessions.first { !Self.producedShortForm($0) && ($0.writerStats?.count ?? 0) >= 1 }
+    }
+
+    /// Newest recording that also produced a short-form output, by either architecture.
     private var longAndShort: RecordingDiagnostics? {
-        filteredSessions.first { ($0.writerStats?.count ?? 0) >= 2 }
+        filteredSessions.first { Self.producedShortForm($0) }
     }
 
     var body: some View {
@@ -123,12 +133,28 @@ struct DiagnosticsComparisonView: View {
 
                 // Requirement: shown for Long + Short only. Long Only has no short-form
                 // writer, so there is nothing to show and the column stays "—".
-                Section("Short 전용 비용 (Long + Short 에만 존재)") {
-                    let shortStat = longAndShort?.writerStats?.first { $0.averageCropSeconds > 0 }
-                    comparisonRow("crop 평균", "—", ms(shortStat?.averageCropMilliseconds))
-                    comparisonRow("  └ CIContext render", "—", ms(shortStat?.averageCropRenderMilliseconds))
-                    comparisonRow("  └ PixelBuffer 생성", "—", ms(shortStat?.averageCropPoolMilliseconds))
-                    comparisonRow("Short append 평균", "—", ms(shortStat?.averageAppendMilliseconds))
+                // Task 069: where the short-form cost lives depends on the architecture
+                // that produced the record. Post-processing records have no cropping
+                // writer at all, so the real-time rows would read "—" and hide the very
+                // numbers the new pipeline is measured by.
+                if let generation = longAndShort?.shortGeneration {
+                    Section("Short 생성 비용 (후처리 — 촬영 중 아님)") {
+                        comparisonRow("총 생성 시간", "—", String(format: "%.2fs", generation.totalSeconds))
+                        comparisonRow("실시간 대비 배속", "—",
+                                      String(format: "%.2f×",
+                                             generation.speedRatio(sourceDuration: longAndShort?.recordingDuration ?? 0)))
+                        comparisonRow("crop 평균", "—", ms(generation.averageCropMilliseconds))
+                        comparisonRow("인코딩 평균", "—", ms(generation.averageEncodeMilliseconds))
+                        comparisonRow("생성 엔진", "—", generation.backend.shortTitle)
+                    }
+                } else {
+                    Section("Short 전용 비용 (실시간 — Task 069 이전 기록)") {
+                        let shortStat = longAndShort?.writerStats?.first { $0.averageCropSeconds > 0 }
+                        comparisonRow("crop 평균", "—", ms(shortStat?.averageCropMilliseconds))
+                        comparisonRow("  └ CIContext render", "—", ms(shortStat?.averageCropRenderMilliseconds))
+                        comparisonRow("  └ PixelBuffer 생성", "—", ms(shortStat?.averageCropPoolMilliseconds))
+                        comparisonRow("Short append 평균", "—", ms(shortStat?.averageAppendMilliseconds))
+                    }
                 }
 
                 Section("Writer append 평균") {
