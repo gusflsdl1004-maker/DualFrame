@@ -107,18 +107,48 @@ struct DiagnosticsDetailView: View {
             // figures above — an offline pass is measured against wall clock, not the
             // frame interval.
             if let generation = diagnostics.shortGeneration {
-                Section("쇼츠 생성 (후처리)") {
+                Section {
+                    // The headline figure: it decides how long an ad has to run for
+                    // "ad ends = generation done" to hold.
+                    LabeledContent("생성 속도(배속)", value: String(format: "%.2f×", generation.speedRatio))
+                        .font(.body.bold())
+                    LabeledContent("총 생성 시간", value: String(format: "%.2f초", generation.totalSeconds))
+                    LabeledContent("생성 처리 FPS", value: String(format: "%.1f fps", generation.generationFPS))
+                    if let sourceDuration = generation.sourceDurationSeconds {
+                        LabeledContent("원본 길이", value: String(format: "%.1f초", sourceDuration))
+                    }
+                    // Sized from the speed this run actually achieved, so the ad length
+                    // is chosen from measurement rather than a guess.
+                    if let estimate = generation.estimatedSeconds(forSourceDuration: 180) {
+                        LabeledContent("3분 영상 환산", value: String(format: "%.0f초", estimate))
+                            .foregroundStyle(.secondary)
+                    }
+                } header: {
+                    Text("쇼츠 생성 (후처리)")
+                } footer: {
+                    Text("배속은 원본 영상 길이 ÷ 생성 시간입니다. 8.5×면 3분 영상이 약 21초에 생성됩니다.")
+                }
+
+                Section("쇼츠 생성 상세") {
                     LabeledContent("결과", value: generation.succeeded ? "성공" : "실패")
                         .foregroundStyle(generation.succeeded ? Color.primary : Color.red)
                     LabeledContent("생성 엔진", value: generation.backend.title)
-                    LabeledContent("총 생성 시간", value: String(format: "%.2f초", generation.totalSeconds))
                     LabeledContent("프레임 수", value: "\(generation.frameCount)")
                     LabeledContent("crop 평균", value: String(format: "%.2fms", generation.averageCropMilliseconds))
                     LabeledContent("인코딩 평균", value: String(format: "%.2fms", generation.averageEncodeMilliseconds))
-                    LabeledContent(
-                        "실시간 대비 배속",
-                        value: String(format: "%.2f×", generation.speedRatio(sourceDuration: diagnostics.recordingDuration))
-                    )
+                }
+
+                // The two frame rates side by side. They answer different questions and
+                // are produced by different pipelines now — capture for the long-form
+                // file, post-processing for the short-form one — so seeing them apart
+                // is what makes a regression in either one attributable.
+                Section("저장된 영상 FPS") {
+                    LabeledContent("Long (촬영)", value: String(format: "%.2f fps", diagnostics.savedNominalFrameRate))
+                    if let shortRate = generation.outputFrameRate {
+                        LabeledContent("Short (후처리)", value: String(format: "%.2f fps", shortRate))
+                    } else {
+                        LabeledContent("Short (후처리)", value: "—")
+                    }
                 }
             }
 
@@ -269,7 +299,9 @@ struct DiagnosticsDetailView: View {
                 totalSeconds: 41.2,
                 cropSeconds: 3.1,
                 encodeSeconds: 28.7,
-                succeeded: true
+                succeeded: true,
+                sourceDurationSeconds: 125,
+                outputFrameRate: 59.94
             )
         ))
     }

@@ -49,6 +49,17 @@ nonisolated struct ShortGenerationMetrics: Codable, Equatable {
     /// Cumulative time inside `append` — the encoder's share.
     let encodeSeconds: TimeInterval
     let succeeded: Bool
+    /// The **source asset's** duration, read from the long-form file itself.
+    ///
+    /// Stored rather than taken from `RecordingDiagnostics.recordingDuration`, which is
+    /// wall-clock between start and stop and includes setup — using it would skew
+    /// `speedRatio`, and that is the number the ad length gets decided from. Optional so
+    /// records written before this field still decode.
+    let sourceDurationSeconds: TimeInterval?
+    /// `nominalFrameRate` read back from the generated short-form file. Distinct from
+    /// `RecordingDiagnostics.savedNominalFrameRate`, which is the long-form file's — the
+    /// two are now produced by different pipelines and need to be judged separately.
+    let outputFrameRate: Float?
 
     var averageCropMilliseconds: Double {
         frameCount > 0 ? cropSeconds / Double(frameCount) * 1_000 : 0
@@ -58,10 +69,27 @@ nonisolated struct ShortGenerationMetrics: Codable, Equatable {
         frameCount > 0 ? encodeSeconds / Double(frameCount) * 1_000 : 0
     }
 
-    /// How much faster than real time the pass ran. Above 1.0 means a 60-second
-    /// recording generated in under 60 seconds.
-    func speedRatio(sourceDuration: TimeInterval) -> Double {
-        totalSeconds > 0 ? sourceDuration / totalSeconds : 0
+    /// Frames processed per second of wall clock — how fast the generator *works*.
+    ///
+    /// Not the same thing as `outputFrameRate`, which is what the finished file plays
+    /// at. A pass that emits a 60fps file at 500 frames/sec has `generationFPS` 500 and
+    /// `outputFrameRate` 60.
+    var generationFPS: Double {
+        totalSeconds > 0 ? Double(frameCount) / totalSeconds : 0
+    }
+
+    /// How much faster than real time the pass ran — the figure that decides how long an
+    /// ad has to be. `8.5` means a 3-minute recording generates in about 21 seconds.
+    var speedRatio: Double {
+        guard let sourceDurationSeconds, totalSeconds > 0 else { return 0 }
+        return sourceDurationSeconds / totalSeconds
+    }
+
+    /// Estimated generation time for a recording of `duration`, at the speed this run
+    /// achieved. What an "예상 시간" label and an ad length should be sized from.
+    func estimatedSeconds(forSourceDuration duration: TimeInterval) -> Double? {
+        guard speedRatio > 0 else { return nil }
+        return duration / speedRatio
     }
 }
 

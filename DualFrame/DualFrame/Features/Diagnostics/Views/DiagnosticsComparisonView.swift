@@ -139,10 +139,10 @@ struct DiagnosticsComparisonView: View {
                 // numbers the new pipeline is measured by.
                 if let generation = longAndShort?.shortGeneration {
                     Section("Short 생성 비용 (후처리 — 촬영 중 아님)") {
+                        comparisonRow("생성 속도(배속)", "—", String(format: "%.2f×", generation.speedRatio))
                         comparisonRow("총 생성 시간", "—", String(format: "%.2fs", generation.totalSeconds))
-                        comparisonRow("실시간 대비 배속", "—",
-                                      String(format: "%.2f×",
-                                             generation.speedRatio(sourceDuration: longAndShort?.recordingDuration ?? 0)))
+                        comparisonRow("생성 처리 FPS", "—", String(format: "%.1f", generation.generationFPS))
+                        comparisonRow("Short 파일 FPS", "—", fps(generation.outputFrameRate))
                         comparisonRow("crop 평균", "—", ms(generation.averageCropMilliseconds))
                         comparisonRow("인코딩 평균", "—", ms(generation.averageEncodeMilliseconds))
                         comparisonRow("생성 엔진", "—", generation.backend.shortTitle)

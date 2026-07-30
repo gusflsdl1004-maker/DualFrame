@@ -214,13 +214,28 @@ actor ShortGenerationService {
         }
 
         onProgress(1)
+
+        // Read the frame rate back out of the file that was just written, rather than
+        // reporting the rate we asked for. Same reasoning as Task 064's codec/level
+        // readback: the settings dictionary says what was requested, only the file says
+        // what came out. Kept separate from the long-form file's rate — the two are
+        // produced by different pipelines now.
+        var outputFrameRate: Float?
+        if let outputTrack = try? await AVURLAsset(url: outputURL).loadTracks(withMediaType: .video).first {
+            outputFrameRate = try? await outputTrack.load(.nominalFrameRate)
+        }
+
         return ShortGenerationMetrics(
             backend: backend,
             frameCount: frameCount,
             totalSeconds: Date().timeIntervalSince(startedAt),
             cropSeconds: cropSeconds,
             encodeSeconds: encodeSeconds,
-            succeeded: true
+            succeeded: true,
+            // The source asset's own duration, not the recording's wall-clock length —
+            // see the field's comment. This is what `speedRatio` divides by.
+            sourceDurationSeconds: duration.seconds,
+            outputFrameRate: outputFrameRate
         )
     }
 

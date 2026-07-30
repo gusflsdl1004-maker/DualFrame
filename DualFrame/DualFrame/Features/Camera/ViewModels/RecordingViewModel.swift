@@ -385,7 +385,9 @@ final class RecordingViewModel: ObservableObject {
                 totalSeconds: metrics.totalSeconds,
                 cropSeconds: metrics.cropSeconds,
                 encodeSeconds: metrics.encodeSeconds,
-                succeeded: false
+                succeeded: false,
+                sourceDurationSeconds: metrics.sourceDurationSeconds,
+                outputFrameRate: metrics.outputFrameRate
             )
             shortGenerationState = .failed(reason: validation.error?.message ?? "검증 실패")
             return
