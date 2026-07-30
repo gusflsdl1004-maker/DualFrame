@@ -885,12 +885,29 @@ actor RecordingService {
     ///
     /// The resolution/frame rate a writer is actually built with is therefore resolved
     /// separately, in `effectiveWriterFormat(for:)`.
+    /// Task 069 (Phase 1): **`.dual` no longer produces a second writer during capture.**
+    ///
+    /// Both modes now record exactly one file. `.dual` still means "the user wants a
+    /// short-form output too" — that output is now derived from the finished long-form
+    /// file by `ShortGenerationService` after recording stops, not written alongside it.
+    ///
+    /// The measurement that forced this: at 4K60 the long-form output alone reaches
+    /// 59.47fps; adding the concurrent short-form writer drops it to 51.64fps; and
+    /// replacing the crop implementation outright (CoreImage → VideoToolbox, Task 068)
+    /// moved that by 0.15fps. The cost was never the crop, it was the second writer.
+    ///
+    /// `.dual` keeps returning the `.longForm` constant rather than
+    /// `singleModeProfile()` because that constant is a load-bearing **identity**:
+    /// `writerStatuses[.longForm]` is what `RecordingViewModel` reads for the dual
+    /// status row and for `RecordingGroup` membership. Swapping it would silently break
+    /// both. The resolution/frame rate actually used still comes from
+    /// `effectiveWriterFormat(for:)`, unchanged.
     private var targetProfiles: [OutputProfile] {
         switch mode {
         case .single:
             [singleModeProfile()]
         case .dual:
-            [.longForm, .shortForm]
+            [.longForm]
         }
     }
 

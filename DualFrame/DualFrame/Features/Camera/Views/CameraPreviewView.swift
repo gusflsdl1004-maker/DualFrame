@@ -222,6 +222,17 @@ struct CameraPreviewView: View {
                 await cameraService.stop()
             }
         }
+        // Task 069: shown once recording has stopped and the long-form file is already
+        // saved, while the short-form output is derived from it. An overlay rather than
+        // a sheet so the camera stays visible behind it.
+        .overlay {
+            ShortGenerationOverlay(
+                state: recordingViewModel.shortGenerationState,
+                onCancel: { recordingViewModel.cancelShortGeneration() },
+                onRetry: { recordingViewModel.retryShortGeneration() },
+                onDismiss: { recordingViewModel.dismissShortGenerationResult() }
+            )
+        }
         .sheet(isPresented: $isLibraryPresented) {
             VideoLibraryView(libraryService: libraryService, externalStorageViewModel: externalStorageViewModel)
         }

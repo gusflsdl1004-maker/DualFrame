@@ -103,6 +103,25 @@ struct DiagnosticsDetailView: View {
                 }
             }
 
+            // Task 069: post-processing generation, kept apart from the real-time
+            // figures above — an offline pass is measured against wall clock, not the
+            // frame interval.
+            if let generation = diagnostics.shortGeneration {
+                Section("쇼츠 생성 (후처리)") {
+                    LabeledContent("결과", value: generation.succeeded ? "성공" : "실패")
+                        .foregroundStyle(generation.succeeded ? Color.primary : Color.red)
+                    LabeledContent("생성 엔진", value: generation.backend.title)
+                    LabeledContent("총 생성 시간", value: String(format: "%.2f초", generation.totalSeconds))
+                    LabeledContent("프레임 수", value: "\(generation.frameCount)")
+                    LabeledContent("crop 평균", value: String(format: "%.2fms", generation.averageCropMilliseconds))
+                    LabeledContent("인코딩 평균", value: String(format: "%.2fms", generation.averageEncodeMilliseconds))
+                    LabeledContent(
+                        "실시간 대비 배속",
+                        value: String(format: "%.2f×", generation.speedRatio(sourceDuration: diagnostics.recordingDuration))
+                    )
+                }
+            }
+
             dropReasonSection
 
             dropDetailSection
@@ -243,7 +262,15 @@ struct DiagnosticsDetailView: View {
             thermalStateAtEnd: "fair",
             dropSamples: ["[Task067-Drop] reason=FrameWasLate pts=12.3456s uptime=8421.117 thermal=fair backlog=1 attachments: DroppedFrameReason=FrameWasLate"],
             dropAttachmentKeys: ["DroppedFrameReason"],
-            cropBackend: .videoToolbox
+            cropBackend: .videoToolbox,
+            shortGeneration: ShortGenerationMetrics(
+                backend: .videoToolbox,
+                frameCount: 7_500,
+                totalSeconds: 41.2,
+                cropSeconds: 3.1,
+                encodeSeconds: 28.7,
+                succeeded: true
+            )
         ))
     }
 }

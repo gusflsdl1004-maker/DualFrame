@@ -106,6 +106,14 @@ nonisolated struct RecordingDiagnostics: Codable, Equatable, Identifiable {
     /// `nil` for a Long-only recording (nothing cropped) and for records written before
     /// Task 068.
     let cropBackend: CropBackend?
+    /// Task 069: what post-processing short-form generation cost, if it ran. `nil` for a
+    /// Long-only recording and for every record written before Task 069.
+    ///
+    /// Deliberately a separate field rather than another `WriterAppendStats` row: this
+    /// describes an offline pass with `expectsMediaDataInRealTime = false`, where taking
+    /// longer than a frame interval is expected rather than a defect. The real-time
+    /// figures above keep their original meaning.
+    let shortGeneration: ShortGenerationMetrics?
 
     /// Arrival rate implied by the frames that actually reached the writer.
     var measuredArrivalFPS: Double {

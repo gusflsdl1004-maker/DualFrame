@@ -240,10 +240,15 @@ actor InternalVideoLibraryService {
     }
 
     /// The `OutputProfile`(s) a session with `metadata`'s mode/quality/FPS could have
-    /// produced — mirrors exactly what `RecordingService.targetProfiles` computes
-    /// internally (that type must not be modified, so this is a separate, matching
-    /// implementation, not a shared one). Used only to tag a *just-imported* file
-    /// (requirement: no cross-file, cross-time guessing) — see `matchProfile`.
+    /// produced. Used only to tag a *just-imported* file (requirement: no cross-file,
+    /// cross-time guessing) — see `matchProfile`.
+    ///
+    /// Task 069: this no longer mirrors `RecordingService.targetProfiles`, and must not.
+    /// Recording now writes one file even in `.dual`; the short-form output arrives
+    /// later, from `ShortGenerationService`, and is imported while the same session is
+    /// still open. So a `.dual` session still legitimately produces both profiles — just
+    /// not at the same time. Narrowing this to match `targetProfiles` would leave the
+    /// generated short-form file untagged and drop it out of its `RecordingGroup`.
     private static func expectedProfiles(for metadata: RecordingSessionMetadata) -> [OutputProfile] {
         switch metadata.recordingMode {
         case .single:
