@@ -310,6 +310,40 @@ actor ShortGenerationService {
         var outputFrameRate: Float?
         if let outputTrack = try? await AVURLAsset(url: outputURL).loadTracks(withMediaType: .video).first {
             outputFrameRate = try? await outputTrack.load(.nominalFrameRate)
+
+            #if DEBUG
+            // Task 084: **read back out of the finished file, not out of our own
+            // intentions.** Everything logged before this point is what the code decided;
+            // this is what a player will actually see. If the crop is right and the file
+            // still plays 16:9, the disagreement is here.
+            //
+            // `presentationSize` is what `AVPlayerItem` would report: the natural size
+            // with the preferred transform applied, magnitudes taken so a 90° rotation
+            // reads as a swap rather than as negative numbers. That is the number that
+            // decides whether the short is 9:16 on screen.
+            //
+            // `renderSize` belongs to `AVVideoComposition`, and this path deliberately has
+            // none — it is an `AVAssetReader` → cropper → `AVAssetWriter` pass, with no
+            // `AVAssetExportSession` and no composition anywhere. So there is no render
+            // size to report, and nothing downstream can re-apply a transform: reported as
+            // `n/a (no AVVideoComposition)` rather than left out, because "absent" is
+            // itself the answer to where a second transform could have come from.
+            let outNatural = (try? await outputTrack.load(.naturalSize)) ?? .zero
+            let outTransform = (try? await outputTrack.load(.preferredTransform)) ?? .identity
+            let presentation = outNatural.applying(outTransform)
+            let presentationSize = CGSize(width: abs(presentation.width), height: abs(presentation.height))
+            let aspect = presentationSize.height > 0 ? presentationSize.width / presentationSize.height : 0
+
+            let line = "[Task084-Output]"
+                + " naturalSize=\(Int(outNatural.width))x\(Int(outNatural.height))"
+                + " preferredTransform=[a:\(outTransform.a) b:\(outTransform.b) c:\(outTransform.c) d:\(outTransform.d) tx:\(outTransform.tx) ty:\(outTransform.ty)]"
+                + " presentationSize=\(Int(presentationSize.width))x\(Int(presentationSize.height))"
+                + " renderSize=n/a (no AVVideoComposition)"
+                + " presentationAspect=\(String(format: "%.4f", aspect))"
+                + " expected9x16=0.5625"
+                + " verdict=\(String(format: "%.4f", aspect) == "0.5625" ? "OK" : "NOT_9x16")"
+            Task.detached(priority: .utility) { print(line) }
+            #endif
         }
 
         #if DEBUG
