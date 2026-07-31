@@ -70,6 +70,41 @@ actor ShortGenerationService {
         let sourceTransform = (try? await videoTrack.load(.preferredTransform)) ?? .identity
         let audioTrack = try? await asset.loadTracks(withMediaType: .audio).first
 
+        // Task 083 P0: **the crop happens in stored-pixel space, the 9:16 is a display
+        // property, and those two disagree whenever the source carries a rotation.**
+        //
+        // A long-form file recorded in portrait stores landscape pixels plus a 90°
+        // `preferredTransform`. Everything below — `CropCalculator`, both croppers, and
+        // the writer's `AVVideoWidthKey`/`AVVideoHeightKey` — works on the stored pixels,
+        // but `configuration.targetSize` is 1080x1920, the size the result should *display*
+        // at. Cropping stored landscape to a portrait target and then applying the source's
+        // 90° transform on top rotates the finished portrait video back to 1920x1080, which
+        // is exactly "the short is not 9:16 any more".
+        //
+        // So the target is expressed in stored space here: swapped when the transform
+        // rotates by 90°/270°, left alone when it does not. The output then displays 9:16
+        // in both cases. Orientation is still never *computed* here (CLAUDE.md rules
+        // 52-56) — the source's own transform is read and carried through unchanged.
+        let isSourceRotated = abs(sourceTransform.b) == 1 && abs(sourceTransform.c) == 1
+        let displayTargetSize = configuration.targetSize
+        let storedTargetSize = isSourceRotated
+            ? CGSize(width: displayTargetSize.height, height: displayTargetSize.width)
+            : displayTargetSize
+        let configuration = CropConfiguration(targetSize: storedTargetSize, strategy: configuration.strategy)
+
+        #if DEBUG
+        let naturalSize = (try? await videoTrack.load(.naturalSize)) ?? .zero
+        let cropRect = CropCalculator().cropRect(sourceSize: naturalSize, configuration: configuration)
+        let line = "[Task083-Short]"
+            + " sourceStored=\(Int(naturalSize.width))x\(Int(naturalSize.height))"
+            + " transform=[a:\(sourceTransform.a) b:\(sourceTransform.b) c:\(sourceTransform.c) d:\(sourceTransform.d)]"
+            + " rotated=\(isSourceRotated)"
+            + " requestedDisplay=\(Int(displayTargetSize.width))x\(Int(displayTargetSize.height))"
+            + " storedTarget=\(Int(storedTargetSize.width))x\(Int(storedTargetSize.height))"
+            + " cropRect=\(Int(cropRect.origin.x)),\(Int(cropRect.origin.y)) \(Int(cropRect.width))x\(Int(cropRect.height))"
+        Task.detached(priority: .utility) { print(line) }
+        #endif
+
         guard let reader = try? AVAssetReader(asset: asset) else {
             throw ShortGenerationError.sourceUnreadable
         }

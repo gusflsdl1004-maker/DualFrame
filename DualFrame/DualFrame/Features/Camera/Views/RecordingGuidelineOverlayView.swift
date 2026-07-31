@@ -87,6 +87,36 @@ struct RecordingGuidelineOverlayView: View {
                     .frame(width: shortRect.width, height: shortRect.height)
                     .position(x: shortRect.midX, y: shortRect.midY)
 
+                // Task 083: **corner brackets and a centre mark, so it reads as a frame.**
+                //
+                // On a modern iPhone the screen is 19.5:9 — *narrower* than 9:16 — so the
+                // centre-crop rect comes out full-width, and the left/right guides land on
+                // the screen edges where they say nothing. With only a border and a mask,
+                // what the user sees is two dim bands rather than a framing guide. Corners
+                // and a centre mark read as framing at any rect shape, including this one.
+                Path { path in
+                    let len: CGFloat = 22
+                    for (x, dx) in [(shortRect.minX, CGFloat(1)), (shortRect.maxX, CGFloat(-1))] {
+                        for (y, dy) in [(shortRect.minY, CGFloat(1)), (shortRect.maxY, CGFloat(-1))] {
+                            path.move(to: CGPoint(x: x + dx * len, y: y))
+                            path.addLine(to: CGPoint(x: x, y: y))
+                            path.addLine(to: CGPoint(x: x, y: y + dy * len))
+                        }
+                    }
+                }
+                .stroke(Color.white.opacity(0.85), lineWidth: 2)
+
+                // Centre mark — a small cross, not full-length crosshairs, which would
+                // sit over the subject for the whole recording.
+                Path { path in
+                    let arm: CGFloat = 9
+                    path.move(to: CGPoint(x: shortRect.midX - arm, y: shortRect.midY))
+                    path.addLine(to: CGPoint(x: shortRect.midX + arm, y: shortRect.midY))
+                    path.move(to: CGPoint(x: shortRect.midX, y: shortRect.midY - arm))
+                    path.addLine(to: CGPoint(x: shortRect.midX, y: shortRect.midY + arm))
+                }
+                .stroke(Color.white.opacity(0.45), lineWidth: 1)
+
                 // One short label instead of a sentence. Only shown when a short-form file
                 // is actually going to be produced — see `isEnabled` at the call site.
                 Text("9:16")
