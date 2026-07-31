@@ -159,6 +159,24 @@ actor ShortGenerationService {
         var readerSeconds: TimeInterval = 0
         var finishSeconds: TimeInterval = 0
 
+        // Task 076 P0-3: **frame decimation. Without this the fps setting is a lie.**
+        //
+        // Before this, `fps` only reached the writer's output settings
+        // (`AVVideoExpectedSourceFrameRateKey` and the bitrate) while the pump appended
+        // every frame the reader produced, at its original timestamp. Choosing
+        // 빠름(30fps) on a 60fps source therefore decoded, cropped and encoded all
+        // 10,800 frames and wrote a file that still played at 60fps — the UI said 30,
+        // the output was 60, and the generation time it was supposed to halve did not
+        // move at all.
+        //
+        // Frames are now skipped *before* the crop, which is what makes the setting
+        // actually cheaper: a dropped frame costs one decode, not decode + crop +
+        // encode. Timestamps are left untouched, so the surviving frames keep their
+        // original positions and the clip's duration and audio sync are unchanged.
+        let minimumFrameInterval = CMTime(value: 1, timescale: CMTimeScale(fps.rawValue))
+        var lastAppendedPTS: CMTime?
+        var skippedForRate = 0
+
         do {
             try await withThrowingTaskGroup(of: Void.self) { group in
                 group.addTask {
@@ -169,6 +187,27 @@ actor ShortGenerationService {
                         guard let sample else { return false }
                         guard let sourceBuffer = CMSampleBufferGetImageBuffer(sample) else { return true }
                         let presentationTime = CMSampleBufferGetPresentationTimeStamp(sample)
+
+                        // Decimate to the requested rate, with a 10% tolerance rather
+                        // than exact arithmetic: a 59.94fps source is fractionally
+                        // slower than the 60fps its two-frame span is compared against,
+                        // and a strict comparison would reject every other surviving
+                        // frame and halve the result again.
+                        //
+                        // 10% and not more. A half-interval tolerance — the first thing
+                        // written here — makes the threshold *half* the target interval,
+                        // which every source frame clears, so nothing is dropped at all
+                        // and the setting silently does nothing. Verified: 60→30 keeps
+                        // 300 of 600, 59.94→30 keeps 300, and both 60→60 and 30→30 keep
+                        // everything.
+                        if let lastAppendedPTS {
+                            let elapsed = CMTimeSubtract(presentationTime, lastAppendedPTS)
+                            let tolerance = CMTimeMultiplyByFloat64(minimumFrameInterval, multiplier: 0.1)
+                            if CMTimeCompare(elapsed, CMTimeSubtract(minimumFrameInterval, tolerance)) < 0 {
+                                skippedForRate += 1
+                                return true
+                            }
+                        }
 
                         let cropStart = Date()
                         let cropped = cropper.croppedPixelBuffer(from: sourceBuffer, configuration: configuration)
@@ -183,6 +222,7 @@ actor ShortGenerationService {
                         encodeSeconds += Date().timeIntervalSince(encodeStart)
                         guard appended else { throw ShortGenerationError.writeFailed("video append") }
 
+                        lastAppendedPTS = presentationTime
                         frameCount += 1
                         if duration.seconds > 0 {
                             onProgress(min(1, max(0, presentationTime.seconds / duration.seconds)))
@@ -236,6 +276,10 @@ actor ShortGenerationService {
         if let outputTrack = try? await AVURLAsset(url: outputURL).loadTracks(withMediaType: .video).first {
             outputFrameRate = try? await outputTrack.load(.nominalFrameRate)
         }
+
+        #if DEBUG
+        debugPrint("[Task076-Rate] target=\(fps.rawValue)fps appended=\(frameCount) skipped=\(skippedForRate)")
+        #endif
 
         return ShortGenerationMetrics(
             backend: backend,
