@@ -896,27 +896,48 @@ struct CameraPreviewView: View {
             // orientations — the control itself adapts its own width.
             zoomControl(isLandscape: isLandscape)
 
-            // Task 038 requirement 2: enlarged (bigger font, more padding) so the
-            // primary action reads clearly at a glance, closer to the Camera app's
-            // prominent shutter control. Task 047: slightly tighter in landscape so
-            // the whole column fits a short screen without clipping.
+            // Task 076 P0-4: the shutter is a shape, not a labelled button.
+            //
+            // The text pill it replaces was wide, changed width between 시작/중지, and
+            // had to shrink in landscape to fit — three ways for the primary control to
+            // move under the thumb. A fixed 76pt circle never moves, and its state is
+            // carried by the inner shape the way the system Camera does it: a filled
+            // circle at rest, a rounded square while recording. That reads at a glance
+            // and needs no localisation.
+            //
+            // The label is kept as an accessibility label rather than deleted — removing
+            // the text from the screen must not remove it from VoiceOver.
             Button {
                 recordingViewModel.toggleRecording(expectsAudioTrack: isMicrophoneGranted)
             } label: {
-                Text(recordingViewModel.isRecording ? AppStrings.Camera.stopRecording : AppStrings.Camera.startRecording)
-                    .font(isLandscape ? .body.bold() : .title3.bold())
-                    .lineLimit(1)
-                    .fixedSize(horizontal: true, vertical: false)
-                    .padding(.horizontal, isLandscape ? 24 : 36)
-                    .padding(.vertical, isLandscape ? 12 : 18)
-                    .background(recordingViewModel.isRecording ? Color.red : Color.white, in: Capsule())
-                    .foregroundStyle(recordingViewModel.isRecording ? .white : .black)
+                ZStack {
+                    Circle()
+                        .stroke(.white, lineWidth: 4)
+                        .frame(width: 76, height: 76)
+
+                    if recordingViewModel.isRecording {
+                        RoundedRectangle(cornerRadius: 7)
+                            .fill(Color.red)
+                            .frame(width: 32, height: 32)
+                    } else {
+                        Circle()
+                            .fill(Color.red)
+                            .frame(width: 62, height: 62)
+                    }
+                }
+                .animation(.spring(response: 0.24, dampingFraction: 0.7), value: recordingViewModel.isRecording)
             }
+            .buttonStyle(.plain)
+            .accessibilityLabel(
+                recordingViewModel.isRecording
+                    ? AppStrings.Camera.stopRecording
+                    : AppStrings.Camera.startRecording
+            )
         }
         // Requirement 3: Safe Area respected in both orientations — the trailing
         // column clears the home indicator/notch side, the bottom stack clears the
         // home indicator.
-        .padding(isLandscape ? .trailing : .bottom, isLandscape ? 20 : 32)
+        .padding(isLandscape ? .trailing : .bottom, isLandscape ? 20 : 44)
         .padding(isLandscape ? .vertical : .horizontal, 12)
         .frame(maxWidth: isLandscape ? 260 : .infinity)
     }

@@ -45,7 +45,7 @@ struct DualPreviewStack: View {
                 // which drift per screen size.
                 // P0-2: more room at the bottom pushes the whole stack down and away
                 // from the shutter, which was the "답답하다" complaint.
-                let bottomReserve: CGFloat = 176
+                let bottomReserve: CGFloat = 228
                 let usableHeight = max(0, geometry.size.height - bottomReserve)
 
                 VStack(spacing: 18) {
@@ -54,7 +54,7 @@ struct DualPreviewStack: View {
                         detail: "9:16 · 쇼츠 저장 결과",
                         aspect: 9.0 / 16.0,
                         available: CGSize(width: geometry.size.width, height: usableHeight),
-                        heightFraction: 0.35,
+                        heightFraction: 0.40,
                         emphasized: false
                     )
                     pane(
@@ -62,13 +62,13 @@ struct DualPreviewStack: View {
                         detail: "16:9 · 녹화 중인 화면",
                         aspect: 16.0 / 9.0,
                         available: CGSize(width: geometry.size.width, height: usableHeight),
-                        heightFraction: 0.60,
+                        heightFraction: 0.56,
                         emphasized: true
                     )
                 }
                 .frame(maxWidth: .infinity, alignment: .top)
                 .frame(height: usableHeight, alignment: .top)
-                .padding(.top, 40)
+                .padding(.top, 84)
             } else {
                 CameraPreviewRepresentable(session: session)
             }

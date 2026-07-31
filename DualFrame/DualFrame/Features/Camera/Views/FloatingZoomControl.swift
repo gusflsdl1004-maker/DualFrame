@@ -32,7 +32,7 @@ struct FloatingZoomControl: View {
     @State private var isExpanded = false
 
     var body: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: 14) {
             if isExpanded {
                 ForEach(options) { option in
                     dot(
@@ -52,7 +52,7 @@ struct FloatingZoomControl: View {
                     .transition(.scale(scale: 0.6).combined(with: .opacity))
             }
         }
-        .padding(.horizontal, isExpanded ? 10 : 6)
+        .padding(.horizontal, isExpanded ? 14 : 6)
         .padding(.vertical, 6)
         .background(.black.opacity(isExpanded ? 0.35 : 0), in: Capsule())
         .animation(.spring(response: 0.28, dampingFraction: 0.8), value: isExpanded)
