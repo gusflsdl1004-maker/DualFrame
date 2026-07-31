@@ -109,13 +109,16 @@ struct DiagnosticsView: View {
                         Text(outcome.title).tag(outcome)
                     }
                 }
-                Picker("쇼츠 생성 화질", selection: $generationQuality) {
+                Picker("숏폼 생성 품질", selection: $generationQuality) {
                     ForEach(ShortGenerationQuality.allCases) { quality in
-                        Text(quality.title).tag(quality)
+                        Text("\(quality.title) · \(quality.subtitle)").tag(quality)
                     }
                 }
                 Text(generationQuality.detail)
                     .font(.caption)
+                    .foregroundStyle(.secondary)
+                Text(generationQuality.estimatedDurationText)
+                    .font(.caption2)
                     .foregroundStyle(.secondary)
             } header: {
                 Text("플랜 / 광고 (Task 071)")

@@ -49,6 +49,7 @@ actor ShortGenerationService {
         fps: RecordingFPS,
         codec: AVVideoCodecType,
         backend: CropBackend,
+        quality: ShortGenerationQuality,
         onProgress: @escaping @Sendable (Double) -> Void
     ) async throws -> ShortGenerationMetrics {
         let startedAt = Date()
@@ -248,6 +249,7 @@ actor ShortGenerationService {
             sourceDurationSeconds: duration.seconds,
             readerSeconds: readerSeconds,
             finishSeconds: finishSeconds,
+            quality: quality,
             outputFrameRate: outputFrameRate
         )
     }

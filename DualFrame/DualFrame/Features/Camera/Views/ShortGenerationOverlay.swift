@@ -21,6 +21,8 @@ import SwiftUI
 /// output and nothing else.
 struct ShortGenerationOverlay: View {
     let state: ShortGenerationState
+    /// Task 075 item 5: the policy behind the wait, shown beside the progress.
+    var quality: ShortGenerationQuality = .fast
     let onCancel: () -> Void
     let onRetry: () -> Void
     let onDismiss: () -> Void
@@ -40,11 +42,15 @@ struct ShortGenerationOverlay: View {
                             // is what the percentage alone never says.
                             Text("\(state.stageTitle ?? "") \(Int(progress * 100))%")
                                 .font(.caption.monospacedDigit())
-                            if let remaining = state.remainingText {
-                                Text(remaining)
-                                    .font(.caption2)
-                                    .foregroundStyle(.secondary)
+                            HStack(spacing: 6) {
+                                Text(quality.subtitle)
+                                if let remaining = state.remainingText {
+                                    Text("·")
+                                    Text(remaining)
+                                }
                             }
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
                         }
                         Spacer(minLength: 4)
                         Button("취소", action: onCancel)

@@ -239,6 +239,7 @@ struct CameraPreviewView: View {
         .overlay {
             ShortGenerationOverlay(
                 state: shortGenerationCoordinator.state,
+                quality: shortGenerationCoordinator.activeQuality,
                 // Task 072 P0-5: confirm first. Cancelling discards work the user has
                 // already waited minutes for, and the banner's 취소 sits next to a
                 // progress bar where a mis-tap is easy.

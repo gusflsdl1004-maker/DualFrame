@@ -44,6 +44,9 @@ final class ShortGenerationCoordinator: NSObject, ObservableObject {
     /// the library on the short-form output that just finished. Cleared by the view once
     /// it has navigated, so a second tap is needed to navigate again.
     @Published var pendingNavigationGroupID: String?
+    /// Task 075 item 5: shown in the banner, so the wait is attributable to the setting
+    /// that caused it rather than looking like the app being slow.
+    @Published private(set) var activeQuality: ShortGenerationQuality = .fast
     /// Task 074 P1: the completion banner dismisses itself after a moment. A success
     /// message that needs acknowledging is a chore — the notification already covers the
     /// case where the user is not looking.
@@ -125,6 +128,7 @@ final class ShortGenerationCoordinator: NSObject, ObservableObject {
         activeSessionID = request.sessionID
         activeRecordingStartTime = request.recordingStartTime
         activeGroupID = request.groupID
+        activeQuality = qualitySettingsService.load().quality
         state = .generating(progress: 0, stage: .analyzing)
         jobStartedAt = Date()
         beginBackgroundAssertion()
@@ -167,7 +171,8 @@ final class ShortGenerationCoordinator: NSObject, ObservableObject {
         // Task 074 P2: `.fast` halves the frames the encoder has to produce, which is
         // the single largest lever available on generation time short of changing the
         // architecture again.
-        let outputFPS = qualitySettingsService.load().quality.outputFPS(sourceFPS: request.fps)
+        let quality = qualitySettingsService.load().quality
+        let outputFPS = quality.outputFPS(sourceFPS: request.fps)
         let codec = encoderSettingsService.load().codec.resolvedCodec(
             width: profile.resolution.width,
             height: profile.resolution.height,
@@ -191,6 +196,7 @@ final class ShortGenerationCoordinator: NSObject, ObservableObject {
                 fps: outputFPS,
                 codec: codec,
                 backend: backend,
+                quality: quality,
                 onProgress: { [weak self] progress in
                     Task { @MainActor in
                         guard let self, self.state.isGenerating else { return }

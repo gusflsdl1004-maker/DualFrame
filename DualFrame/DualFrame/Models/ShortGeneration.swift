@@ -103,6 +103,9 @@ nonisolated struct ShortGenerationMetrics: Codable, Equatable {
     /// All optional so records written before this field still decode.
     let readerSeconds: TimeInterval?
     let finishSeconds: TimeInterval?
+    /// Task 075 item 9: which quality policy produced this run, so a generation time is
+    /// never compared against one taken under the other setting.
+    let quality: ShortGenerationQuality?
     /// `nominalFrameRate` read back from the generated short-form file. Distinct from
     /// `RecordingDiagnostics.savedNominalFrameRate`, which is the long-form file's — the
     /// two are now produced by different pipelines and need to be judged separately.

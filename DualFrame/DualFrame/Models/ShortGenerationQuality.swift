@@ -27,15 +27,35 @@ nonisolated enum ShortGenerationQuality: String, Codable, CaseIterable, Identifi
 
     var title: String {
         switch self {
-        case .fast: "빠른 생성 (30fps)"
-        case .maximum: "최고 화질 (원본 FPS)"
+        case .fast: "빠름 (권장)"
+        case .maximum: "최고 품질"
+        }
+    }
+
+    /// Shown next to the picker and in the generation banner, so the user knows which
+    /// trade-off produced the wait they are looking at.
+    var subtitle: String {
+        switch self {
+        case .fast: "FHD · 30fps"
+        case .maximum: "FHD · 60fps"
         }
     }
 
     var detail: String {
         switch self {
-        case .fast: "생성 시간이 크게 줄어듭니다. 쇼츠 플랫폼은 대부분 30fps로 재생됩니다."
-        case .maximum: "원본과 같은 프레임레이트를 유지합니다. 생성이 오래 걸립니다."
+        case .fast: "생성 시간이 가장 빠르며 대부분의 SNS 업로드에 적합합니다."
+        case .maximum: "생성 시간이 오래 걸릴 수 있습니다."
+        }
+    }
+
+    /// Task 075 item 6. Deliberately a range and deliberately vague for `.maximum` —
+    /// the only measured figure this project has is ~5 minutes for a 3.15GB 4K60 source,
+    /// and quoting a number derived from one unmeasured configuration would be inventing
+    /// data. Tighten these once the Task 073 per-stage measurement exists.
+    var estimatedDurationText: String {
+        switch self {
+        case .fast: "예상 생성시간 약 20~40초"
+        case .maximum: "예상 생성시간: 더 오래 걸릴 수 있습니다"
         }
     }
 
@@ -52,8 +72,11 @@ nonisolated enum ShortGenerationQuality: String, Codable, CaseIterable, Identifi
 nonisolated struct ShortGenerationQualitySettings: Codable, Equatable, Sendable {
     var quality: ShortGenerationQuality
 
-    /// Defaults to `.maximum` — the behaviour every existing recording already got.
-    /// Changing what users silently receive is not something to slip into a structural
-    /// task (CLAUDE.md rule 47).
-    static let `default` = ShortGenerationQualitySettings(quality: .maximum)
+    /// Task 075 item 4: **`.fast` is now the default.**
+    ///
+    /// The policy this implements: 60fps belongs to the long-form recording, which is
+    /// the thing worth keeping at maximum quality. The short-form output exists to be
+    /// posted, and every major platform plays it back at 30fps — so paying twice the
+    /// encode time for frames nobody sees is a bad trade against the wait it creates.
+    static let `default` = ShortGenerationQualitySettings(quality: .fast)
 }

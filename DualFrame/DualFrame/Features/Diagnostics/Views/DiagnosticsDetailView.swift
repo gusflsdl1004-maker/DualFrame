@@ -155,6 +155,11 @@ struct DiagnosticsDetailView: View {
                     LabeledContent("결과", value: generation.succeeded ? "성공" : "실패")
                         .foregroundStyle(generation.succeeded ? Color.primary : Color.red)
                     LabeledContent("생성 엔진", value: generation.backend.title)
+                    // Task 075 item 9: without this, two generation times from
+                    // different quality settings look like a regression.
+                    if let quality = generation.quality {
+                        LabeledContent("생성 품질", value: "\(quality.title) · \(quality.subtitle)")
+                    }
                     LabeledContent("프레임 수", value: "\(generation.frameCount)")
                     LabeledContent("crop 평균", value: String(format: "%.2fms", generation.averageCropMilliseconds))
                     LabeledContent("인코딩 평균", value: String(format: "%.2fms", generation.averageEncodeMilliseconds))
@@ -325,6 +330,7 @@ struct DiagnosticsDetailView: View {
                 sourceDurationSeconds: 125,
                 readerSeconds: 96.0,
                 finishSeconds: 4.2,
+                quality: .fast,
                 outputFrameRate: 59.94
             )
         ))
