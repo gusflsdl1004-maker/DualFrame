@@ -57,7 +57,7 @@ struct DualPreviewStack: View {
                         detail: "9:16 · 쇼츠 저장 결과",
                         aspect: 9.0 / 16.0,
                         available: CGSize(width: geometry.size.width, height: usableHeight),
-                        heightFraction: 0.40,
+                        heightFraction: 0.44,
                         emphasized: false,
                         connected: connectsShortPane
                     )
@@ -66,13 +66,13 @@ struct DualPreviewStack: View {
                         detail: "16:9 · 녹화 중인 화면",
                         aspect: 16.0 / 9.0,
                         available: CGSize(width: geometry.size.width, height: usableHeight),
-                        heightFraction: 0.56,
+                        heightFraction: 0.52,
                         emphasized: true
                     )
                 }
                 .frame(maxWidth: .infinity, alignment: .top)
                 .frame(height: usableHeight, alignment: .top)
-                .padding(.top, 84)
+                .padding(.top, 96)
             } else {
                 CameraPreviewRepresentable(session: session)
             }

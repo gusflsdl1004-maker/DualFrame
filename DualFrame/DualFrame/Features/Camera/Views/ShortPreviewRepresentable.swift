@@ -52,20 +52,41 @@ final class ShortPreviewLayerView: UIView {
     /// `connected: false` is Task 077's condition ③ — the layer is created, sized and
     /// laid out exactly as in ②, but gets no capture connection, so it renders black on
     /// purpose. That is what isolates the connection's cost from the layer's.
-    func attach(session: AVCaptureSession, connected: Bool) {
-        guard previewLayer.connection == nil else { return }
-        previewLayer.setSessionWithNoConnection(session)
-        guard connected else { return }
+    ///
+    /// Task 078 P0-1: **idempotent and safe to call repeatedly, which is the fix for the
+    /// black pane.** `makeUIView` runs once, at view-creation time — and at that moment
+    /// `CameraService.configure()` has usually not finished, so `session.inputs` is
+    /// empty, the port lookup below fails, and the early return leaves the layer
+    /// permanently unconnected. Nothing retried it.
+    ///
+    /// The full-screen preview never had this problem because `previewLayer.session = `
+    /// hands the wiring to AVFoundation, which connects whenever an input appears. A
+    /// manual connection has no such observer, so the caller drives it from
+    /// `updateUIView` as well and the guards below make the repeat calls free.
+    ///
+    /// Returns whether the layer now has a connection, so the caller knows to stop.
+    @discardableResult
+    func attach(session: AVCaptureSession, connected: Bool) -> Bool {
+        guard previewLayer.connection == nil else { return true }
+
+        if previewLayer.session !== session {
+            previewLayer.setSessionWithNoConnection(session)
+        }
+        guard connected else { return false }
 
         guard let videoPort = session.inputs
             .compactMap({ $0 as? AVCaptureDeviceInput })
             .first(where: { $0.device.hasMediaType(.video) })?
             .ports(for: .video, sourceDeviceType: nil, sourceDevicePosition: .unspecified)
             .first
-        else { return }
+        else {
+            // The session has no video input yet. Not an error — `updateUIView` calls
+            // back and this succeeds on a later pass.
+            return false
+        }
 
         let connection = AVCaptureConnection(inputPort: videoPort, videoPreviewLayer: previewLayer)
-        guard session.canAddConnection(connection) else { return }
+        guard session.canAddConnection(connection) else { return false }
 
         // A configuration transaction on a running session. It adds a *preview*
         // connection only — no output, no writer — so it cannot change what the capture
@@ -75,6 +96,7 @@ final class ShortPreviewLayerView: UIView {
         session.beginConfiguration()
         session.addConnection(connection)
         session.commitConfiguration()
+        return true
     }
 
     private func setUp() {
@@ -95,7 +117,12 @@ struct ShortPreviewRepresentable: UIViewRepresentable {
         return view
     }
 
-    func updateUIView(_ uiView: ShortPreviewLayerView, context: Context) {}
+    /// The retry that makes the connection actually happen. SwiftUI calls this whenever
+    /// the surrounding view updates — which includes the state changes that follow
+    /// `CameraService.configure()` completing — and `attach` is a no-op once connected.
+    func updateUIView(_ uiView: ShortPreviewLayerView, context: Context) {
+        uiView.attach(session: session, connected: connected)
+    }
 }
 
 /// The PIP as it appears on the camera screen: the 9:16 preview, a border, and a label.
