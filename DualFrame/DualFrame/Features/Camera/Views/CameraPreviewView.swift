@@ -166,7 +166,12 @@ struct CameraPreviewView: View {
                         // overlay is correct portrait and landscape.
                         if guidelineViewModel.settings.isEnabled,
                            outputModeViewModel.settings.outputMode == .both {
-                            RecordingGuidelineOverlayView()
+                            // The *recording* resolution's aspect, not the screen's — the
+                            // guide maps the crop from video space onto the preview, so it
+                            // needs to know what the preview is showing. Falls back to 16:9,
+                            // which every `RecordingQuality` currently is, so the guide is
+                            // still correct before `activeQuality` has been read back.
+                            RecordingGuidelineOverlayView(sourceAspect: recordingSourceAspect)
                                 .ignoresSafeArea()
                         }
 
@@ -427,6 +432,16 @@ struct CameraPreviewView: View {
 
     private var isMicrophoneGranted: Bool {
         permissionViewModel.microphoneStatus == .granted
+    }
+
+    /// Task 085: the stored aspect of whatever the camera is actually recording, read
+    /// back from `CameraService` rather than assumed — a quality fallback (Task 013/047)
+    /// can change it without the UI being told. Read-only; nothing here configures it.
+    private var recordingSourceAspect: CGFloat {
+        guard let activeQuality else { return 16.0 / 9.0 }
+        let dimensions = activeQuality.dimensions
+        guard dimensions.height > 0 else { return 16.0 / 9.0 }
+        return CGFloat(dimensions.width) / CGFloat(dimensions.height)
     }
 
     /// Task 027 requirement 3: a no-op while recording (the button is also disabled,
