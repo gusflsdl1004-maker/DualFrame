@@ -415,7 +415,8 @@ final class RecordingViewModel: ObservableObject {
             // built — not from the settings store, which the user may have toggled
             // between this recording ending and the diagnostics being written.
             cropBackend: await service.activeCropBackend,
-            secondPreviewEnabled: SecondPreviewSettingsService().load().isEnabled,
+            secondPreviewEnabled: SecondPreviewSettingsService().load().resolvedMode != .single,
+            previewExperimentMode: SecondPreviewSettingsService().load().resolvedMode.rawValue,
             // Task 070: filled in later by `ShortGenerationCoordinator`, which updates
             // this record once generation finishes. Recording no longer waits for it.
             shortGeneration: nil

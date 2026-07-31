@@ -23,7 +23,10 @@ struct DiagnosticsDetailView: View {
                 }
                 // Task 077: the A/B condition. Read this before the drop counts below —
                 // they mean different things on either side.
-                if let secondPreview = diagnostics.secondPreviewEnabled {
+                if let mode = diagnostics.previewExperimentMode,
+                   let parsed = PreviewExperimentMode(rawValue: mode) {
+                    LabeledContent("프리뷰 조건", value: parsed.title)
+                } else if let secondPreview = diagnostics.secondPreviewEnabled {
                     LabeledContent("Short 프리뷰", value: secondPreview ? "켬 (프리뷰 2개)" : "끔 (프리뷰 1개)")
                 }
             }
@@ -326,6 +329,7 @@ struct DiagnosticsDetailView: View {
             dropAttachmentKeys: ["DroppedFrameReason"],
             cropBackend: .videoToolbox,
             secondPreviewEnabled: true,
+            previewExperimentMode: "stacked",
             shortGeneration: ShortGenerationMetrics(
                 backend: .videoToolbox,
                 frameCount: 7_500,

@@ -34,7 +34,7 @@ struct DiagnosticsView: View {
     @State private var generationQuality = ShortGenerationQualitySettingsService().load().quality
     private let generationQualityService = ShortGenerationQualitySettingsService()
     /// Task 077: the preview A/B.
-    @State private var secondPreviewEnabled = SecondPreviewSettingsService().load().isEnabled
+    @State private var previewMode = SecondPreviewSettingsService().load().resolvedMode
     private let secondPreviewService = SecondPreviewSettingsService()
 
     var body: some View {
@@ -130,11 +130,20 @@ struct DiagnosticsView: View {
             }
 
             Section {
-                Toggle("Short 프리뷰 (상단 세로 화면)", isOn: $secondPreviewEnabled)
+                Picker("프리뷰 조건", selection: $previewMode) {
+                    ForEach(PreviewExperimentMode.allCases) { mode in
+                        Text(mode.title).tag(mode)
+                    }
+                }
+                .pickerStyle(.inline)
+                .labelsHidden()
+                Text(previewMode.detail)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             } header: {
                 Text("프리뷰 실험 (Task 077)")
             } footer: {
-                Text("두 번째 프리뷰는 캡처 세션에 자체 연결을 추가합니다 — 레이어를 그리는 것과 달리 캡처 파이프라인의 실제 소비자입니다. 끈 상태와 켠 상태로 각각 4K60을 30초씩 녹화한 뒤, 진단에서 measuredArrivalFPS·FrameWasLate·OutOfBuffers·저장 FPS를 대조하세요. 어떤 상태였는지는 각 기록에 함께 저장됩니다. 앱을 다시 실행해야 적용됩니다.")
+                Text("세 조건으로 각각 4K60을 30초씩 녹화한 뒤 measuredArrivalFPS·FrameWasLate·OutOfBuffers·저장 FPS를 대조하세요. ② − ③ 이 캡처 연결의 비용이고, ③ − ① 이 레이어·레이아웃의 비용입니다. ③에서 상단이 검은 것은 정상입니다. 어떤 조건이었는지는 각 기록에 저장되며, 변경 후 앱을 다시 실행해야 적용됩니다.")
             }
 
             // Task 062: the two conditions side by side, which is what the comparison
@@ -179,8 +188,8 @@ struct DiagnosticsView: View {
         .onChange(of: planSettings) { _, newValue in
             planSettingsService.save(newValue)
         }
-        .onChange(of: secondPreviewEnabled) { _, newValue in
-            secondPreviewService.save(SecondPreviewSettings(isEnabled: newValue))
+        .onChange(of: previewMode) { _, newValue in
+            secondPreviewService.save(SecondPreviewSettings(isEnabled: newValue != .single, mode: newValue))
         }
         .onChange(of: generationQuality) { _, newValue in
             generationQualityService.save(ShortGenerationQualitySettings(quality: newValue))

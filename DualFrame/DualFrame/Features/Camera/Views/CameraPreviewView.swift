@@ -38,7 +38,7 @@ struct CameraPreviewView: View {
     /// connection is what raised FrameWasLate and OutOfBuffers. Read once per appearance
     /// rather than observed, so it cannot change mid-recording and make a run
     /// unattributable.
-    @State private var isSecondPreviewEnabled = SecondPreviewSettingsService().load().isEnabled
+    @State private var previewExperimentMode = SecondPreviewSettingsService().load().resolvedMode
     @State private var isSettingsPresented = false
     @State private var isSettingsSummaryPresented = false
     @State private var activeQuality: RecordingQuality?
@@ -135,10 +135,11 @@ struct CameraPreviewView: View {
                         Group {
                             if !isLandscape,
                                outputModeViewModel.settings.outputMode == .both,
-                               isSecondPreviewEnabled {
+                               previewExperimentMode.usesStackedLayout {
                                 DualPreviewStack(
                                     session: cameraService.session,
-                                    showsShortPane: true
+                                    showsShortPane: true,
+                                    connectsShortPane: previewExperimentMode.connectsSecondPreview
                                 )
                             } else {
                                 CameraPreviewRepresentable(session: cameraService.session)

@@ -111,6 +111,11 @@ nonisolated struct RecordingDiagnostics: Codable, Equatable, Identifiable {
     /// decode. Without it a run cannot be attributed to either side of the A/B, which
     /// is exactly how Task 055's measurements became unusable.
     let secondPreviewEnabled: Bool?
+    /// Task 077 (revised): which of the three ablation conditions produced this run —
+    /// `single`, `stacked`, or `stackedNoConnection`. Added alongside
+    /// `secondPreviewEnabled` rather than replacing it, so records written by the
+    /// two-way version still decode.
+    let previewExperimentMode: String?
     /// Task 069: what post-processing short-form generation cost, if it ran. `nil` for a
     /// Long-only recording and for every record written before Task 069.
     ///

@@ -30,6 +30,9 @@ struct DualPreviewStack: View {
     /// When false only the long-form pane is shown — previewing a short-form file that
     /// will never be generated would be a lie.
     var showsShortPane: Bool
+    /// Task 077 condition ③: the short pane's layer is created and laid out but left
+    /// unconnected, so only the connection's cost is removed.
+    var connectsShortPane: Bool = true
 
     var body: some View {
         GeometryReader { geometry in
@@ -55,7 +58,8 @@ struct DualPreviewStack: View {
                         aspect: 9.0 / 16.0,
                         available: CGSize(width: geometry.size.width, height: usableHeight),
                         heightFraction: 0.40,
-                        emphasized: false
+                        emphasized: false,
+                        connected: connectsShortPane
                     )
                     pane(
                         label: "LONG",
@@ -85,7 +89,8 @@ struct DualPreviewStack: View {
         aspect: CGFloat,
         available: CGSize,
         heightFraction: CGFloat,
-        emphasized: Bool
+        emphasized: Bool,
+        connected: Bool = true
     ) -> some View {
         let maxHeight = available.height * heightFraction
         let width = min(available.width, maxHeight * aspect)
@@ -98,7 +103,7 @@ struct DualPreviewStack: View {
             // whatever frame it is given, which is exactly what each pane needs. The
             // 9:16 pane therefore shows the real centre crop and the 16:9 pane shows the
             // full frame, both live and both moving together.
-            ShortPreviewRepresentable(session: session)
+            ShortPreviewRepresentable(session: session, connected: connected)
                 .frame(width: width, height: height)
                 .clipShape(RoundedRectangle(cornerRadius: 12))
                 .overlay(

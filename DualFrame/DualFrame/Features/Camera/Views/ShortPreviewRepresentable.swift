@@ -49,9 +49,13 @@ final class ShortPreviewLayerView: UIView {
     ///
     /// The supported way to have more than one is to opt out of the automatic connection
     /// and add one explicitly, which is what `AVCaptureMultiCamSession` samples do.
-    func attach(session: AVCaptureSession) {
+    /// `connected: false` is Task 077's condition ③ — the layer is created, sized and
+    /// laid out exactly as in ②, but gets no capture connection, so it renders black on
+    /// purpose. That is what isolates the connection's cost from the layer's.
+    func attach(session: AVCaptureSession, connected: Bool) {
         guard previewLayer.connection == nil else { return }
         previewLayer.setSessionWithNoConnection(session)
+        guard connected else { return }
 
         guard let videoPort = session.inputs
             .compactMap({ $0 as? AVCaptureDeviceInput })
@@ -83,10 +87,11 @@ final class ShortPreviewLayerView: UIView {
 
 struct ShortPreviewRepresentable: UIViewRepresentable {
     let session: AVCaptureSession
+    var connected: Bool = true
 
     func makeUIView(context: Context) -> ShortPreviewLayerView {
         let view = ShortPreviewLayerView()
-        view.attach(session: session)
+        view.attach(session: session, connected: connected)
         return view
     }
 
