@@ -188,114 +188,6 @@ actor CameraService {
         session.stopRunning()
     }
 
-    // MARK: - Secondary preview connections (Task 079)
-
-    /// Task 079 P0: **session configuration belongs to this type and nowhere else.**
-    ///
-    /// Task 078 had `ShortPreviewLayerView` open its own
-    /// `beginConfiguration()`/`addConnection`/`commitConfiguration()` transaction from the
-    /// main thread, driven by a `didStartRunningNotification` observer. That put a second,
-    /// unserialised writer of the session's configuration state next to this actor's own
-    /// transactions (`configure()`, `refreshRecordingFormat()`) — and `refreshRecordingFormat()`
-    /// runs from `startRecording()`, so a transaction interleaved from the main thread
-    /// could leave the session mid-configuration: no frames (black preview) and a
-    /// `commitConfiguration()` that never returns (dead record button). Both reported
-    /// symptoms, one cause.
-    ///
-    /// Routing it through the actor removes the concurrency entirely. It also removes the
-    /// reconfiguration: a layer registered before `configure()` is connected *inside*
-    /// `configure()`'s existing transaction, so at startup the session is never
-    /// reconfigured while running.
-    private var pendingPreviewLayers: [PreviewLayerBox] = []
-
-    /// Asks for an explicit preview connection for `box`'s layer.
-    ///
-    /// Safe to call at any time and in any order relative to `start()`. Before the session
-    /// is configured the request is queued; afterwards it is applied immediately. Returns
-    /// what happened so the caller can log it — never throws, because a preview that fails
-    /// to connect must never affect recording.
-    /// Task 081 P0: **this never touches a running session, and never awaits
-    /// `RecordingService`.**
-    ///
-    /// Task 079's version did both, and recording froze on the record button. Two things
-    /// it introduced sat directly on the path `startRecording()` uses:
-    ///
-    /// - `await recordingService.state` — a `CameraService` → `RecordingService` hop that
-    ///   did not exist before, in a method the UI calls at arbitrary times, including
-    ///   while `refreshRecordingFormat()` is in flight from `startRecording()`.
-    /// - `beginConfiguration()`/`commitConfiguration()` on a **running** session, repeated
-    ///   by a two-second retry loop in the view. Reconfiguring a live capture session is a
-    ///   heavyweight blocking operation that can stop and restart it, and it was running
-    ///   in the background while the record button needed this same actor.
-    ///
-    /// Reading the code did not prove which of the two wedged it, so neither is kept.
-    /// A preview is not worth any of this (CLAUDE.md rules 1-3, 44).
-    ///
-    /// What remains: the box is queued, and `configure()` connects it inside the
-    /// transaction it already opens — once, before `startRunning()`. Nothing here is
-    /// async, nothing blocks, and the session is never reconfigured after startup.
-    ///
-    /// The cost is honest and bounded: a layer that registers *after* `configure()` has
-    /// finished does not get a connection for this launch, because there is no safe moment
-    /// left to add one. It returns `.tooLateThisLaunch` so the caller can say so rather
-    /// than retry into a session that must not be touched.
-    @discardableResult
-    func registerSecondaryPreview(_ box: PreviewLayerBox) -> SecondaryPreviewAttachResult {
-        guard box.layer.connection == nil else { return .alreadyConnected }
-        guard !isConfigured else { return .tooLateThisLaunch }
-        if !pendingPreviewLayers.contains(where: { $0 === box }) {
-            pendingPreviewLayers.append(box)
-        }
-        return .queuedUntilConfigured
-    }
-
-    /// Drops the request. Only removes a live connection when the session is **not**
-    /// running — a preview teardown must never reconfigure a running session, which is
-    /// exactly the hazard Task 079 shipped.
-    ///
-    /// Nothing accumulates as a result: a connection can now only ever be added inside
-    /// `configure()`, which runs once per launch, so at most one exists to begin with.
-    func unregisterSecondaryPreview(_ box: PreviewLayerBox) {
-        pendingPreviewLayers.removeAll { $0 === box }
-        guard !session.isRunning,
-              let connection = box.layer.connection,
-              session.connections.contains(connection) else { return }
-        session.beginConfiguration()
-        session.removeConnection(connection)
-        session.commitConfiguration()
-    }
-
-    /// Caller must already be inside a `session.beginConfiguration()` transaction.
-    private func connectSecondaryPreview(_ box: PreviewLayerBox) -> SecondaryPreviewAttachResult {
-        guard box.layer.connection == nil else { return .alreadyConnected }
-        guard let videoPort = session.inputs
-            .compactMap({ $0 as? AVCaptureDeviceInput })
-            .first(where: { $0.device.hasMediaType(.video) })?
-            .ports(for: .video, sourceDeviceType: nil, sourceDevicePosition: .unspecified)
-            .first
-        else {
-            return .noVideoPort
-        }
-
-        let connection = AVCaptureConnection(inputPort: videoPort, videoPreviewLayer: box.layer)
-        guard session.canAddConnection(connection) else { return .rejected }
-        session.addConnection(connection)
-        return .connected
-    }
-
-    /// Called from `configure()` while its transaction is still open, so a preview that
-    /// registered before the camera was ready costs no extra reconfiguration.
-    private func connectPendingSecondaryPreviews() {
-        let pending = pendingPreviewLayers
-        pendingPreviewLayers.removeAll()
-        for box in pending {
-            let result = connectSecondaryPreview(box)
-            #if DEBUG
-            debugLog("[Task079-Preview] pending attach → \(result.rawValue)")
-            #endif
-        }
-    }
-
     /// Reads the current recording orientation from `OrientationManager` for whichever
     /// camera is active, and pushes the resulting transform to `RecordingService`
     /// (requirement 2: never computed here). Called once per recording, right before
@@ -450,11 +342,6 @@ actor CameraService {
         await applyDeviceSpecificSettings(device: device)
         setUpZoomCapabilities(device: device)
         isConfigured = true
-        // Task 079: inside this method's still-open transaction (the `defer` above commits
-        // on return), and before `start()` calls `startRunning()`. A preview layer created
-        // by SwiftUI before the camera was ready therefore gets its connection without the
-        // session ever being reconfigured while live.
-        connectPendingSecondaryPreviews()
         logStartupEvent("Camera Configured", detail: requestedPosition.title)
         #if DEBUG
         // Task 051 item 2: dumped at launch, not only when the FPS settings screen is

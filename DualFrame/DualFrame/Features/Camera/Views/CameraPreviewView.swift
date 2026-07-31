@@ -34,11 +34,6 @@ struct CameraPreviewView: View {
     @State private var isLibraryPresented = false
     /// Task 072 P0-5: guards the generation-cancel button behind a confirmation.
     @State private var isConfirmingGenerationCancel = false
-    /// Task 077: the A/B under test — whether the short-form preview's capture
-    /// connection is what raised FrameWasLate and OutOfBuffers. Read once per appearance
-    /// rather than observed, so it cannot change mid-recording and make a run
-    /// unattributable.
-    @State private var previewExperimentMode = SecondPreviewSettingsService().load().resolvedMode
     @State private var isSettingsPresented = false
     @State private var isSettingsSummaryPresented = false
     @State private var activeQuality: RecordingQuality?
@@ -127,26 +122,23 @@ struct CameraPreviewView: View {
                     // instead keeps every control inside the safe area while the camera
                     // image alone still bleeds edge to edge.
                     ZStack {
-                        // Task 075 (UI 개편) P0-1: both outputs as real previews.
-                        // Portrait + Long&Short only — in landscape the two panes would
-                        // each be a letterboxed sliver, and on Long-only there is no
-                        // second result to show, so both fall back to the full-screen
-                        // preview this app has always had.
-                        Group {
-                            if !isLandscape,
-                               outputModeViewModel.settings.outputMode == .both,
-                               previewExperimentMode.usesStackedLayout {
-                                DualPreviewStack(
-                                    session: cameraService.session,
-                                    cameraService: cameraService,
-                                    showsShortPane: true,
-                                    connectsShortPane: previewExperimentMode.connectsSecondPreview
-                                )
-                            } else {
-                                CameraPreviewRepresentable(session: cameraService.session)
-                                    .ignoresSafeArea()
-                            }
-                        }
+                        // Task 082: **one preview, and only one.**
+                        //
+                        // Tasks 076-081 tried to show the short-form result as a second
+                        // live `AVCaptureVideoPreviewLayer`. A second preview layer needs
+                        // its own `AVCaptureConnection`, adding one means a session
+                        // configuration transaction, and every attempt to place that
+                        // transaction safely regressed recording — a black camera and a
+                        // dead record button (079), then a freeze on the record button
+                        // (081). The app's job is to not lose video; a preview is not
+                        // worth any of that (CLAUDE.md rules 1-3, 44).
+                        //
+                        // So the short-form framing is drawn, not captured. The overlay
+                        // below reuses `CropCalculator` — the same type the real
+                        // post-processing crop uses — so it stays honest without touching
+                        // the session at all.
+                        CameraPreviewRepresentable(session: cameraService.session)
+                            .ignoresSafeArea()
                             // Task 043 requirement 4: pinch-to-zoom directly on the
                             // preview, matching Apple Camera. `$pinchScale` reports a
                             // *relative* scale (1.0 = unchanged since the gesture
@@ -162,45 +154,20 @@ struct CameraPreviewView: View {
                                 setZoom(zoomFactorAtPinchStart * newScale)
                             }
 
-                        // Task 040: purely visual, drawn above the live preview and
-                        // below the status bar/controls so it never obscures them.
-                        // Camera output itself is untouched — this only draws lines.
-                        // Superseded by `DualPreviewStack` whenever it is shown — a dim
-                        // mask over a full-screen preview answers the same question the
-                        // stacked panes now answer directly, and drawing both would be
-                        // two competing depictions of one crop.
+                        // Task 040 / 082: purely visual, drawn above the live preview and
+                        // below the controls so it never obscures them. Camera output is
+                        // untouched — this only draws, never captures, and never intercepts
+                        // touches.
+                        //
+                        // Shown whenever a short-form file is actually going to be produced.
+                        // On Long-only there is no crop to preview, so drawing one would be
+                        // describing a file that never arrives. Same in both orientations
+                        // now: `CropCalculator`'s centre-crop math is symmetric, so the same
+                        // overlay is correct portrait and landscape.
                         if guidelineViewModel.settings.isEnabled,
-                           isLandscape || outputModeViewModel.settings.outputMode != .both {
+                           outputModeViewModel.settings.outputMode == .both {
                             RecordingGuidelineOverlayView()
                                 .ignoresSafeArea()
-                        }
-
-                        // Task 076 P0-1: the live short-form result, beside the
-                        // long-form one. Only shown when a short-form output is
-                        // actually going to be produced — on Long-only it would be
-                        // promising a file that never arrives.
-                        //
-                        // A second preview layer on the same session: display-side
-                        // only, no data output and no writer, so it cannot cost capture
-                        // throughput the way the second *writer* did before Task 069.
-                        // Landscape keeps the PIP: the stacked layout needs vertical
-                        // room it does not have there, but the short-form result still
-                        // has to be visible while composing.
-                        if guidelineViewModel.settings.isEnabled,
-                           isLandscape,
-                           outputModeViewModel.settings.outputMode == .both {
-                            VStack {
-                                HStack {
-                                    Spacer()
-                                    ShortPreviewPIP(
-                                        session: cameraService.session,
-                                        cameraService: cameraService
-                                    )
-                                        .padding(.trailing, 12)
-                                }
-                                Spacer()
-                            }
-                            .padding(.top, 12)
                         }
 
                         // Task 052 requirement 3: two genuinely different layouts, not
@@ -616,17 +583,14 @@ struct CameraPreviewView: View {
     @ViewBuilder
     private var iconButtons: some View {
         Group {
-                // Task 038 requirement 2: icon buttons enlarged (10 → 14 padding) for
-                // easier tapping, matching the Camera app's touch-target sizing.
-                Button {
-                    isLibraryPresented = true
-                } label: {
-                    Image(systemName: "film")
-                        .padding(14)
-                        .background(.black.opacity(0.5), in: Circle())
-                        .foregroundStyle(.white)
-                }
-
+                // Task 082: **two buttons, 설정 and 갤러리.**
+                //
+                // The row had grown to five (갤러리, 설정, 요약, 전환, 디버그) across the top
+                // of the live image. 요약 was a read-only restatement of the HUD already on
+                // screen, and 전환 belongs next to the shutter where the system Camera puts
+                // it — it is a shooting control, not a navigation entry point.
+                //
+                // Task 038 requirement 2: 14pt padding for the touch-target sizing.
                 Button {
                     isSettingsPresented = true
                 } label: {
@@ -635,28 +599,17 @@ struct CameraPreviewView: View {
                         .background(.black.opacity(0.5), in: Circle())
                         .foregroundStyle(.white)
                 }
+                .accessibilityLabel("설정")
 
                 Button {
-                    isSettingsSummaryPresented = true
+                    isLibraryPresented = true
                 } label: {
-                    Image(systemName: "info.circle")
+                    Image(systemName: "film")
                         .padding(14)
                         .background(.black.opacity(0.5), in: Circle())
                         .foregroundStyle(.white)
                 }
-
-                // Task 027 requirement 3: disabled while recording — switching camera
-                // mid-recording is never allowed, both here and defensively inside
-                // `CameraService.switchCamera(to:)` itself.
-                Button {
-                    Task { await toggleCameraPosition() }
-                } label: {
-                    Image(systemName: "arrow.triangle.2.circlepath.camera")
-                        .padding(14)
-                        .background(.black.opacity(0.5), in: Circle())
-                        .foregroundStyle(.white)
-                }
-                .disabled(recordingViewModel.isRecording)
+                .accessibilityLabel("갤러리")
 
                 #if DEBUG
                 // Task 032: as the number of debug-only tools grew, a fixed row of
@@ -919,6 +872,10 @@ struct CameraPreviewView: View {
             //
             // The label is kept as an accessibility label rather than deleted — removing
             // the text from the screen must not remove it from VoiceOver.
+            // Task 082: the shutter stays dead centre and the camera flip sits beside it,
+            // where the system Camera puts it. `overlay` rather than an `HStack`, so the
+            // flip button cannot shift the shutter off centre — the primary control has to
+            // be in the same place every time the thumb reaches for it.
             Button {
                 recordingViewModel.toggleRecording(expectsAudioTrack: isMicrophoneGranted)
             } label: {
@@ -945,11 +902,33 @@ struct CameraPreviewView: View {
                     ? AppStrings.Camera.stopRecording
                     : AppStrings.Camera.startRecording
             )
+            .overlay(alignment: .trailing) {
+                // Task 027 requirement 3: disabled while recording — switching camera
+                // mid-recording is never allowed, both here and defensively inside
+                // `CameraService.switchCamera(to:)` itself.
+                Button {
+                    Task { await toggleCameraPosition() }
+                } label: {
+                    Image(systemName: "arrow.triangle.2.circlepath.camera")
+                        .font(.system(size: 17))
+                        .padding(13)
+                        .background(.black.opacity(0.45), in: Circle())
+                        .foregroundStyle(.white)
+                }
+                .disabled(recordingViewModel.isRecording)
+                .opacity(recordingViewModel.isRecording ? 0.35 : 1)
+                .accessibilityLabel("카메라 전환")
+                .offset(x: isLandscape ? 0 : 96)
+                .opacity(isLandscape ? 0 : 1)
+            }
         }
         // Requirement 3: Safe Area respected in both orientations — the trailing
         // column clears the home indicator/notch side, the bottom stack clears the
         // home indicator.
-        .padding(isLandscape ? .trailing : .bottom, isLandscape ? 20 : 44)
+        // Task 082: 44 → 28 in portrait, which moves the shutter *down* toward the
+        // bottom edge as requested. It still clears the home indicator (34pt) with the
+        // safe-area inset the ZStack already respects.
+        .padding(isLandscape ? .trailing : .bottom, isLandscape ? 20 : 28)
         .padding(isLandscape ? .vertical : .horizontal, 12)
         .frame(maxWidth: isLandscape ? 260 : .infinity)
     }

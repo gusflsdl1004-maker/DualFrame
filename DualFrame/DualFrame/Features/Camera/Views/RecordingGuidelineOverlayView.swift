@@ -52,56 +52,50 @@ struct RecordingGuidelineOverlayView: View {
             )
 
             ZStack {
-                // Task 072 P0-2: **a frame, not a pair of lines.**
+                // Task 082: **a light touch, not a second screen.**
                 //
-                // Two thin outlines told the user where the boundaries were but not
-                // what the result would look like. Everything outside the 9:16 rect is
-                // now dimmed instead, so what stays bright *is* the short-form output —
-                // the user reads the two results at once: the whole screen is the
-                // long-form file, the bright rectangle is the short-form one.
+                // Three elements and nothing else — a soft mask, a hairline border, and
+                // the two vertical edges of the crop. The previous version dimmed at 0.45
+                // with a 2pt border, a LONG badge and a sentence of Korean, which read as
+                // a UI panel laid over the shot rather than a guide. It also competed with
+                // the live image the user is actually framing.
                 //
-                // Drawn with `.evenOdd` so the dim is a single shape with the crop
-                // punched out of it, rather than four rectangles that would seam at the
-                // corners.
+                // Drawn with `.evenOdd` so the dim is one shape with the crop punched out
+                // of it, rather than four rectangles that would seam at the corners.
                 Path { path in
                     path.addRect(CGRect(origin: .zero, size: size))
                     path.addRect(shortRect)
                 }
-                .fill(Color.black.opacity(0.45), style: FillStyle(eoFill: true))
+                .fill(Color.black.opacity(0.28), style: FillStyle(eoFill: true))
 
-                // The short-form boundary itself, bright enough to read against any
-                // scene now that it separates lit from dimmed.
+                // The two vertical guides. In portrait these *are* the crop boundary —
+                // the 9:16 rect is full height, so the left and right edges are the only
+                // part of the border that carries information. Drawn slightly brighter
+                // than the frame so the eye lands on them.
+                Path { path in
+                    path.move(to: CGPoint(x: shortRect.minX, y: shortRect.minY))
+                    path.addLine(to: CGPoint(x: shortRect.minX, y: shortRect.maxY))
+                    path.move(to: CGPoint(x: shortRect.maxX, y: shortRect.minY))
+                    path.addLine(to: CGPoint(x: shortRect.maxX, y: shortRect.maxY))
+                }
+                .stroke(Color.white.opacity(0.55), lineWidth: 1)
+
+                // A hairline all the way round, so the crop still reads as a rectangle in
+                // landscape where the boundary is top/bottom rather than left/right.
                 Rectangle()
-                    .stroke(Color.white.opacity(0.9), lineWidth: 2)
+                    .stroke(Color.white.opacity(0.28), lineWidth: 1)
                     .frame(width: shortRect.width, height: shortRect.height)
                     .position(x: shortRect.midX, y: shortRect.midY)
 
-                // The long-form boundary stays as a hairline. It usually coincides with
-                // the screen edge, so it needs no emphasis — but on a container whose
-                // aspect differs from 16:9 it is the only thing showing what the
-                // long-form file will actually contain.
-                Rectangle()
-                    .stroke(Color.white.opacity(0.5), lineWidth: 1)
-                    .frame(width: longRect.width, height: longRect.height)
-                    .position(x: longRect.midX, y: longRect.midY)
-
-                // P1-1: names the full-screen result, so LONG and SHORT are both
-                // labelled rather than only the PIP.
-                Text("LONG")
-                    .font(.caption2.bold())
-                    .foregroundStyle(.white.opacity(0.9))
+                // One short label instead of a sentence. Only shown when a short-form file
+                // is actually going to be produced — see `isEnabled` at the call site.
+                Text("9:16")
+                    .font(.caption2.weight(.medium))
+                    .foregroundStyle(.white.opacity(0.7))
                     .padding(.horizontal, 6)
                     .padding(.vertical, 2)
-                    .background(.black.opacity(0.4), in: Capsule())
-                    .position(x: longRect.minX + 34, y: longRect.minY + 18)
-
-                Text("이 영역이 쇼츠로 저장됩니다")
-                    .font(.caption2)
-                    .foregroundStyle(.white.opacity(0.9))
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 4)
-                    .background(.black.opacity(0.35), in: Capsule())
-                    .position(x: shortRect.midX, y: shortRect.minY + 18)
+                    .background(.black.opacity(0.3), in: Capsule())
+                    .position(x: shortRect.midX, y: shortRect.minY + 16)
             }
         }
         // Requirement 1: guide only — never intercepts touches meant for the preview

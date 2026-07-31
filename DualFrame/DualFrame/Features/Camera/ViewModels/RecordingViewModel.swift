@@ -415,8 +415,12 @@ final class RecordingViewModel: ObservableObject {
             // built — not from the settings store, which the user may have toggled
             // between this recording ending and the diagnostics being written.
             cropBackend: await service.activeCropBackend,
-            secondPreviewEnabled: SecondPreviewSettingsService().load().resolvedMode != .single,
-            previewExperimentMode: SecondPreviewSettingsService().load().resolvedMode.rawValue,
+            // Task 082: the second preview is gone, so there is no longer a condition to
+            // record. The fields stay on `RecordingDiagnostics` (CLAUDE.md rule 58 — never
+            // migrate) so records written during the Task 077-081 experiment still decode
+            // and still display their condition; new records simply have nothing to say.
+            secondPreviewEnabled: nil,
+            previewExperimentMode: nil,
             // Task 070: filled in later by `ShortGenerationCoordinator`, which updates
             // this record once generation finishes. Recording no longer waits for it.
             shortGeneration: nil

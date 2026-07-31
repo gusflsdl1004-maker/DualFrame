@@ -23,9 +23,14 @@ struct DiagnosticsDetailView: View {
                 }
                 // Task 077: the A/B condition. Read this before the drop counts below —
                 // they mean different things on either side.
-                if let mode = diagnostics.previewExperimentMode,
-                   let parsed = PreviewExperimentMode(rawValue: mode) {
-                    LabeledContent("프리뷰 조건", value: parsed.title)
+                //
+                // Task 082 removed the second preview and its `PreviewExperimentMode`
+                // enum, but records written during the experiment still carry the raw
+                // string, so it is mapped here rather than parsed. Deleting the display
+                // would have silently changed what those older records mean (CLAUDE.md
+                // rule 58 — existing data is never migrated or hidden).
+                if let mode = diagnostics.previewExperimentMode {
+                    LabeledContent("프리뷰 조건", value: Self.previewConditionTitle(mode))
                 } else if let secondPreview = diagnostics.secondPreviewEnabled {
                     LabeledContent("Short 프리뷰", value: secondPreview ? "켬 (프리뷰 2개)" : "끔 (프리뷰 1개)")
                 }
@@ -290,6 +295,18 @@ struct DiagnosticsDetailView: View {
 
     private var formattedStorage: String {
         ByteCountFormatter.string(fromByteCount: diagnostics.availableStorageBytes, countStyle: .file)
+    }
+
+    /// Titles for the Task 077 preview conditions, kept as a plain string map now that the
+    /// enum itself is gone (Task 082). Only records written during that experiment reach
+    /// this; anything else falls through to the raw value rather than being dropped.
+    private static func previewConditionTitle(_ rawValue: String) -> String {
+        switch rawValue {
+        case "single": "① 프리뷰 1개 (기준)"
+        case "stacked": "② 프리뷰 2개"
+        case "stackedNoConnection": "③ 2개 · 연결 없음"
+        default: rawValue
+        }
     }
 }
 

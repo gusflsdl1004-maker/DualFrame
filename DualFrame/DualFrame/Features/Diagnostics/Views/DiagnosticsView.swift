@@ -33,11 +33,6 @@ struct DiagnosticsView: View {
     /// only type that reads the plan, and generation behaves identically for everyone.
     @State private var generationQuality = ShortGenerationQualitySettingsService().load().quality
     private let generationQualityService = ShortGenerationQualitySettingsService()
-    /// Task 077: the preview A/B.
-    @State private var previewMode = SecondPreviewSettingsService().load().resolvedMode
-    /// Task 080 item 6.
-    @State private var previewProbe = SecondPreviewSettingsService().load().showsDiagnosticProbe
-    private let secondPreviewService = SecondPreviewSettingsService()
 
     var body: some View {
         List {
@@ -131,28 +126,6 @@ struct DiagnosticsView: View {
                 Text("무료 플랜은 카메라롤 저장 전에 리워드 광고를 봅니다. '도중 닫기'와 '로드 실패'는 저장을 거부하는 경로로, 반드시 두 경우 모두 앱 내 영상이 그대로 남는지 확인하세요. 녹화와 쇼츠 생성은 플랜과 무관하게 동작합니다.")
             }
 
-            Section {
-                Picker("프리뷰 조건", selection: $previewMode) {
-                    ForEach(PreviewExperimentMode.allCases) { mode in
-                        Text(mode.title).tag(mode)
-                    }
-                }
-                .pickerStyle(.inline)
-                .labelsHidden()
-                Text(previewMode.detail)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-
-                Toggle("상단 프리뷰 레이어 빨강 표시", isOn: $previewProbe)
-                Text("상단 Short 프리뷰의 레이어 배경을 빨강으로 칠합니다. 빨강이 보이면 레이어는 화면에 정상 크기로 그려지고 있고 영상만 안 오는 것이며, 그대로 검으면 레이어 자체가 그려지지 않는 것입니다. 원인이 완전히 다르므로 먼저 이것부터 확인하세요. 변경 후 앱을 다시 실행해야 적용됩니다.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            } header: {
-                Text("프리뷰 실험 (Task 077)")
-            } footer: {
-                Text("세 조건으로 각각 4K60을 30초씩 녹화한 뒤 measuredArrivalFPS·FrameWasLate·OutOfBuffers·저장 FPS를 대조하세요. ② − ③ 이 캡처 연결의 비용이고, ③ − ① 이 레이어·레이아웃의 비용입니다. ③에서 상단이 검은 것은 정상입니다. 어떤 조건이었는지는 각 기록에 저장되며, 변경 후 앱을 다시 실행해야 적용됩니다.")
-            }
-
             // Task 062: the two conditions side by side, which is what the comparison
             // actually needs — scrolling between two detail screens loses the diff.
             Section {
@@ -194,20 +167,6 @@ struct DiagnosticsView: View {
         }
         .onChange(of: planSettings) { _, newValue in
             planSettingsService.save(newValue)
-        }
-        .onChange(of: previewMode) { _, newValue in
-            secondPreviewService.save(SecondPreviewSettings(
-                isEnabled: newValue != .single,
-                mode: newValue,
-                diagnosticProbe: previewProbe
-            ))
-        }
-        .onChange(of: previewProbe) { _, newValue in
-            secondPreviewService.save(SecondPreviewSettings(
-                isEnabled: previewMode != .single,
-                mode: previewMode,
-                diagnosticProbe: newValue
-            ))
         }
         .onChange(of: generationQuality) { _, newValue in
             generationQualityService.save(ShortGenerationQualitySettings(quality: newValue))
