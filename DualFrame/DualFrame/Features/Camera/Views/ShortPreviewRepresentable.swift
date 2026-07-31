@@ -134,15 +134,20 @@ final class ShortPreviewLayerView: UIView {
     #if DEBUG
     private func log(canAdd: Bool?, added: Bool, note: String?, connection: AVCaptureConnection? = nil) {
         let target = connection ?? previewLayer.connection
-        var line = """
-        [Task077-Preview]
-        attachAttempt=\(attachAttempts)
-        canAddConnection=\(canAdd.map(String.init(describing:)) ?? "n/a")
-        connectionAdded=\(added)
-        isActive=\(target.map { String(describing: $0.isActive) } ?? "n/a")
-        isEnabled=\(target.map { String(describing: $0.isEnabled) } ?? "n/a")
-        """
-        if let note { line += "\nnote=\(note)" }
+
+        // **One line, tag included.** The first version spread these across a multi-line
+        // string, which printed correctly but appeared as a bare `[Task077-Preview]` in
+        // Xcode: the console filter matches per *line*, so filtering on the tag hid every
+        // value line beneath it. Every other diagnostic in this project is single-line
+        // for exactly this reason — `[Task044-Debug] STAGE 3 …`, `[Task054-Capture] …` —
+        // and this one should not have been the exception.
+        var line = "[Task077-Preview]"
+            + " attachAttempt=\(attachAttempts)"
+            + " canAddConnection=\(canAdd.map(String.init(describing:)) ?? "n/a")"
+            + " connectionAdded=\(added)"
+            + " isActive=\(target.map { String(describing: $0.isActive) } ?? "n/a")"
+            + " isEnabled=\(target.map { String(describing: $0.isEnabled) } ?? "n/a")"
+        if let note { line += " note=\(note)" }
         // Handed off, matching every other diagnostic in this project — a synchronous
         // print here runs during a SwiftUI update and on the same thread that just
         // committed a session configuration.
