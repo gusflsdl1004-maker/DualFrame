@@ -48,8 +48,15 @@ final class PhotoCaptureViewModel: ObservableObject {
     }
 
     /// The shutter. Runs the self-timer first when one is set.
+    ///
+    /// Task 092 P1-3: `isCapturing` is set **here**, synchronously, before any `await`
+    /// exists to suspend at. Setting it inside the async body left a window where two
+    /// taps in the same run loop turn could both pass the guard and both reach
+    /// `capturePhoto`. On `@MainActor` this method runs to completion before another tap
+    /// can be delivered, so the guard is now airtight rather than probabilistic.
     func capture() {
         guard !isCapturing, countdownTask == nil else { return }
+        isCapturing = true
 
         guard timerDuration != .off else {
             Task { await performCapture() }
@@ -77,22 +84,66 @@ final class PhotoCaptureViewModel: ObservableObject {
         countdownTask?.cancel()
         countdownTask = nil
         countdown = nil
+        // Task 092 P1-3: `capture()` claims `isCapturing` before the countdown starts, so
+        // cancelling has to release it or the shutter stays dead for the rest of the run.
+        isCapturing = false
+    }
+
+    /// Task 092 P0-3: called when the camera screen appears. Clears anything a previous
+    /// capture could have left behind.
+    ///
+    /// Nothing here is persisted — `CaptureMode` is view state and these are view-model
+    /// properties, so a relaunch already starts clean. This exists for the case a
+    /// relaunch does *not* cover: returning to the camera from the gallery or settings
+    /// while a capture was in flight. Cheap, and it makes "the UI is stuck" unreachable
+    /// by one more route.
+    func resetTransientState() {
+        cancelTimer()
+        isCapturing = false
+        isFlashingShutter = false
+        errorMessage = nil
     }
 
     // MARK: - Private
 
     private func performCapture() async {
-        isCapturing = true
-        defer { isCapturing = false }
+        // Task 092 P0-2/P0-4: **the only place these are cleared, and it always runs.**
+        //
+        // `defer` on the enclosing async function fires on every exit — normal return,
+        // thrown error, and cancellation. Previously the white flash cleared itself from a
+        // detached 90ms Task, which meant its lifetime was independent of the capture's:
+        // if the capture path died, the overlay's fate was unrelated to the failure. Now
+        // the overlay is owned by the operation that raised it and cannot outlive it.
+        defer {
+            isCapturing = false
+            isFlashingShutter = false
+        }
         errorMessage = nil
 
-        // Fires before the await so it lands with the shutter sound rather than after the
+        // Fires before the await so it lands with the shutter action rather than after the
         // encode. This is the feedback that tells the user the moment was taken.
         UIImpactFeedbackGenerator(style: .medium).impactOccurred()
-        flashShutter()
+        isFlashingShutter = true
 
         do {
-            let captured = try await cameraService.capturePhoto(flashMode: flashMode.avFlashMode)
+            // Task 092 P1-1: **screen flash on the front camera.**
+            //
+            // The front camera has no lamp — `supportedFlashModes` is `[.off]` there, so
+            // `flashMode` is silently ignored no matter what the control says. Holding the
+            // white overlay up *through* the exposure is what the system Camera does, and
+            // it is a real light source: the screen is what illuminates the subject.
+            //
+            // Only when flash is actually asked for. On `.off`, or on a camera with a
+            // lamp, the overlay stays the brief shutter blink it was.
+            let hasLamp = await cameraService.hasHardwareFlash
+            let usesScreenFlash = flashMode != .off && !hasLamp
+            if usesScreenFlash {
+                // Long enough for the exposure to be taken under it. Cleared by the
+                // `defer` above regardless of what happens next.
+                try? await Task.sleep(for: .milliseconds(220))
+            }
+
+            let captured = try await captureWithTimeout()
             let position = await cameraService.currentPosition
             let record = try await photoLibraryService.save(
                 data: captured.data,
@@ -106,8 +157,37 @@ final class PhotoCaptureViewModel: ObservableObject {
             errorMessage = "녹화 중에는 사진을 촬영할 수 없습니다."
         } catch CameraServiceError.photoOutputUnavailable {
             errorMessage = "이 기기 설정에서는 사진 촬영을 사용할 수 없습니다."
+        } catch is PhotoCaptureTimeout {
+            errorMessage = "사진 촬영이 응답하지 않아 취소했습니다. 다시 시도해 주세요."
         } catch {
             errorMessage = "사진을 저장하지 못했습니다."
+        }
+    }
+
+    /// Task 092 P0-2: a capture that never comes back must not hold the UI forever.
+    ///
+    /// `AVCapturePhotoOutput` delivers its result through a delegate. If that callback
+    /// never arrives — the session is interrupted mid-capture, the delegate is dropped —
+    /// the continuation never resumes and the `await` above never returns, so the `defer`
+    /// that clears the white flash never runs either. A stuck camera would look exactly
+    /// like the crash this task is fixing.
+    ///
+    /// Eight seconds is far longer than any real still (well under a second even at 4K
+    /// with flash), so this can only fire on a genuine hang.
+    private func captureWithTimeout() async throws -> (data: Data, fileExtension: String) {
+        try await withThrowingTaskGroup(of: (data: Data, fileExtension: String).self) { group in
+            let mode = flashMode.avFlashMode
+            group.addTask { [cameraService] in
+                try await cameraService.capturePhoto(flashMode: mode)
+            }
+            group.addTask {
+                try await Task.sleep(for: .seconds(8))
+                throw PhotoCaptureTimeout()
+            }
+            guard let first = try await group.next() else { throw PhotoCaptureTimeout() }
+            // Cancels the loser — either the sleep, or a capture nobody is waiting for.
+            group.cancelAll()
+            return first
         }
     }
 
@@ -129,14 +209,11 @@ final class PhotoCaptureViewModel: ObservableObject {
         }
     }
 
-    private func flashShutter() {
-        isFlashingShutter = true
-        Task {
-            try? await Task.sleep(for: .milliseconds(90))
-            isFlashingShutter = false
-        }
-    }
 }
+
+/// Task 092: raised when the photo delegate never calls back. A distinct type so the
+/// message can say "it hung" rather than "it failed", which are different problems.
+nonisolated struct PhotoCaptureTimeout: Error {}
 
 /// Task 091 P2-1.
 nonisolated enum PhotoFlashMode: String, CaseIterable, Identifiable, Sendable {

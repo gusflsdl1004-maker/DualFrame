@@ -221,6 +221,8 @@ struct CameraPreviewView: View {
             }
         }
         .task {
+            // Task 092 P0-3: nothing about a previous capture survives into this one.
+            photoCaptureViewModel.resetTransientState()
             orientationManager.startObserving()
             await permissionViewModel.requestPermissionsIfNeeded()
             guard permissionViewModel.cameraStatus == .granted,
@@ -1067,6 +1069,12 @@ struct CameraPreviewView: View {
             .animation(.spring(response: 0.18, dampingFraction: 0.6), value: photoCaptureViewModel.isCapturing)
         }
         .buttonStyle(.plain)
+        // Task 092 P1-3: belt and braces with the `isCapturing` guard inside the view
+        // model. A disabled button cannot deliver the tap at all, so a burst of taps
+        // cannot even reach the guard — and the countdown stays tappable so the timer can
+        // still be cancelled.
+        .disabled(captureMode == .photo && photoCaptureViewModel.isCapturing
+                  && photoCaptureViewModel.countdown == nil)
         .accessibilityLabel(shutterAccessibilityLabel)
     }
 

@@ -276,20 +276,40 @@ actor CameraService {
         }
 
         // Only ask for flash the device actually supports in this configuration, so an
-        // unsupported mode cannot make the whole capture fail.
+        // unsupported mode cannot make the whole capture fail. The front camera has no
+        // lamp, so `supportedFlashModes` is `[.off]` there and this is skipped —
+        // `PhotoCaptureViewModel` does a screen flash instead.
         if photoOutput.supportedFlashModes.contains(flashMode) {
             settings.flashMode = flashMode
         }
-        // The largest still the *current* video format supports. Deliberately not a
-        // format change: raising `maxPhotoDimensions` beyond what the active format
-        // offers would re-resolve the session, which is what must never happen for a
-        // photo (see `configure()`).
-        if let maxDimensions = videoDevice?.activeFormat.supportedMaxPhotoDimensions.last {
-            settings.maxPhotoDimensions = maxDimensions
-        }
+
+        // Task 092 P0-1: **`settings.maxPhotoDimensions` used to be set here, and that
+        // is what crashed the app.**
+        //
+        // It was assigned `activeFormat.supportedMaxPhotoDimensions.last`. That is a
+        // value the *format* supports, but the documented contract is that it must also
+        // not exceed `AVCapturePhotoOutput.maxPhotoDimensions` — which this code never
+        // set, so it stayed at the output's default. Asking for more than the output was
+        // configured for raises `NSInvalidArgumentException`, and an Objective-C
+        // exception cannot be caught in Swift: the process dies on the spot.
+        //
+        // That single line produced every symptom reported. The white flash is set
+        // synchronously just before this call, so the last frame the compositor ever drew
+        // was white; the app then died mid-capture. And the white screen on relaunch was
+        // not persisted state — it is iOS replaying the app's cached launch snapshot,
+        // which had been captured white.
+        //
+        // Nothing sets `maxPhotoDimensions` now, at either level. The default is the
+        // active format's own photo dimensions, which is already the full still size for
+        // a 4K format, and — the part that matters — it cannot go stale. `activeFormat`
+        // changes whenever the recording quality does (`refreshRecordingFormat()`), so
+        // any value pinned at configure time would eventually disagree with the format
+        // and throw again later. The honest trade is that stills come out at the video
+        // format's photo size rather than the sensor maximum; a crash is not worth the
+        // difference.
 
         let uniqueID = settings.uniqueID
-        return try await withCheckedThrowingContinuation { continuation in
+        let captured: (data: Data, fileExtension: String) = try await withCheckedThrowingContinuation { continuation in
             let delegate = PhotoCaptureDelegate { [weak self] result in
                 // Resume first, release second: the delegate must outlive the callback.
                 continuation.resume(with: result)
@@ -298,10 +318,21 @@ actor CameraService {
             photoCaptureDelegates[uniqueID] = delegate
             photoOutput.capturePhoto(with: settings, delegate: delegate)
         }
+        return captured
     }
 
     private func releasePhotoDelegate(_ uniqueID: Int64) {
         photoCaptureDelegates[uniqueID] = nil
+    }
+
+    /// Task 092 P1-1: whether the active camera actually has a flash lamp.
+    ///
+    /// False on every front camera. The UI needs this to know that "flash on" has to mean
+    /// a screen flash rather than a lamp — otherwise the control claims to do something
+    /// the hardware cannot.
+    var hasHardwareFlash: Bool {
+        guard let videoDevice else { return false }
+        return videoDevice.hasFlash && photoOutput.supportedFlashModes.count > 1
     }
 
     /// Reads the current recording orientation from `OrientationManager` for whichever
