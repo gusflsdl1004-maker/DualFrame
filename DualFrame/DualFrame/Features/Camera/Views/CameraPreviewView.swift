@@ -957,6 +957,25 @@ struct CameraPreviewView: View {
                 photoControlsRow
             }
 
+            // Task 096 P0-3/P0-4: proof that queued shots and pending saves are accounted
+            // for. Without this, "저장은 백그라운드에서 진행됩니다" is something the user has
+            // to take on faith right at the moment they are firing shots they care about.
+            if photoCaptureViewModel.queuedCaptures > 0 || photoCaptureViewModel.pendingSaveCount > 0 {
+                HStack(spacing: 10) {
+                    if photoCaptureViewModel.queuedCaptures > 0 {
+                        Label("\(photoCaptureViewModel.queuedCaptures)", systemImage: "camera.badge.clock")
+                    }
+                    if photoCaptureViewModel.pendingSaveCount > 0 {
+                        Label("\(photoCaptureViewModel.pendingSaveCount)", systemImage: "square.and.arrow.down")
+                    }
+                }
+                .font(.caption2.bold())
+                .foregroundStyle(.yellow)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 4)
+                .background(.black.opacity(0.45), in: Capsule())
+            }
+
             // Task 091 P0-2: which mode the shutter is in, immediately above it.
             captureModeIndicator
 
@@ -1069,12 +1088,13 @@ struct CameraPreviewView: View {
             .animation(.spring(response: 0.18, dampingFraction: 0.6), value: photoCaptureViewModel.isCapturing)
         }
         .buttonStyle(.plain)
-        // Task 092 P1-3: belt and braces with the `isCapturing` guard inside the view
-        // model. A disabled button cannot deliver the tap at all, so a burst of taps
-        // cannot even reach the guard — and the countdown stays tappable so the timer can
-        // still be cancelled.
-        .disabled(captureMode == .photo && photoCaptureViewModel.isCapturing
-                  && photoCaptureViewModel.countdown == nil)
+        // Task 096 P0-1: **not disabled during a capture any more.**
+        //
+        // Task 092 disabled it so a burst of taps could not reach the guard. That worked,
+        // and it is why the shutter felt dead: a disabled button never delivers the tap at
+        // all, so every press during the exposure was thrown away with no haptic and no
+        // record of it. The view model now queues them instead, which is what the user was
+        // asking the button to do in the first place.
         .accessibilityLabel(shutterAccessibilityLabel)
     }
 

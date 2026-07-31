@@ -28,6 +28,16 @@ final class PhotoCaptureViewModel: ObservableObject {
     @Published var errorMessage: String?
     /// The most recent still, so the gallery can refresh without polling.
     @Published private(set) var lastCapturedRecord: PhotoRecord?
+    /// Task 096 P0-1: shutter taps taken while an exposure is already running.
+    ///
+    /// Taps used to be discarded — the button was `.disabled` during the exposure, so the
+    /// tap was never even delivered, and the view-model guard dropped whatever got
+    /// through. That is what "셔터가 반응하지 않는다" was: not a slow shutter, a *deaf* one.
+    @Published private(set) var queuedCaptures = 0
+    /// Task 096 P0-3: photos taken but not yet written. Shown in the UI, because a user
+    /// who has just fired ten shots needs to see that ten are accounted for — "trust me,
+    /// it is saving in the background" is not something an app should ask for.
+    @Published private(set) var pendingSaveCount = 0
 
     private let cameraService: CameraService
     private let photoLibraryService: InternalPhotoLibraryService
@@ -38,6 +48,9 @@ final class PhotoCaptureViewModel: ObservableObject {
     /// Task 095: ends the shutter flash on its own short schedule, independent of how long
     /// the capture and save take.
     private var flashClearTask: Task<Void, Never>?
+    /// Deep enough that a burst of taps all land, shallow enough that a thumb resting on
+    /// the shutter cannot queue an unbounded number of exposures.
+    private static let maxQueuedCaptures = 8
 
     init(
         cameraService: CameraService,
@@ -61,7 +74,16 @@ final class PhotoCaptureViewModel: ObservableObject {
     /// `capturePhoto`. On `@MainActor` this method runs to completion before another tap
     /// can be delivered, so the guard is now airtight rather than probabilistic.
     func capture() {
-        guard !isCapturing, countdownTask == nil else { return }
+        // Task 096 P0-1/P0-4: a tap during an exposure is remembered, not dropped, and it
+        // gets its own haptic immediately so the button never feels dead. Bounded, because
+        // an unbounded queue turns a leaning thumb into a hundred photos.
+        guard countdownTask == nil else { return }
+        if isCapturing {
+            guard queuedCaptures < Self.maxQueuedCaptures else { return }
+            queuedCaptures += 1
+            UIImpactFeedbackGenerator(style: .light).impactOccurred()
+            return
+        }
         isCapturing = true
 
         guard timerDuration != .off else {
@@ -127,9 +149,17 @@ final class PhotoCaptureViewModel: ObservableObject {
         // ~80ms on the normal path, and this still force-clears it on every exit —
         // return, throw, cancellation — so it cannot outlive the operation either.
         defer {
-            isCapturing = false
             flashClearTask?.cancel()
             isFlashingShutter = false
+            // Task 096 P0-1: hand straight on to the next queued shot rather than idling.
+            // Still inside `defer`, so a thrown capture drains the queue too — otherwise
+            // one failure would strand every tap behind it.
+            if queuedCaptures > 0 {
+                queuedCaptures -= 1
+                Task { await performCapture() }
+            } else {
+                isCapturing = false
+            }
         }
         errorMessage = nil
 
@@ -239,7 +269,9 @@ final class PhotoCaptureViewModel: ObservableObject {
         quality: PhotoQuality
     ) {
         let photoLibraryService = self.photoLibraryService
+        pendingSaveCount += 1
         Task { [weak self] in
+            defer { self?.pendingSaveCount -= 1 }
             do {
                 let record = try await photoLibraryService.save(
                     data: captured.data,
