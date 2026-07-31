@@ -23,12 +23,28 @@ import SwiftUI
 /// than silently disagreeing.
 final class ShortPreviewLayerView: UIView {
     private let previewLayer = AVCaptureVideoPreviewLayer()
+    /// Task 078: the session this layer is bound to, kept so the notification observer
+    /// can retry against it without the caller.
+    private var boundSession: AVCaptureSession?
+    private var shouldConnect = true
+    private var sessionObserver: NSObjectProtocol?
+
+    deinit {
+        if let sessionObserver {
+            NotificationCenter.default.removeObserver(sessionObserver)
+        }
+    }
+
     #if DEBUG
     /// Task 077: how many times `attach` has been asked to do work. `updateUIView` calls
     /// it on every SwiftUI update, so this counts only the attempts made *before* a
     /// connection existed — the ones that matter for "did it ever connect, and on which
     /// pass". Logging every call would flood the console with no-ops.
     private var attachAttempts = 0
+    private var currentTrigger = "view"
+    private var currentInputCount = 0
+    private var currentVideoPortCount = 0
+    private var currentSessionRunning = false
     #endif
 
     override init(frame: CGRect) {
@@ -73,11 +89,31 @@ final class ShortPreviewLayerView: UIView {
     ///
     /// Returns whether the layer now has a connection, so the caller knows to stop.
     @discardableResult
-    func attach(session: AVCaptureSession, connected: Bool) -> Bool {
+    func attach(session: AVCaptureSession, connected: Bool, trigger: String = "view") -> Bool {
+        boundSession = session
+        shouldConnect = connected
+        // Task 078: **the real retry mechanism.** `updateUIView` only fires when SwiftUI
+        // decides to update, and after `configure()` completes nothing necessarily
+        // changes any state this view depends on — so the retry could never arrive and
+        // the pane stayed black forever. `didStartRunningNotification` fires once the
+        // session is actually running, which is strictly after its inputs were added, so
+        // it is the event this needs rather than a UI-lifecycle side effect.
+        observeSessionStartIfNeeded(session)
+
         guard previewLayer.connection == nil else { return true }
 
         #if DEBUG
         attachAttempts += 1
+        let inputCount = session.inputs.count
+        let videoPortCount = session.inputs
+            .compactMap { $0 as? AVCaptureDeviceInput }
+            .filter { $0.device.hasMediaType(.video) }
+            .flatMap { $0.ports(for: .video, sourceDeviceType: nil, sourceDevicePosition: .unspecified) }
+            .count
+        currentTrigger = trigger
+        currentInputCount = inputCount
+        currentVideoPortCount = videoPortCount
+        currentSessionRunning = session.isRunning
         #endif
 
         if previewLayer.session !== session {
@@ -131,6 +167,21 @@ final class ShortPreviewLayerView: UIView {
         return true
     }
 
+    /// Registered once per session. Retries on `didStartRunningNotification`, which is
+    /// the only signal that reliably follows input configuration — and unlike a timer it
+    /// costs nothing while waiting and stops mattering the moment the connection exists.
+    private func observeSessionStartIfNeeded(_ session: AVCaptureSession) {
+        guard sessionObserver == nil else { return }
+        sessionObserver = NotificationCenter.default.addObserver(
+            forName: AVCaptureSession.didStartRunningNotification,
+            object: session,
+            queue: .main
+        ) { [weak self] _ in
+            guard let self, let boundSession = self.boundSession else { return }
+            self.attach(session: boundSession, connected: self.shouldConnect, trigger: "sessionDidStartRunning")
+        }
+    }
+
     #if DEBUG
     private func log(canAdd: Bool?, added: Bool, note: String?, connection: AVCaptureConnection? = nil) {
         let target = connection ?? previewLayer.connection
@@ -142,6 +193,10 @@ final class ShortPreviewLayerView: UIView {
         // for exactly this reason — `[Task044-Debug] STAGE 3 …`, `[Task054-Capture] …` —
         // and this one should not have been the exception.
         var line = "[Task077-Preview]"
+            + " trigger=\(currentTrigger)"
+            + " sessionRunning=\(currentSessionRunning)"
+            + " inputs=\(currentInputCount)"
+            + " videoPorts=\(currentVideoPortCount)"
             + " attachAttempt=\(attachAttempts)"
             + " canAddConnection=\(canAdd.map(String.init(describing:)) ?? "n/a")"
             + " connectionAdded=\(added)"
@@ -176,8 +231,10 @@ struct ShortPreviewRepresentable: UIViewRepresentable {
     /// The retry that makes the connection actually happen. SwiftUI calls this whenever
     /// the surrounding view updates — which includes the state changes that follow
     /// `CameraService.configure()` completing — and `attach` is a no-op once connected.
+    /// Kept as an extra chance, not as the mechanism. The session-start notification
+    /// registered inside `attach` is what actually guarantees the retry.
     func updateUIView(_ uiView: ShortPreviewLayerView, context: Context) {
-        uiView.attach(session: session, connected: connected)
+        uiView.attach(session: session, connected: connected, trigger: "updateUIView")
     }
 }
 
