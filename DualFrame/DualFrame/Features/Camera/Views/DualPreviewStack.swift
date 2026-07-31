@@ -21,11 +21,10 @@ import SwiftUI
 /// `ShortGenerationService` performs. So the top pane is the short-form file, not a
 /// drawing of where it would be.
 ///
-/// **Why vertical on top.** The short-form output is the one being framed: it is the
-/// tighter crop, so it is the one the user has to actively compose for, and on a phone
-/// held in one hand the upper half is where the eye rests while the thumb stays on the
-/// shutter. The long-form pane below is the safety net — it shows what is being kept
-/// outside the crop, which is exactly the question the old guide lines answered badly.
+/// **Long is the main pane.** It is what is actually being recorded, so it gets the
+/// space; the short pane above answers "쇼츠에서는 이렇게 저장됩니다" and needs only
+/// enough size to judge the crop. (Task 077 briefly had this the other way round — the
+/// vertical pane as the subject — which made the recording itself the smaller image.)
 struct DualPreviewStack: View {
     let session: AVCaptureSession
     /// When false only the long-form pane is shown — previewing a short-form file that
@@ -50,19 +49,19 @@ struct DualPreviewStack: View {
                 VStack(spacing: 18) {
                     pane(
                         label: "SHORT",
-                        detail: "9:16 · 저장될 쇼츠",
+                        detail: "9:16 · 쇼츠 저장 결과",
                         aspect: 9.0 / 16.0,
                         available: CGSize(width: geometry.size.width, height: usableHeight),
-                        heightFraction: 0.66,
-                        emphasized: true
+                        heightFraction: 0.32,
+                        emphasized: false
                     )
                     pane(
                         label: "LONG",
-                        detail: "16:9 · 참고",
+                        detail: "16:9 · 녹화 중인 화면",
                         aspect: 16.0 / 9.0,
                         available: CGSize(width: geometry.size.width, height: usableHeight),
-                        heightFraction: 0.30,
-                        emphasized: false
+                        heightFraction: 0.62,
+                        emphasized: true
                     )
                 }
                 .frame(maxWidth: .infinity, alignment: .top)
@@ -91,6 +90,12 @@ struct DualPreviewStack: View {
         let height = width / aspect
 
         return ZStack(alignment: .topLeading) {
+            // Both panes are real `AVCaptureVideoPreviewLayer`s on the same session —
+            // neither is a guide, a mask, or a still. `ShortPreviewRepresentable` is
+            // named for its first use but is aspect-agnostic: `.resizeAspectFill` inside
+            // whatever frame it is given, which is exactly what each pane needs. The
+            // 9:16 pane therefore shows the real centre crop and the 16:9 pane shows the
+            // full frame, both live and both moving together.
             ShortPreviewRepresentable(session: session)
                 .frame(width: width, height: height)
                 .clipShape(RoundedRectangle(cornerRadius: 12))
