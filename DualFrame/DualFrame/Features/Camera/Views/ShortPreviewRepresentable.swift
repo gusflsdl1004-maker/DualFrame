@@ -185,6 +185,9 @@ final class ShortPreviewLayerView: UIView {
     private func checkSettledState(session: AVCaptureSession, cameraService: CameraService) {
         #if DEBUG
         logDiagnostics(stage: "settled", result: nil)
+        // Printed at the settled point rather than at attach: by now `configure()` has
+        // bound the device, so the census reflects what the port pick actually saw.
+        logPortCensus(session: session)
         #endif
         guard previewLayer.connection == nil else { return }
         registeredService = nil
@@ -201,6 +204,44 @@ final class ShortPreviewLayerView: UIView {
     /// - `sameSession` — is it the session the long pane is showing? (item 2)
     /// - `view*`/`layer*`/`window`/`hidden`/`alpha` — is the layer on screen at a real
     ///   size and unobscured? (items 3, 5)
+    /// Task 080: **the one real difference from Apple's two-preview sample.**
+    ///
+    /// `CameraService` picks the port with
+    /// `ports(for: .video, sourceDeviceType: nil, sourceDevicePosition: .unspecified).first`.
+    /// On a *virtual* multi-lens device (`.builtInDualWideCamera`, `.builtInTripleCamera`
+    /// — which `bestAvailableDevice` binds whenever the requested quality/FPS allows it)
+    /// that input exposes **more than one** video port: the virtual device's own, plus one
+    /// per constituent lens. `nil` matches all of them and `.first` takes whichever comes
+    /// back first, which is exactly the kind of inferable-order identity CLAUDE.md rule 62
+    /// forbids. AVMultiCamPiP always passes an explicit `sourceDeviceType`.
+    ///
+    /// If the wrong port is picked, `canAddConnection` can refuse it — or accept it and
+    /// show nothing. So the census prints every candidate and marks the one `.first`
+    /// currently returns, which turns "we picked a port" into "we picked *this* port out
+    /// of these". Read-only: it never changes the pick.
+    @MainActor
+    private func logPortCensus(session: AVCaptureSession) {
+        for input in session.inputs.compactMap({ $0 as? AVCaptureDeviceInput })
+        where input.device.hasMediaType(.video) {
+            let device = input.device
+            let ports = input.ports(for: .video, sourceDeviceType: nil, sourceDevicePosition: .unspecified)
+            let described = ports.enumerated().map { index, port in
+                let type = port.sourceDeviceType?.rawValue
+                    .replacingOccurrences(of: "AVCaptureDeviceType", with: "") ?? "nil"
+                return "\(index == 0 ? "*" : "")\(type)@\(port.sourceDevicePosition.rawValue)"
+            }.joined(separator: ",")
+
+            let line = "[Task080-Ports]"
+                + " device=\(device.deviceType.rawValue.replacingOccurrences(of: "AVCaptureDeviceType", with: ""))"
+                + " isVirtual=\(device.constituentDevices.count > 1)"
+                + " constituents=\(device.constituentDevices.count)"
+                + " videoPortCount=\(ports.count)"
+                + " ports=[\(described)]"
+                + " (* = the one CameraService picks)"
+            Task.detached(priority: .utility) { print(line) }
+        }
+    }
+
     @MainActor
     private func logDiagnostics(stage: String, result: SecondaryPreviewAttachResult?) {
         let connection = previewLayer.connection
