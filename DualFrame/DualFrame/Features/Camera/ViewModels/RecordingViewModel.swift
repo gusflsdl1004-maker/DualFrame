@@ -262,19 +262,31 @@ final class RecordingViewModel: ObservableObject {
         // Task 070 requirement 1: the recording flow ends here. Diagnostics and the group
         // are written immediately rather than after generation, so an app killed during
         // generation still leaves a complete, grouped long-form recording behind.
-        await recordDiagnostics(startTime: startTime, endTime: endTime)
-        await recordGroup(startTime: startTime, endTime: endTime)
+        let diagnosticsID = await recordDiagnostics(startTime: startTime, endTime: endTime)
+        let groupID = await recordGroup(startTime: startTime, endTime: endTime)
         await endCurrentSession()
 
         // Requirement 2: handed off and deliberately **not** awaited — the user is free
         // the moment the long-form file is safe.
-        handOffShortGeneration(startTime: startTime, endTime: endTime, session: session)
+        handOffShortGeneration(
+            startTime: startTime,
+            endTime: endTime,
+            session: session,
+            groupID: groupID,
+            diagnosticsID: diagnosticsID
+        )
     }
 
     /// Requirement 2/3: passes the finished long-form file to `ShortGenerationCoordinator`
     /// and returns. That coordinator is owned by the app root, so the job survives the
     /// user leaving the camera screen.
-    private func handOffShortGeneration(startTime: Date, endTime: Date, session: RecordingSessionMetadata?) {
+    private func handOffShortGeneration(
+        startTime: Date,
+        endTime: Date,
+        session: RecordingSessionMetadata?,
+        groupID: String?,
+        diagnosticsID: String?
+    ) {
         guard let session,
               session.recordingMode == .dual,
               state == .finished,
@@ -288,7 +300,9 @@ final class RecordingViewModel: ObservableObject {
                 sessionMetadata: session,
                 fps: await service.activeFPS,
                 recordingStartTime: startTime,
-                recordingDuration: endTime.timeIntervalSince(startTime)
+                recordingDuration: endTime.timeIntervalSince(startTime),
+                groupID: groupID,
+                diagnosticsID: diagnosticsID
             ))
         }
     }
@@ -339,7 +353,8 @@ final class RecordingViewModel: ObservableObject {
 
     /// Builds and saves a `RecordingDiagnostics` record for the session that just
     /// ended (success or failure) — one file per session (Task 018 requirement 5).
-    private func recordDiagnostics(startTime: Date, endTime: Date) async {
+    @discardableResult
+    private func recordDiagnostics(startTime: Date, endTime: Date) async -> String? {
         let snapshot = await service.performanceMonitor.snapshot
         let peakMemory = await service.performanceMonitor.peakMemoryUsageBytes
         let availableStorage = await service.performanceMonitor.currentAvailableStorageBytes() ?? 0
@@ -405,6 +420,8 @@ final class RecordingViewModel: ObservableObject {
             shortGeneration: nil
         )
         await diagnosticsService.save(diagnostics)
+        // Same reasoning as `recordGroup` — matched by id, never by timestamp.
+        return diagnostics.id
     }
 
     /// Task 025 requirement 2: the single place that removes the current session from
@@ -429,8 +446,9 @@ final class RecordingViewModel: ObservableObject {
     /// `startRecording()` already told `InternalVideoLibraryService` about this exact
     /// session via `beginSession(_:)`, so every `VideoRecord` it just imported already
     /// carries this session's `sessionID`/`outputProfile` — no searching required.
-    private func recordGroup(startTime: Date, endTime: Date) async {
-        guard let session = currentSessionMetadata else { return }
+    @discardableResult
+    private func recordGroup(startTime: Date, endTime: Date) async -> String? {
+        guard let session = currentSessionMetadata else { return nil }
         let statuses = await service.writerStatuses
 
         let sessionRecords = ((try? await libraryService.loadAllRecords()) ?? [])
@@ -473,7 +491,7 @@ final class RecordingViewModel: ObservableObject {
             shortMember = nil
         }
 
-        guard longMember != nil || shortMember != nil else { return }
+        guard longMember != nil || shortMember != nil else { return nil }
 
         let group = RecordingGroup(
             id: UUID().uuidString,
@@ -485,6 +503,12 @@ final class RecordingViewModel: ObservableObject {
             outputMode: session.outputMode
         )
         await groupService.save(group)
+        // Task 072 P0-1: returned so the generation job can reference this group by its
+        // **id**. Task 070 matched it by `createdAt` instead, which cannot work — both
+        // stores encode dates as `.iso8601`, which truncates to whole seconds, so an
+        // in-memory `Date` never equalled the reloaded one and the short-form output was
+        // never attached to its group (CLAUDE.md rule 62: time is not an identifier).
+        return group.id
     }
 
     private static func format(seconds: TimeInterval) -> String {

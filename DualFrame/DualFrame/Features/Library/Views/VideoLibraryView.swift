@@ -39,12 +39,16 @@ struct VideoLibraryView: View {
             List {
                 ForEach(viewModel.groups) { group in
                     NavigationLink {
-                        RecordingGroupDetailView(group: group, viewModel: viewModel)
+                        RecordingGroupDetailView(
+                            group: group,
+                            viewModel: viewModel,
+                            shortGenerationCoordinator: shortGenerationCoordinator
+                        )
                     } label: {
                         RecordingGroupRow(
                             group: group,
                             isGeneratingShort: shortGenerationCoordinator?
-                                .isGenerating(forRecordingStartedAt: group.createdAt) ?? false
+                                .isGenerating(forGroupID: group.id) ?? false
                         )
                     }
                 }
@@ -188,7 +192,14 @@ private struct RecordingGroupRow: View {
 private struct RecordingGroupDetailView: View {
     let group: ResolvedRecordingGroup
     @ObservedObject var viewModel: VideoLibraryViewModel
+    /// Task 072 P1-7: so the export section can say "생성 중" rather than only greying
+    /// out — a disabled button with no explanation reads as broken.
+    var shortGenerationCoordinator: ShortGenerationCoordinator?
     @State private var previewingRecord: VideoRecord?
+
+    private var isGeneratingShort: Bool {
+        shortGenerationCoordinator?.isGenerating(forGroupID: group.id) ?? false
+    }
 
     var body: some View {
         List {
@@ -244,7 +255,12 @@ private struct RecordingGroupDetailView: View {
         } header: {
             Text("카메라롤로 저장")
         } footer: {
-            if viewModel.isPresentingAd {
+            if isGeneratingShort {
+                // P1-7: named explicitly, and it clears itself — the group gains its
+                // short-form member when generation lands, so the disabled targets
+                // become available without the user doing anything.
+                Text("숏폼을 생성하는 중입니다. 완료되면 숏폼 저장이 자동으로 활성화됩니다.")
+            } else if viewModel.isPresentingAd {
                 Text("광고 재생 중…")
             } else if viewModel.currentPlan == .free {
                 Text("무료 플랜은 광고를 끝까지 시청해야 저장됩니다. 광고가 실패하거나 도중에 닫으면 저장되지 않으며, 앱 내 영상은 그대로 유지됩니다.")

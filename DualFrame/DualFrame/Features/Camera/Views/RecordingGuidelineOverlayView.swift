@@ -5,10 +5,14 @@
 
 import SwiftUI
 
-/// Task 040: a purely visual framing guide over the live camera preview, showing
-/// where the Long-form (16:9) and Short-form (9:16) outputs would land relative to
-/// what's currently on screen — camera output and recording logic are completely
-/// untouched, this only draws on top of the already-existing preview.
+/// Task 040, reworked in Task 072 (P0-2): a purely visual framing guide over the live
+/// camera preview — camera output and recording logic are completely untouched, this
+/// only draws on top of the already-existing preview.
+///
+/// It no longer draws guide lines. The area outside the 9:16 crop is dimmed, so the
+/// bright region *is* the short-form result and the full screen is the long-form one.
+/// The user can predict both outputs before pressing record, which two outlines never
+/// actually conveyed.
 ///
 /// Both guides reuse `CropCalculator` — the same type `RecordingService`'s actual
 /// short-form crop path uses — computing a center-crop rect of the *current preview
@@ -48,19 +52,46 @@ struct RecordingGuidelineOverlayView: View {
             )
 
             ZStack {
-                // Requirement 3: Long guide — thin, unobtrusive white line.
+                // Task 072 P0-2: **a frame, not a pair of lines.**
+                //
+                // Two thin outlines told the user where the boundaries were but not
+                // what the result would look like. Everything outside the 9:16 rect is
+                // now dimmed instead, so what stays bright *is* the short-form output —
+                // the user reads the two results at once: the whole screen is the
+                // long-form file, the bright rectangle is the short-form one.
+                //
+                // Drawn with `.evenOdd` so the dim is a single shape with the crop
+                // punched out of it, rather than four rectangles that would seam at the
+                // corners.
+                Path { path in
+                    path.addRect(CGRect(origin: .zero, size: size))
+                    path.addRect(shortRect)
+                }
+                .fill(Color.black.opacity(0.45), style: FillStyle(eoFill: true))
+
+                // The short-form boundary itself, bright enough to read against any
+                // scene now that it separates lit from dimmed.
                 Rectangle()
-                    .stroke(Color.white.opacity(0.7), lineWidth: 1.5)
+                    .stroke(Color.white.opacity(0.9), lineWidth: 2)
+                    .frame(width: shortRect.width, height: shortRect.height)
+                    .position(x: shortRect.midX, y: shortRect.midY)
+
+                // The long-form boundary stays as a hairline. It usually coincides with
+                // the screen edge, so it needs no emphasis — but on a container whose
+                // aspect differs from 16:9 it is the only thing showing what the
+                // long-form file will actually contain.
+                Rectangle()
+                    .stroke(Color.white.opacity(0.5), lineWidth: 1)
                     .frame(width: longRect.width, height: longRect.height)
                     .position(x: longRect.midX, y: longRect.midY)
 
-                // Requirement 3/4: Short guide — the actual safe area for short-form,
-                // in a more emphasized color so it reads clearly as the stricter
-                // boundary of the two.
-                Rectangle()
-                    .stroke(Color.yellow.opacity(0.85), lineWidth: 2)
-                    .frame(width: shortRect.width, height: shortRect.height)
-                    .position(x: shortRect.midX, y: shortRect.midY)
+                Text("이 영역이 쇼츠로 저장됩니다")
+                    .font(.caption2)
+                    .foregroundStyle(.white.opacity(0.9))
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(.black.opacity(0.35), in: Capsule())
+                    .position(x: shortRect.midX, y: shortRect.minY + 18)
             }
         }
         // Requirement 1: guide only — never intercepts touches meant for the preview

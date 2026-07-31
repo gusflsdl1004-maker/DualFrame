@@ -771,30 +771,54 @@ actor CameraService {
     /// A 2× button is added on top when the device can reach it but has no physical
     /// lens there — the same digital-crop convenience button Apple's Camera app shows
     /// on Pro models.
+    /// Task 072 P0-3: the zoom buttons a given device can actually deliver.
+    ///
+    /// **The bug this replaces:** the old version bailed out to a single "1" button
+    /// whenever `constituentDevices` was empty. That is exactly the case on a standalone
+    /// `.builtInWideAngleCamera` — which is the device Task 047 binds for 4K60, because
+    /// the virtual multi-lens devices cap 4K at 30fps. So choosing 4K60 silently reduced
+    /// the zoom UI to one inert button.
+    ///
+    /// A single-lens device still zooms; it just does it digitally, and Apple's own
+    /// Camera offers those steps too. Physical lens switch-over points are added on top
+    /// when the device is virtual, so a triple-camera gets its real optical stops rather
+    /// than digital approximations of them.
+    ///
+    /// Everything is filtered against `min`/`maxAvailableVideoZoomFactor`, so a factor
+    /// the hardware cannot reach is never offered (requirement: 지원하지 않는 배율은 숨김).
     private nonisolated static func zoomOptions(for device: AVCaptureDevice) -> [CameraZoomOption] {
         let base = baseZoomFactor(for: device)
-
-        guard !device.constituentDevices.isEmpty else {
-            return [CameraZoomOption(id: "wide", factor: base, label: "1")]
-        }
+        let minFactor = device.minAvailableVideoZoomFactor
+        let maxFactor = device.maxAvailableVideoZoomFactor
 
         var factors: [CGFloat] = []
-        if device.constituentDevices.contains(where: { $0.deviceType == .builtInUltraWideCamera }) {
-            factors.append(device.minAvailableVideoZoomFactor)
+
+        // Ultra-wide, only when the device can genuinely go below 1x. On a standalone
+        // wide camera `minAvailableVideoZoomFactor` is 1.0, so this contributes nothing
+        // rather than offering a 0.5x that would just crop.
+        if minFactor < base {
+            factors.append(minFactor)
         }
+
         factors.append(base)
+
+        // Real optical stops on a virtual device.
         factors.append(contentsOf: device.virtualDeviceSwitchOverVideoZoomFactors
             .map { CGFloat(truncating: $0) }
             .filter { $0 > base })
 
-        // Digital 2× convenience button, only when no physical lens already sits there.
-        let twoTimes = base * 2
-        if twoTimes <= device.maxAvailableVideoZoomFactor,
-           !factors.contains(where: { abs($0 - twoTimes) < 0.05 }) {
-            factors.append(twoTimes)
+        // Digital steps, matching the ladder Apple Camera shows. Each is only added when
+        // the hardware reaches it *and* no physical lens already sits within 5% of it —
+        // otherwise a triple-camera would show both its optical 2x and a digital 2x.
+        for multiplier in [CGFloat(2), 3, 5, 10] {
+            let candidate = base * multiplier
+            guard candidate <= maxFactor else { continue }
+            guard !factors.contains(where: { abs($0 - candidate) < candidate * 0.05 }) else { continue }
+            factors.append(candidate)
         }
 
         return factors
+            .filter { $0 >= minFactor && $0 <= maxFactor }
             .sorted()
             .map { factor in
                 CameraZoomOption(

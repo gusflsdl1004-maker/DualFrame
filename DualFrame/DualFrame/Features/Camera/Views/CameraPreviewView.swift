@@ -32,6 +32,8 @@ struct CameraPreviewView: View {
     @State private var libraryService: InternalVideoLibraryService
     @State private var dualRecordingCoordinator: DualRecordingCoordinator
     @State private var isLibraryPresented = false
+    /// Task 072 P0-5: guards the generation-cancel button behind a confirmation.
+    @State private var isConfirmingGenerationCancel = false
     @State private var isSettingsPresented = false
     @State private var isSettingsSummaryPresented = false
     @State private var activeQuality: RecordingQuality?
@@ -237,10 +239,19 @@ struct CameraPreviewView: View {
         .overlay {
             ShortGenerationOverlay(
                 state: shortGenerationCoordinator.state,
-                onCancel: { shortGenerationCoordinator.cancel() },
+                // Task 072 P0-5: confirm first. Cancelling discards work the user has
+                // already waited minutes for, and the banner's 취소 sits next to a
+                // progress bar where a mis-tap is easy.
+                onCancel: { isConfirmingGenerationCancel = true },
                 onRetry: { shortGenerationCoordinator.retry() },
                 onDismiss: { shortGenerationCoordinator.dismissResult() }
             )
+        }
+        .alert("쇼츠 생성을 취소하시겠습니까?", isPresented: $isConfirmingGenerationCancel) {
+            Button("계속 생성", role: .cancel) {}
+            Button("취소", role: .destructive) { shortGenerationCoordinator.cancel() }
+        } message: {
+            Text("현재 생성 중인 숏폼은 삭제됩니다. 원본 영상은 그대로 유지됩니다.")
         }
         .sheet(isPresented: $isLibraryPresented) {
             VideoLibraryView(

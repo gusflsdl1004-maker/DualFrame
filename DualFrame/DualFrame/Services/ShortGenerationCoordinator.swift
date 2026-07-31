@@ -37,6 +37,9 @@ final class ShortGenerationCoordinator: ObservableObject {
     /// start time — so this is what lets the library badge exactly one row instead of
     /// all of them.
     @Published private(set) var activeRecordingStartTime: Date?
+    /// The group being filled in, by id. The library badges on this rather than on a
+    /// timestamp, for the same reason the attach does.
+    @Published private(set) var activeGroupID: String?
 
     private let generationService = ShortGenerationService()
     private let libraryService: InternalVideoLibraryService
@@ -46,6 +49,9 @@ final class ShortGenerationCoordinator: ObservableObject {
     private let encoderSettingsService = VideoEncoderSettingsService()
 
     private var currentTask: Task<Void, Never>?
+    /// Task 072 P0-4: when the current job began, so the remaining time can be
+    /// extrapolated from progress actually achieved rather than guessed from file size.
+    private var jobStartedAt: Date?
     /// Everything needed to re-run a failed or cancelled job without the camera screen.
     private var lastRequest: Request?
 
@@ -63,6 +69,14 @@ final class ShortGenerationCoordinator: ObservableObject {
         let fps: RecordingFPS
         let recordingStartTime: Date
         let recordingDuration: TimeInterval
+        /// Task 072 P0-1: the group and diagnostics records this job belongs to, by
+        /// **id**. Task 070 looked them up by comparing `Date`s, which silently never
+        /// matched — both stores encode with `.iso8601`, truncating to whole seconds, so
+        /// a reloaded date never equalled the in-memory one. The result was a generated
+        /// short-form file that existed on disk and in the library but was attached to
+        /// no group, so it never appeared as an export target.
+        let groupID: String?
+        let diagnosticsID: String?
     }
 
     init(
@@ -81,10 +95,11 @@ final class ShortGenerationCoordinator: ObservableObject {
         return state.isGenerating
     }
 
-    /// Requirement 5: the library keys rows by `RecordingGroup.createdAt`, so the badge
-    /// is matched on that rather than on a session id the group does not carry.
-    func isGenerating(forRecordingStartedAt createdAt: Date) -> Bool {
-        guard let activeRecordingStartTime, activeRecordingStartTime == createdAt else { return false }
+    /// Task 072 P0-1: matched by group **id**. The previous version compared
+    /// `RecordingGroup.createdAt` against an in-memory `Date`, which never matched once
+    /// the group had been through JSON — so the "생성 중" badge never appeared at all.
+    func isGenerating(forGroupID groupID: String) -> Bool {
+        guard let activeGroupID, activeGroupID == groupID else { return false }
         return state.isGenerating
     }
 
@@ -95,7 +110,9 @@ final class ShortGenerationCoordinator: ObservableObject {
         lastRequest = request
         activeSessionID = request.sessionID
         activeRecordingStartTime = request.recordingStartTime
-        state = .generating(progress: 0)
+        activeGroupID = request.groupID
+        state = .generating(progress: 0, stage: .analyzing)
+        jobStartedAt = Date()
         beginBackgroundAssertion()
 
         currentTask = Task { [weak self] in
@@ -123,6 +140,7 @@ final class ShortGenerationCoordinator: ObservableObject {
         state = .idle
         activeSessionID = nil
         activeRecordingStartTime = nil
+        activeGroupID = nil
     }
 
     // MARK: - Private
@@ -158,7 +176,11 @@ final class ShortGenerationCoordinator: ObservableObject {
                 onProgress: { [weak self] progress in
                     Task { @MainActor in
                         guard let self, self.state.isGenerating else { return }
-                        self.state = .generating(progress: progress)
+                        self.state = .generating(
+                            progress: progress,
+                            stage: .converting,
+                            remainingSeconds: self.remainingEstimate(progress: progress)
+                        )
                     }
                 }
             )
@@ -177,7 +199,23 @@ final class ShortGenerationCoordinator: ObservableObject {
         }
     }
 
+    /// Extrapolates from elapsed time and progress so far.
+    ///
+    /// Suppressed below 5% because an estimate from the opening frames swings wildly —
+    /// reader/writer setup is front-loaded, so the early rate is not representative, and
+    /// a countdown that jumps is worse than no countdown.
+    private func remainingEstimate(progress: Double) -> Double? {
+        guard let jobStartedAt, progress > 0.05 else { return nil }
+        let elapsed = Date().timeIntervalSince(jobStartedAt)
+        guard elapsed > 0 else { return nil }
+        return elapsed / progress - elapsed
+    }
+
     private func complete(request: Request, outputURL: URL, metrics: ShortGenerationMetrics) async {
+        // P0-9: validation + library import is a distinct, visible phase — on a 3GB
+        // source it is not instantaneous, and leaving the banner at "생성 중 100%"
+        // through it looks like a hang.
+        state = .generating(progress: 1, stage: .saving)
         let validation = await RecordingValidator().validate(fileURL: outputURL, expectsAudioTrack: false)
         guard validation.isValid else {
             try? FileManager.default.removeItem(at: outputURL)
@@ -209,8 +247,9 @@ final class ShortGenerationCoordinator: ObservableObject {
     /// with no group at all. It is now written immediately at stop with the long-form
     /// member, and this fills in the short-form member afterwards.
     private func attachShortToGroup(request: Request, shortRecordID: String) async {
+        guard let groupID = request.groupID else { return }
         let groups = await groupService.loadAll()
-        guard let existing = groups.first(where: { $0.createdAt == request.recordingStartTime }) else { return }
+        guard let existing = groups.first(where: { $0.id == groupID }) else { return }
         let updated = RecordingGroup(
             id: existing.id,
             createdAt: existing.createdAt,
@@ -226,8 +265,9 @@ final class ShortGenerationCoordinator: ObservableObject {
     /// Generation now outlives `RecordingViewModel`'s diagnostics write, so its metrics
     /// are saved here as their own record rather than being lost.
     private func saveDiagnostics(request: Request, metrics: ShortGenerationMetrics) async {
+        guard let diagnosticsID = request.diagnosticsID else { return }
         let existing = await diagnosticsService.loadAll()
-        guard let base = existing.first(where: { $0.recordingStartTime == request.recordingStartTime }) else { return }
+        guard let base = existing.first(where: { $0.id == diagnosticsID }) else { return }
         let updated = RecordingDiagnostics(
             id: base.id,
             recordingStartTime: base.recordingStartTime,

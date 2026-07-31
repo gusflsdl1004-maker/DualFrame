@@ -12,12 +12,33 @@ import Foundation
 /// reaches 59.47fps at 4K60, Long + Short only 51.64fps, and replacing the crop
 /// implementation entirely (CoreImage → VideoToolbox) moved it by 0.15fps. The cost was
 /// never the crop; it was running a second writer during capture.
+/// Task 072 P0-9: what the job is doing right now, so the banner can say something
+/// more useful than a percentage. The user should be able to tell whether the app is
+/// reading, converting, or filing the result.
+nonisolated enum ShortGenerationStage: String, Codable, Equatable, Sendable {
+    case analyzing
+    case converting
+    case saving
+
+    var title: String {
+        switch self {
+        case .analyzing: "영상 분석 중…"
+        case .converting: "세로 영상 생성 중…"
+        case .saving: "라이브러리에 저장 중…"
+        }
+    }
+}
+
 nonisolated enum ShortGenerationState: Equatable {
     /// Nothing to do — either no short-form was requested, or none has started yet.
     case idle
     /// Running. `progress` is 0...1, derived from presentation time over the source
     /// duration, so it is monotonic and does not depend on knowing the frame count.
-    case generating(progress: Double)
+    ///
+    /// `remainingSeconds` is `nil` until enough of the pass has run to extrapolate
+    /// honestly — an estimate from the first few frames is noise, and showing a
+    /// countdown that jumps around is worse than showing none.
+    case generating(progress: Double, stage: ShortGenerationStage = .converting, remainingSeconds: Double? = nil)
     case finished
     case cancelled
     case failed(reason: String)
@@ -28,8 +49,23 @@ nonisolated enum ShortGenerationState: Equatable {
     }
 
     var progress: Double {
-        if case let .generating(progress) = self { return progress }
+        if case let .generating(progress, _, _) = self { return progress }
         return self == .finished ? 1 : 0
+    }
+
+    var stageTitle: String? {
+        switch self {
+        case .generating(_, let stage, _): stage.title
+        case .finished: "완료"
+        default: nil
+        }
+    }
+
+    /// Formatted as "남은 시간 약 18초", or `nil` while the estimate is still unreliable.
+    var remainingText: String? {
+        guard case let .generating(_, _, remaining) = self, let remaining, remaining >= 1 else { return nil }
+        if remaining < 60 { return "남은 시간 약 \(Int(remaining.rounded()))초" }
+        return "남은 시간 약 \(Int((remaining / 60).rounded()))분"
     }
 }
 

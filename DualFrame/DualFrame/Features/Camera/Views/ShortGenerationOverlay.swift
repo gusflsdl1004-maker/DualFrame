@@ -30,13 +30,22 @@ struct ShortGenerationOverlay: View {
             switch state {
             case .idle:
                 EmptyView()
-            case .generating(let progress):
+            case .generating(let progress, _, _):
                 banner {
                     HStack(spacing: 10) {
                         ProgressView(value: progress)
-                            .frame(width: 90)
-                        Text("쇼츠 생성 중 \(Int(progress * 100))%")
-                            .font(.caption.monospacedDigit())
+                            .frame(width: 70)
+                        VStack(alignment: .leading, spacing: 1) {
+                            // P0-9: the stage, not just a number — "무엇을 하는 중인지"
+                            // is what the percentage alone never says.
+                            Text("\(state.stageTitle ?? "") \(Int(progress * 100))%")
+                                .font(.caption.monospacedDigit())
+                            if let remaining = state.remainingText {
+                                Text(remaining)
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
                         Spacer(minLength: 4)
                         Button("취소", action: onCancel)
                             .font(.caption)
