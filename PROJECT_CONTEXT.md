@@ -2,7 +2,7 @@
 
 > 이 문서만 읽고 작업을 이어갈 수 있도록 작성되었습니다.
 > 개발 규칙·보고 양식은 `CLAUDE.md`를 따릅니다(여기서 중복하지 않음).
-> 최종 갱신: Task 068 (`c81efa1`)
+> 최종 갱신: Task 073 (`2e40c39`)
 
 ---
 
@@ -58,7 +58,12 @@
 | 065 | 코덱 결정 기록 + 듀얼 readback이 서로 덮어쓰던 버그 수정 |
 | 066 | 발열 상태(시작/최고/종료) + 드롭 사유 집계 출력 |
 | 067 | 드롭 프레임 attachment 전체 덤프 + backlog/uptime/thermal/PTS |
-| 068 | **VTPixelTransferSession crop 추가** (CoreImage와 설정 전환) |
+| 068 | **VTPixelTransferSession crop 추가** (CoreImage와 설정 전환) — 효과 없음(51.64→51.49) |
+| 069 | **아키텍처 전환: 실시간 듀얼 → Long 저장 후 Short 후처리 생성** |
+| 070 | 생성을 촬영 플로우에서 분리(앱 루트 코디네이터) + beginBackgroundTask + 알림 + 라이브러리 배지 |
+| 071 | Export 시 무료/Pro 분기(`ExportManager`) + 광고 Mock 인터페이스 |
+| 072 | **Short가 그룹에 안 붙던 버그 수정** + 9:16 프레임 오버레이 + 줌 회귀 수정 |
+| 073 | 생성 단계별 시간 계측(Reader/Crop/Encoder/Writer) + 줌 5x 상한 |
 
 ---
 
@@ -148,7 +153,40 @@ Apple의 하드웨어 H.264 인코더는 iPhone에서 Level 5.1을 넘지 않는
 
 ---
 
-## 6. 현재 원인 — Short crop 경로
+## 6. 해결됨 — Short crop이 아니었다
+
+Task 068에서 CoreImage → VideoToolbox로 **완전히 교체해도 51.64 → 51.49fps**, 즉 변화가 없었다. crop 연산·색공간·대역폭 전부 배제됐다.
+
+**실제 원인은 "실시간으로 writer 2개를 돌리는 구조" 자체였다.** Task 069에서 후처리 방식으로 전환:
+
+```
+촬영 중: Long writer 1개만
+촬영 후: AVAssetReader → crop → AVAssetWriter (expectsMediaDataInRealTime = false)
+```
+
+---
+
+## 6b. 현재 열린 문제 — 후처리 생성 속도
+
+**3.15GB(4K60) 영상 → 약 5분.** 배속 약 0.6×로 광고로 가릴 수 없는 수준.
+
+Task 073에서 **단계별 계측을 넣었다**(진단 → 생성 단계별 시간):
+
+| 항목 | 의미 |
+|---|---|
+| Reader | 원본 4K60 HEVC 디코드 |
+| Crop | 크로퍼 |
+| Encoder | `adaptor.append` |
+| Writer | `finishWriting` |
+| **설명되지 않은 시간** | 총 시간 − 위 합계 |
+
+**판정 기준**: 한 단계가 70% 이상이면 그 단계가 병목. **설명되지 않은 시간이 크면 단계가 아니라 순차 실행 구조**(디코드→크롭→인코딩이 서로 대기)가 원인이고, 그때는 파이프라이닝이 답이다.
+
+측정 대기 중. **추측으로 최적화하지 말 것** — 이 프로젝트는 그 방식으로 11개 Task를 잃었다(아래 9절).
+
+---
+
+## 6c. (구) Short crop 경로 분석 — 기록용
 
 `VideoFrameCropper`가 **CoreImage**를 쓰는데, CoreImage는 항상 선형 RGB 작업공간에서 동작한다. 따라서 프레임마다:
 
