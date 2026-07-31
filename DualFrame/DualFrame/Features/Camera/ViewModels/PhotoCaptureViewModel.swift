@@ -35,6 +35,9 @@ final class PhotoCaptureViewModel: ObservableObject {
     private let storageSettingsService: StorageSettingsService
     private let photoQualityService: PhotoQualitySettingsService
     private var countdownTask: Task<Void, Never>?
+    /// Task 095: ends the shutter flash on its own short schedule, independent of how long
+    /// the capture and save take.
+    private var flashClearTask: Task<Void, Never>?
 
     init(
         cameraService: CameraService,
@@ -102,6 +105,7 @@ final class PhotoCaptureViewModel: ObservableObject {
     /// by one more route.
     func resetTransientState() {
         cancelTimer()
+        flashClearTask?.cancel()
         isCapturing = false
         isFlashingShutter = false
         errorMessage = nil
@@ -110,15 +114,21 @@ final class PhotoCaptureViewModel: ObservableObject {
     // MARK: - Private
 
     private func performCapture() async {
-        // Task 092 P0-2/P0-4: **the only place these are cleared, and it always runs.**
+        // Task 095 P0-1: **this `defer` is the safety net, not the timing.**
         //
-        // `defer` on the enclosing async function fires on every exit — normal return,
-        // thrown error, and cancellation. Previously the white flash cleared itself from a
-        // detached 90ms Task, which meant its lifetime was independent of the capture's:
-        // if the capture path died, the overlay's fate was unrelated to the failure. Now
-        // the overlay is owned by the operation that raised it and cannot outlive it.
+        // Task 092 tied the flash's lifetime to the whole capture operation so it could
+        // never be stranded. That fixed the strand and created this bug: "the whole
+        // operation" is the exposure, *plus* writing several megabytes to disk, *plus* a
+        // full `PHPhotoLibrary.performChanges` round trip when Photos saving is on. One to
+        // two seconds of white screen, exactly as reported. Correct lifetime, wrong
+        // duration.
+        //
+        // The flash now has both properties instead of one: `flashClearTask` ends it in
+        // ~80ms on the normal path, and this still force-clears it on every exit —
+        // return, throw, cancellation — so it cannot outlive the operation either.
         defer {
             isCapturing = false
+            flashClearTask?.cancel()
             isFlashingShutter = false
         }
         errorMessage = nil
@@ -126,40 +136,35 @@ final class PhotoCaptureViewModel: ObservableObject {
         // Fires before the await so it lands with the shutter action rather than after the
         // encode. This is the feedback that tells the user the moment was taken.
         UIImpactFeedbackGenerator(style: .medium).impactOccurred()
-        isFlashingShutter = true
 
         do {
-            // Task 092 P1-1: **screen flash on the front camera.**
+            // Task 092 P1-1 / 095 P0-3: **screen flash is a light source; the blink is not.**
             //
             // The front camera has no lamp — `supportedFlashModes` is `[.off]` there, so
             // `flashMode` is silently ignored no matter what the control says. Holding the
             // white overlay up *through* the exposure is what the system Camera does, and
-            // it is a real light source: the screen is what illuminates the subject.
+            // it really is what illuminates the subject, so that one has to last as long
+            // as the exposure.
             //
-            // Only when flash is actually asked for. On `.off`, or on a camera with a
-            // lamp, the overlay stays the brief shutter blink it was.
+            // Every other case gets a blink measured in milliseconds, because there the
+            // white screen is decoration and decoration must not cover the viewfinder.
             let hasLamp = await cameraService.hasHardwareFlash
             let usesScreenFlash = flashMode != .off && !hasLamp
-            if usesScreenFlash {
-                // Long enough for the exposure to be taken under it. Cleared by the
-                // `defer` above regardless of what happens next.
-                try? await Task.sleep(for: .milliseconds(220))
-            }
+            beginShutterFlash(holdingForExposure: usesScreenFlash)
 
             // Task 093 P1-6 / 094: read once here, so the photo is captured, saved and
             // labelled with the same value even if the setting changes mid-capture.
             let quality = photoQualityService.load().quality
             let captured = try await captureWithTimeout(quality: quality)
             let position = await cameraService.currentPosition
-            let record = try await photoLibraryService.save(
-                data: captured.data,
-                capturedAt: Date(),
-                cameraPosition: position,
-                fileExtension: captured.fileExtension,
-                quality: quality
-            )
-            lastCapturedRecord = record
-            await exportIfSettingsAskFor(record)
+
+            // Task 095 P0-2: **the shutter is free the moment the sensor is done.**
+            //
+            // Writing the file and copying it to Photos are not part of taking the photo —
+            // they are what happens to it afterwards, and making the user wait through them
+            // is what made rapid shooting impossible. Handed to a detached task; this
+            // function returns, `defer` releases the shutter, and the preview is live again.
+            persistInBackground(captured, position: position, quality: quality)
         } catch CameraServiceError.photoCaptureWhileRecording {
             errorMessage = "녹화 중에는 사진을 촬영할 수 없습니다."
         } catch CameraServiceError.photoOutputUnavailable {
@@ -201,6 +206,57 @@ final class PhotoCaptureViewModel: ObservableObject {
     /// The internal copy is already written by the time this runs, so a Photos failure
     /// costs the user a message rather than the photo — the same ordering the video
     /// export path uses.
+    /// Task 095 P0-1/P0-3: raises the flash and schedules its own end.
+    ///
+    /// 80ms is roughly five frames at 60Hz — long enough to register as a blink, short
+    /// enough that it is gone before the eye settles on it. `holdingForExposure` is the
+    /// front-camera case, where the white screen is doing real work and has to stay up
+    /// while the sensor is exposing.
+    private func beginShutterFlash(holdingForExposure: Bool) {
+        flashClearTask?.cancel()
+        isFlashingShutter = true
+        let duration: Duration = holdingForExposure ? .milliseconds(220) : .milliseconds(80)
+        flashClearTask = Task { [weak self] in
+            try? await Task.sleep(for: duration)
+            guard !Task.isCancelled else { return }
+            self?.isFlashingShutter = false
+        }
+    }
+
+    /// Task 095 P0-2: disk write and Photos export, off the shutter's critical path.
+    ///
+    /// Detached from the capture so the next photo can be taken immediately. Errors still
+    /// surface — published the same way, just later — because a save that failed silently
+    /// would be worse than a slow one.
+    ///
+    /// Nothing cancels this. Once the sensor has produced an image, that image gets
+    /// written; tying it to a task the UI can cancel would mean a photo the user watched
+    /// being taken could vanish, which is the one outcome this app does not allow
+    /// (CLAUDE.md rule 1).
+    private func persistInBackground(
+        _ captured: (data: Data, fileExtension: String),
+        position: CameraPosition,
+        quality: PhotoQuality
+    ) {
+        let photoLibraryService = self.photoLibraryService
+        Task { [weak self] in
+            do {
+                let record = try await photoLibraryService.save(
+                    data: captured.data,
+                    capturedAt: Date(),
+                    cameraPosition: position,
+                    fileExtension: captured.fileExtension,
+                    quality: quality
+                )
+                guard let self else { return }
+                self.lastCapturedRecord = record
+                await self.exportIfSettingsAskFor(record)
+            } catch {
+                self?.errorMessage = "사진을 저장하지 못했습니다."
+            }
+        }
+    }
+
     private func exportIfSettingsAskFor(_ record: PhotoRecord) async {
         let settings = storageSettingsService.load()
         guard settings.defaultDestination == .photos else {
