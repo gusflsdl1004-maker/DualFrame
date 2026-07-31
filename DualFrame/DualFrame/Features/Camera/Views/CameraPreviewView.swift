@@ -138,6 +138,7 @@ struct CameraPreviewView: View {
                                previewExperimentMode.usesStackedLayout {
                                 DualPreviewStack(
                                     session: cameraService.session,
+                                    cameraService: cameraService,
                                     showsShortPane: true,
                                     connectsShortPane: previewExperimentMode.connectsSecondPreview
                                 )
@@ -191,7 +192,10 @@ struct CameraPreviewView: View {
                             VStack {
                                 HStack {
                                     Spacer()
-                                    ShortPreviewPIP(session: cameraService.session)
+                                    ShortPreviewPIP(
+                                        session: cameraService.session,
+                                        cameraService: cameraService
+                                    )
                                         .padding(.trailing, 12)
                                 }
                                 Spacer()

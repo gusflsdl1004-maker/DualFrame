@@ -6,6 +6,41 @@
 import AVFoundation
 import SwiftUI
 
+/// Task 079: how a secondary preview attach ended, for logging only. Never thrown and
+/// never acted on — a preview that fails to connect must never affect recording.
+nonisolated enum SecondaryPreviewAttachResult: String, Sendable {
+    case alreadyConnected
+    case queuedUntilConfigured
+    case deferredWhileRecording
+    case noVideoPort
+    case rejected
+    case connected
+
+    /// Whether `CameraService` still holds the request and will act on it. `false` means
+    /// the view may ask again on a later update — including `.deferredWhileRecording`,
+    /// which is explicitly a "ask me again once the recording is over".
+    var isHeldByCameraService: Bool { self == .queuedUntilConfigured }
+}
+
+/// Task 079: carries an `AVCaptureVideoPreviewLayer` to `CameraService`.
+///
+/// `AVCaptureVideoPreviewLayer` is not `Sendable`, but the actor only uses it to build an
+/// `AVCaptureConnection` and hand that to the session — it never touches layer geometry or
+/// contents, which stay on the main thread. This is the same trade `CameraService` already
+/// makes for `session` itself (`nonisolated(unsafe)`), and the same one Apple's AVCam
+/// sample makes. The box is also the identity the actor tracks, so a view can unregister
+/// exactly what it registered.
+final class PreviewLayerBox: @unchecked Sendable {
+    /// `nonisolated(unsafe)` for the same reason `CameraService.session` is: the actor
+    /// reads it only to build a connection, which AVFoundation explicitly supports off
+    /// the main thread. Without it every access from the actor is a Swift 6 error.
+    nonisolated(unsafe) let layer: AVCaptureVideoPreviewLayer
+
+    init(layer: AVCaptureVideoPreviewLayer) {
+        self.layer = layer
+    }
+}
+
 /// Task 076 P0-1: a live picture-in-picture of what the short-form output will be.
 ///
 /// A second `AVCaptureVideoPreviewLayer` on the **same** `AVCaptureSession`. Preview
@@ -23,28 +58,20 @@ import SwiftUI
 /// than silently disagreeing.
 final class ShortPreviewLayerView: UIView {
     private let previewLayer = AVCaptureVideoPreviewLayer()
-    /// Task 078: the session this layer is bound to, kept so the notification observer
-    /// can retry against it without the caller.
-    private var boundSession: AVCaptureSession?
-    private var shouldConnect = true
-    private var sessionObserver: NSObjectProtocol?
+    private lazy var box = PreviewLayerBox(layer: previewLayer)
+    private var registeredService: CameraService?
 
+    /// Task 079: hands the connection back rather than leaving it on the session. Without
+    /// this, every recreation of the SwiftUI view would add another live preview
+    /// connection — and unlike the layer, a connection *is* a capture-side consumer.
     deinit {
-        if let sessionObserver {
-            NotificationCenter.default.removeObserver(sessionObserver)
-        }
+        guard let registeredService else { return }
+        let box = box
+        Task.detached { await registeredService.unregisterSecondaryPreview(box) }
     }
 
     #if DEBUG
-    /// Task 077: how many times `attach` has been asked to do work. `updateUIView` calls
-    /// it on every SwiftUI update, so this counts only the attempts made *before* a
-    /// connection existed — the ones that matter for "did it ever connect, and on which
-    /// pass". Logging every call would flood the console with no-ops.
     private var attachAttempts = 0
-    private var currentTrigger = "view"
-    private var currentInputCount = 0
-    private var currentVideoPortCount = 0
-    private var currentSessionRunning = false
     #endif
 
     override init(frame: CGRect) {
@@ -68,173 +95,85 @@ final class ShortPreviewLayerView: UIView {
     /// the session's video port to the layer automatically — and a session only supports
     /// **one** such automatic preview connection. The first preview layer takes it; every
     /// later one silently gets nothing and renders black. Nothing errors, which is why it
-    /// looked like a layout bug.
+    /// looked like a layout bug. The supported way to have more than one is to opt out of
+    /// the automatic connection and add one explicitly.
     ///
-    /// The supported way to have more than one is to opt out of the automatic connection
-    /// and add one explicitly, which is what `AVCaptureMultiCamSession` samples do.
-    /// `connected: false` is Task 077's condition ③ — the layer is created, sized and
-    /// laid out exactly as in ②, but gets no capture connection, so it renders black on
+    /// Task 079 P0: **the session transaction moved to `CameraService`.**
+    ///
+    /// Task 078 opened `beginConfiguration()`/`addConnection`/`commitConfiguration()`
+    /// here, on the main thread, from a `didStartRunningNotification` observer. That is
+    /// the regression: `CameraService` opens its own transactions from its actor
+    /// executor — `configure()` at startup and `refreshRecordingFormat()` from
+    /// `startRecording()` — and two unserialised writers of the session's configuration
+    /// state can leave it mid-configuration. No frames (black preview) and a commit that
+    /// never returns (dead record button) are the two symptoms of exactly that.
+    ///
+    /// What is left here is layer-side only: `setSessionWithNoConnection` binds the layer
+    /// and opens no transaction. The connection itself is requested from the actor, which
+    /// queues it until `configure()` can add it inside its existing transaction — so the
+    /// session is never reconfigured while running, either.
+    ///
+    /// `connected: false` is Task 077's condition ③ — the layer is created, sized and laid
+    /// out exactly as in ②, but gets no capture connection, so it renders black on
     /// purpose. That is what isolates the connection's cost from the layer's.
-    ///
-    /// Task 078 P0-1: **idempotent and safe to call repeatedly, which is the fix for the
-    /// black pane.** `makeUIView` runs once, at view-creation time — and at that moment
-    /// `CameraService.configure()` has usually not finished, so `session.inputs` is
-    /// empty, the port lookup below fails, and the early return leaves the layer
-    /// permanently unconnected. Nothing retried it.
-    ///
-    /// The full-screen preview never had this problem because `previewLayer.session = `
-    /// hands the wiring to AVFoundation, which connects whenever an input appears. A
-    /// manual connection has no such observer, so the caller drives it from
-    /// `updateUIView` as well and the guards below make the repeat calls free.
-    ///
-    /// Returns whether the layer now has a connection, so the caller knows to stop.
-    @discardableResult
-    func attach(session: AVCaptureSession, connected: Bool, trigger: String = "view") -> Bool {
-        boundSession = session
-        shouldConnect = connected
-        // Task 078: **the real retry mechanism.** `updateUIView` only fires when SwiftUI
-        // decides to update, and after `configure()` completes nothing necessarily
-        // changes any state this view depends on — so the retry could never arrive and
-        // the pane stayed black forever. `didStartRunningNotification` fires once the
-        // session is actually running, which is strictly after its inputs were added, so
-        // it is the event this needs rather than a UI-lifecycle side effect.
-        observeSessionStartIfNeeded(session)
-
-        guard previewLayer.connection == nil else { return true }
-
-        #if DEBUG
-        attachAttempts += 1
-        let inputCount = session.inputs.count
-        let videoPortCount = session.inputs
-            .compactMap { $0 as? AVCaptureDeviceInput }
-            .filter { $0.device.hasMediaType(.video) }
-            .flatMap { $0.ports(for: .video, sourceDeviceType: nil, sourceDevicePosition: .unspecified) }
-            .count
-        currentTrigger = trigger
-        currentInputCount = inputCount
-        currentVideoPortCount = videoPortCount
-        currentSessionRunning = session.isRunning
-        #endif
-
+    func attach(session: AVCaptureSession, cameraService: CameraService, connected: Bool) {
         if previewLayer.session !== session {
             previewLayer.setSessionWithNoConnection(session)
         }
-        guard connected else {
-            #if DEBUG
-            log(canAdd: nil, added: false, note: "connected=false (실험 조건 ③ — 의도된 미연결)")
-            #endif
-            return false
-        }
+        guard connected else { return }
+        guard previewLayer.connection == nil, registeredService == nil else { return }
 
-        guard let videoPort = session.inputs
-            .compactMap({ $0 as? AVCaptureDeviceInput })
-            .first(where: { $0.device.hasMediaType(.video) })?
-            .ports(for: .video, sourceDeviceType: nil, sourceDevicePosition: .unspecified)
-            .first
-        else {
-            // The session has no video input yet. Not an error — `updateUIView` calls
-            // back and this succeeds on a later pass.
-            #if DEBUG
-            log(canAdd: nil, added: false, note: "no video input port yet (configure 미완료)")
-            #endif
-            return false
-        }
-
-        let connection = AVCaptureConnection(inputPort: videoPort, videoPreviewLayer: previewLayer)
-        let canAdd = session.canAddConnection(connection)
-        guard canAdd else {
-            #if DEBUG
-            log(canAdd: false, added: false, note: "세션이 두 번째 프리뷰 연결을 거부함")
-            #endif
-            return false
-        }
-
-        // A configuration transaction on a running session. It adds a *preview*
-        // connection only — no output, no writer — so it cannot change what the capture
-        // pipeline delivers to `RecordingService`. Still wrapped, because AVFoundation
-        // re-resolves the session around an unwrapped change and Task 044 established
-        // that as a way to silently lose the frame duration.
-        session.beginConfiguration()
-        session.addConnection(connection)
-        session.commitConfiguration()
-
+        registeredService = cameraService
         #if DEBUG
-        // `isActive` is read after `commitConfiguration`, which is when the session has
-        // actually resolved the connection — reading it before the commit would report
-        // the pre-resolution value and be misleading.
-        log(canAdd: true, added: true, note: nil, connection: connection)
+        attachAttempts += 1
+        let attempt = attachAttempts
         #endif
-        return true
-    }
-
-    /// Registered once per session. Retries on `didStartRunningNotification`, which is
-    /// the only signal that reliably follows input configuration — and unlike a timer it
-    /// costs nothing while waiting and stops mattering the moment the connection exists.
-    private func observeSessionStartIfNeeded(_ session: AVCaptureSession) {
-        guard sessionObserver == nil else { return }
-        sessionObserver = NotificationCenter.default.addObserver(
-            forName: AVCaptureSession.didStartRunningNotification,
-            object: session,
-            queue: .main
-        ) { [weak self] _ in
-            guard let self, let boundSession = self.boundSession else { return }
-            self.attach(session: boundSession, connected: self.shouldConnect, trigger: "sessionDidStartRunning")
+        let box = box
+        Task { @MainActor in
+            let result = await cameraService.registerSecondaryPreview(box)
+            #if DEBUG
+            let connection = box.layer.connection
+            let line = "[Task079-Preview]"
+                + " attachAttempt=\(attempt)"
+                + " result=\(result.rawValue)"
+                + " isActive=\(connection.map { String(describing: $0.isActive) } ?? "n/a")"
+                + " isEnabled=\(connection.map { String(describing: $0.isEnabled) } ?? "n/a")"
+            Task.detached(priority: .utility) { print(line) }
+            #endif
+            // A pending result is not a failure — `CameraService` still holds the request
+            // and will connect it. Anything else means the request is no longer
+            // outstanding, so a later `updateUIView` is free to ask again.
+            if !result.isHeldByCameraService, result != .connected, result != .alreadyConnected {
+                self.registeredService = nil
+            }
         }
     }
-
-    #if DEBUG
-    private func log(canAdd: Bool?, added: Bool, note: String?, connection: AVCaptureConnection? = nil) {
-        let target = connection ?? previewLayer.connection
-
-        // **One line, tag included.** The first version spread these across a multi-line
-        // string, which printed correctly but appeared as a bare `[Task077-Preview]` in
-        // Xcode: the console filter matches per *line*, so filtering on the tag hid every
-        // value line beneath it. Every other diagnostic in this project is single-line
-        // for exactly this reason — `[Task044-Debug] STAGE 3 …`, `[Task054-Capture] …` —
-        // and this one should not have been the exception.
-        var line = "[Task077-Preview]"
-            + " trigger=\(currentTrigger)"
-            + " sessionRunning=\(currentSessionRunning)"
-            + " inputs=\(currentInputCount)"
-            + " videoPorts=\(currentVideoPortCount)"
-            + " attachAttempt=\(attachAttempts)"
-            + " canAddConnection=\(canAdd.map(String.init(describing:)) ?? "n/a")"
-            + " connectionAdded=\(added)"
-            + " isActive=\(target.map { String(describing: $0.isActive) } ?? "n/a")"
-            + " isEnabled=\(target.map { String(describing: $0.isEnabled) } ?? "n/a")"
-        if let note { line += " note=\(note)" }
-        // Handed off, matching every other diagnostic in this project — a synchronous
-        // print here runs during a SwiftUI update and on the same thread that just
-        // committed a session configuration.
-        Task.detached(priority: .utility) { print(line) }
-    }
-    #endif
 
     private func setUp() {
         previewLayer.videoGravity = .resizeAspectFill
         backgroundColor = .black
-        layer.addSublayer(previewLayer)
         layer.masksToBounds = true
+        layer.addSublayer(previewLayer)
     }
 }
 
 struct ShortPreviewRepresentable: UIViewRepresentable {
     let session: AVCaptureSession
+    let cameraService: CameraService
     var connected: Bool = true
 
     func makeUIView(context: Context) -> ShortPreviewLayerView {
         let view = ShortPreviewLayerView()
-        view.attach(session: session, connected: connected)
+        view.attach(session: session, cameraService: cameraService, connected: connected)
         return view
     }
 
-    /// The retry that makes the connection actually happen. SwiftUI calls this whenever
-    /// the surrounding view updates — which includes the state changes that follow
-    /// `CameraService.configure()` completing — and `attach` is a no-op once connected.
-    /// Kept as an extra chance, not as the mechanism. The session-start notification
-    /// registered inside `attach` is what actually guarantees the retry.
+    /// An extra chance, not the mechanism — `attach` is a no-op once a connection exists
+    /// or a registration is outstanding. The registration queued inside `CameraService` is
+    /// what actually guarantees the connection, so this no longer has to fire for the pane
+    /// to come alive (which is what Task 078 was working around).
     func updateUIView(_ uiView: ShortPreviewLayerView, context: Context) {
-        uiView.attach(session: session, connected: connected, trigger: "updateUIView")
+        uiView.attach(session: session, cameraService: cameraService, connected: connected)
     }
 }
 
@@ -245,6 +184,7 @@ struct ShortPreviewRepresentable: UIViewRepresentable {
 /// preview behind it says LONG.
 struct ShortPreviewPIP: View {
     let session: AVCaptureSession
+    let cameraService: CameraService
     /// 9:16 at this width. Small enough to leave the long-form framing readable, large
     /// enough to judge what is inside the crop.
     var width: CGFloat = 96
@@ -258,7 +198,7 @@ struct ShortPreviewPIP: View {
                 .padding(.vertical, 2)
                 .background(.black.opacity(0.5), in: Capsule())
 
-            ShortPreviewRepresentable(session: session)
+            ShortPreviewRepresentable(session: session, cameraService: cameraService)
                 .frame(width: width, height: width * 16 / 9)
                 .clipShape(RoundedRectangle(cornerRadius: 8))
                 .overlay(

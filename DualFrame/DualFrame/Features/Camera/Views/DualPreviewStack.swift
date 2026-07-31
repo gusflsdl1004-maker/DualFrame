@@ -27,6 +27,7 @@ import SwiftUI
 /// vertical pane as the subject — which made the recording itself the smaller image.)
 struct DualPreviewStack: View {
     let session: AVCaptureSession
+    let cameraService: CameraService
     /// When false only the long-form pane is shown — previewing a short-form file that
     /// will never be generated would be a lie.
     var showsShortPane: Bool
@@ -67,7 +68,15 @@ struct DualPreviewStack: View {
                         aspect: 16.0 / 9.0,
                         available: CGSize(width: geometry.size.width, height: usableHeight),
                         heightFraction: 0.52,
-                        emphasized: true
+                        emphasized: true,
+                        // Task 079 P0: the long pane takes the session's **automatic**
+                        // preview connection. Task 076 gave both panes explicit ones,
+                        // which meant that when the explicit path failed there was no
+                        // live image at all — the whole camera screen went black. The
+                        // session grants exactly one automatic connection, and the pane
+                        // showing what is actually being recorded is the one that should
+                        // have it: it now comes up without depending on anything.
+                        usesAutomaticConnection: true
                     )
                 }
                 .frame(maxWidth: .infinity, alignment: .top)
@@ -90,7 +99,8 @@ struct DualPreviewStack: View {
         available: CGSize,
         heightFraction: CGFloat,
         emphasized: Bool,
-        connected: Bool = true
+        connected: Bool = true,
+        usesAutomaticConnection: Bool = false
     ) -> some View {
         let maxHeight = available.height * heightFraction
         let width = min(available.width, maxHeight * aspect)
@@ -98,12 +108,25 @@ struct DualPreviewStack: View {
 
         return ZStack(alignment: .topLeading) {
             // Both panes are real `AVCaptureVideoPreviewLayer`s on the same session —
-            // neither is a guide, a mask, or a still. `ShortPreviewRepresentable` is
-            // named for its first use but is aspect-agnostic: `.resizeAspectFill` inside
-            // whatever frame it is given, which is exactly what each pane needs. The
-            // 9:16 pane therefore shows the real centre crop and the 16:9 pane shows the
-            // full frame, both live and both moving together.
-            ShortPreviewRepresentable(session: session, connected: connected)
+            // neither is a guide, a mask, or a still. Both use `.resizeAspectFill` inside
+            // their true output aspect, so the 9:16 pane shows the real centre crop and
+            // the 16:9 pane shows the full frame, live and moving together.
+            //
+            // They differ only in *how* they are connected. `CameraPreviewRepresentable`
+            // takes the session's single automatic connection — the path this app has
+            // always used, which needs nothing from us. `ShortPreviewRepresentable` needs
+            // an explicit one, which only `CameraService` may add.
+            Group {
+                if usesAutomaticConnection {
+                    CameraPreviewRepresentable(session: session)
+                } else {
+                    ShortPreviewRepresentable(
+                        session: session,
+                        cameraService: cameraService,
+                        connected: connected
+                    )
+                }
+            }
                 .frame(width: width, height: height)
                 .clipShape(RoundedRectangle(cornerRadius: 12))
                 .overlay(
