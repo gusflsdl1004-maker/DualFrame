@@ -810,7 +810,12 @@ actor CameraService {
         // Digital steps, matching the ladder Apple Camera shows. Each is only added when
         // the hardware reaches it *and* no physical lens already sits within 5% of it —
         // otherwise a triple-camera would show both its optical 2x and a digital 2x.
-        for multiplier in [CGFloat(2), 3, 5, 10] {
+        // Task 073 P0-3: digital steps stop at 5×. Beyond that the button row gets
+        // crowded and the result is heavily interpolated — 10× and above stay reachable
+        // by pinch, which is where a user reaching for extreme zoom already goes.
+        // Optical stops are added above regardless of this cap, so a device with a
+        // physical 10× lens still gets its button.
+        for multiplier in [CGFloat(2), 3, 5] {
             let candidate = base * multiplier
             guard candidate <= maxFactor else { continue }
             guard !factors.contains(where: { abs($0 - candidate) < candidate * 0.05 }) else { continue }

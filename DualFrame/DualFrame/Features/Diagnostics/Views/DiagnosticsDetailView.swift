@@ -129,6 +129,28 @@ struct DiagnosticsDetailView: View {
                     Text("배속은 원본 영상 길이 ÷ 생성 시간입니다. 8.5×면 3분 영상이 약 21초에 생성됩니다.")
                 }
 
+                // Task 073 P1-8: where the time actually goes. The share matters more
+                // than the absolute seconds — it says which stage to attack, and
+                // `설명되지 않은 시간` says whether the stages are the problem at all or
+                // the way they are sequenced is.
+                Section {
+                    ForEach(generation.stageShares, id: \.name) { stage in
+                        LabeledContent(stage.name) {
+                            Text(String(format: "%.1f초 (%.0f%%)", stage.seconds, stage.share * 100))
+                                .font(.callout.monospacedDigit())
+                        }
+                    }
+                    LabeledContent("설명되지 않은 시간") {
+                        Text(String(format: "%.1f초", generation.unaccountedSeconds))
+                            .font(.callout.monospacedDigit())
+                            .foregroundStyle(generation.unaccountedSeconds > generation.totalSeconds * 0.3 ? Color.orange : Color.secondary)
+                    }
+                } header: {
+                    Text("생성 단계별 시간")
+                } footer: {
+                    Text("Reader는 원본 4K60 HEVC 디코드입니다. 한 단계가 70% 이상이면 그 단계가 병목입니다. '설명되지 않은 시간'이 크면 단계 자체가 아니라 순차 실행 구조(디코드→크롭→인코딩이 서로를 기다림)가 원인입니다.")
+                }
+
                 Section("쇼츠 생성 상세") {
                     LabeledContent("결과", value: generation.succeeded ? "성공" : "실패")
                         .foregroundStyle(generation.succeeded ? Color.primary : Color.red)
@@ -301,6 +323,8 @@ struct DiagnosticsDetailView: View {
                 encodeSeconds: 28.7,
                 succeeded: true,
                 sourceDurationSeconds: 125,
+                readerSeconds: 96.0,
+                finishSeconds: 4.2,
                 outputFrameRate: 59.94
             )
         ))

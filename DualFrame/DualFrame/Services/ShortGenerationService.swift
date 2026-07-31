@@ -151,12 +151,21 @@ actor ShortGenerationService {
         var frameCount = 0
         var cropSeconds: TimeInterval = 0
         var encodeSeconds: TimeInterval = 0
+        // Task 073 P1-8: decoding is timed separately from crop and encode. Without
+        // this the 5-minute generation is unattributable — the existing metrics only
+        // covered crop and append, which are the two stages we control, while the
+        // decode of 4K60 HEVC was invisible.
+        var readerSeconds: TimeInterval = 0
+        var finishSeconds: TimeInterval = 0
 
         do {
             try await withThrowingTaskGroup(of: Void.self) { group in
                 group.addTask {
                     try await Self.pump(input: videoInput, label: "video") {
-                        guard let sample = videoOutput.copyNextSampleBuffer() else { return false }
+                        let readStart = Date()
+                        let sample = videoOutput.copyNextSampleBuffer()
+                        readerSeconds += Date().timeIntervalSince(readStart)
+                        guard let sample else { return false }
                         guard let sourceBuffer = CMSampleBufferGetImageBuffer(sample) else { return true }
                         let presentationTime = CMSampleBufferGetPresentationTimeStamp(sample)
 
@@ -206,7 +215,9 @@ actor ShortGenerationService {
             throw ShortGenerationError.cancelled
         }
 
+        let finishStart = Date()
         await writer.finishWriting()
+        finishSeconds = Date().timeIntervalSince(finishStart)
 
         guard writer.status == .completed else {
             try? FileManager.default.removeItem(at: outputURL)
@@ -235,6 +246,8 @@ actor ShortGenerationService {
             // The source asset's own duration, not the recording's wall-clock length —
             // see the field's comment. This is what `speedRatio` divides by.
             sourceDurationSeconds: duration.seconds,
+            readerSeconds: readerSeconds,
+            finishSeconds: finishSeconds,
             outputFrameRate: outputFrameRate
         )
     }

@@ -18,13 +18,15 @@ import Foundation
 nonisolated enum ShortGenerationStage: String, Codable, Equatable, Sendable {
     case analyzing
     case converting
+    case encoding
     case saving
 
     var title: String {
         switch self {
-        case .analyzing: "영상 분석 중…"
-        case .converting: "세로 영상 생성 중…"
-        case .saving: "라이브러리에 저장 중…"
+        case .analyzing: "영상 분석"
+        case .converting: "쇼츠 생성"
+        case .encoding: "인코딩"
+        case .saving: "저장 중"
         }
     }
 }
@@ -92,10 +94,39 @@ nonisolated struct ShortGenerationMetrics: Codable, Equatable {
     /// `speedRatio`, and that is the number the ad length gets decided from. Optional so
     /// records written before this field still decode.
     let sourceDurationSeconds: TimeInterval?
+    /// Task 073 P1-8: per-stage wall time, so the 5-minute generation can be attributed
+    /// instead of guessed at.
+    ///
+    /// `readerSeconds` is time inside `copyNextSampleBuffer` — decoding 4K60 HEVC.
+    /// `cropSeconds` and `encodeSeconds` (below) are the crop and the `append`.
+    /// `finishSeconds` is `finishWriting`, which on a large file is not free.
+    /// All optional so records written before this field still decode.
+    let readerSeconds: TimeInterval?
+    let finishSeconds: TimeInterval?
     /// `nominalFrameRate` read back from the generated short-form file. Distinct from
     /// `RecordingDiagnostics.savedNominalFrameRate`, which is the long-form file's — the
     /// two are now produced by different pipelines and need to be judged separately.
     let outputFrameRate: Float?
+
+    /// Which stage dominated, as a share of the measured total. This is the answer the
+    /// optimisation work needs — not the absolute numbers, but which one to attack.
+    var stageShares: [(name: String, seconds: TimeInterval, share: Double)] {
+        let stages: [(String, TimeInterval)] = [
+            ("Reader (디코드)", readerSeconds ?? 0),
+            ("Crop", cropSeconds),
+            ("Encoder (append)", encodeSeconds),
+            ("Writer (finish)", finishSeconds ?? 0)
+        ]
+        let measured = stages.reduce(0) { $0 + $1.1 }
+        return stages.map { ($0.0, $0.1, measured > 0 ? $0.1 / measured : 0) }
+    }
+
+    /// Time inside the pass that none of the timed stages account for — thread hops,
+    /// pool waits, and anything the pipeline spends blocked. A large value here means
+    /// the stages are not the problem; the way they are sequenced is.
+    var unaccountedSeconds: TimeInterval {
+        max(0, totalSeconds - ((readerSeconds ?? 0) + cropSeconds + encodeSeconds + (finishSeconds ?? 0)))
+    }
 
     var averageCropMilliseconds: Double {
         frameCount > 0 ? cropSeconds / Double(frameCount) * 1_000 : 0
