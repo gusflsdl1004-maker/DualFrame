@@ -18,17 +18,24 @@ import Foundation
 /// is exactly the coupling that rule exists to prevent. When "Pro chooses 최고 화질"
 /// ships, the gate belongs at the settings screen that writes this value, not here.
 nonisolated enum ShortGenerationQuality: String, Codable, CaseIterable, Identifiable, Sendable {
-    /// 1080×1920 @ 30fps. Half the frames to encode.
+    /// 1080×1920 @ 30fps. The only mode.
+    ///
+    /// Task 076 #4: the 60fps option is **removed**, not merely defaulted away from.
+    /// Generation runs at roughly 0.6× real time on a 4K60 source, and 60fps doubled
+    /// the encoder's work for frames the short-form platforms play back at 30 anyway.
+    /// Keeping it as a switch would keep a path that is slow by construction, and the
+    /// point of this policy is that nobody waits twice as long for nothing.
+    ///
+    /// The enum survives as a single case on purpose: `ShortGenerationMetrics` records
+    /// it, so historical diagnostics still decode, and a future option (a different
+    /// aspect ratio, an Auto Reframe mode) has somewhere to go.
     case fast
-    /// 1080×1920 at the source's frame rate — what every generation has done so far.
-    case maximum
 
     var id: String { rawValue }
 
     var title: String {
         switch self {
-        case .fast: "빠름 (권장)"
-        case .maximum: "최고 품질"
+        case .fast: "빠름"
         }
     }
 
@@ -37,14 +44,12 @@ nonisolated enum ShortGenerationQuality: String, Codable, CaseIterable, Identifi
     var subtitle: String {
         switch self {
         case .fast: "FHD · 30fps"
-        case .maximum: "FHD · 60fps"
         }
     }
 
     var detail: String {
         switch self {
-        case .fast: "생성 시간이 가장 빠르며 대부분의 SNS 업로드에 적합합니다."
-        case .maximum: "생성 시간이 오래 걸릴 수 있습니다."
+        case .fast: "쇼츠는 항상 FHD 30fps로 생성됩니다. 생성 시간이 가장 짧고 대부분의 SNS 업로드에 적합합니다."
         }
     }
 
@@ -55,17 +60,15 @@ nonisolated enum ShortGenerationQuality: String, Codable, CaseIterable, Identifi
     var estimatedDurationText: String {
         switch self {
         case .fast: "예상 생성시간 약 20~40초"
-        case .maximum: "예상 생성시간: 더 오래 걸릴 수 있습니다"
         }
     }
 
     /// The frame rate the generated file should target, given what the source was
     /// recorded at. `.fast` never *raises* the rate — a 30fps recording stays 30fps.
     func outputFPS(sourceFPS: RecordingFPS) -> RecordingFPS {
-        switch self {
-        case .maximum: sourceFPS
-        case .fast: sourceFPS.rawValue > 30 ? .fps30 : sourceFPS
-        }
+        // Never *raises* the rate — a 30fps recording stays 30fps rather than being
+        // interpolated up to something the source never contained.
+        sourceFPS.rawValue > 30 ? .fps30 : sourceFPS
     }
 }
 

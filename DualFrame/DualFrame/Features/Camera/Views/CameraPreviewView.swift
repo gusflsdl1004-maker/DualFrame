@@ -429,22 +429,19 @@ struct CameraPreviewView: View {
                 .tint(.white)
             }
 
+            // Task 076 #2: the always-visible row is replaced by a collapsed circular
+            // control. The row's width grew with the device's lens count and it held
+            // that space permanently — on a screen now carrying two live previews, the
+            // zoom UI should cost nothing until it is used.
+            FloatingZoomControl(
+                options: zoomOptions,
+                currentFactor: currentZoomFactor,
+                baseFactor: baseZoomFactor,
+                // Requirement 3 (Task 043): discrete stop → smooth ramp, unchanged.
+                onSelect: { option in setZoom(option.factor, animated: true) }
+            )
             HStack(spacing: 12) {
-                ForEach(zoomOptions) { option in
-                    Button {
-                        // Requirement 3: discrete lens button → smooth ramp.
-                        setZoom(option.factor, animated: true)
-                    } label: {
-                        Text("\(option.label)×")
-                            .font(.caption.bold())
-                            .foregroundStyle(isSelectedZoomOption(option) ? .black : .white)
-                            .frame(width: 34, height: 34)
-                            .background(
-                                isSelectedZoomOption(option) ? Color.white : Color.black.opacity(0.35),
-                                in: Circle()
-                            )
-                    }
-                }
+                EmptyView()
             }
         }
     }
