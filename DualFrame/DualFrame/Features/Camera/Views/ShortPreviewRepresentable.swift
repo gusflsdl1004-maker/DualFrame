@@ -39,8 +39,38 @@ final class ShortPreviewLayerView: UIView {
         previewLayer.frame = bounds
     }
 
+    /// Task 076 P0-1: **this is why the second pane was black.**
+    ///
+    /// Assigning `previewLayer.session` asks AVFoundation to build the connection from
+    /// the session's video port to the layer automatically — and a session only supports
+    /// **one** such automatic preview connection. The first preview layer takes it; every
+    /// later one silently gets nothing and renders black. Nothing errors, which is why it
+    /// looked like a layout bug.
+    ///
+    /// The supported way to have more than one is to opt out of the automatic connection
+    /// and add one explicitly, which is what `AVCaptureMultiCamSession` samples do.
     func attach(session: AVCaptureSession) {
-        previewLayer.session = session
+        guard previewLayer.connection == nil else { return }
+        previewLayer.setSessionWithNoConnection(session)
+
+        guard let videoPort = session.inputs
+            .compactMap({ $0 as? AVCaptureDeviceInput })
+            .first(where: { $0.device.hasMediaType(.video) })?
+            .ports(for: .video, sourceDeviceType: nil, sourceDevicePosition: .unspecified)
+            .first
+        else { return }
+
+        let connection = AVCaptureConnection(inputPort: videoPort, videoPreviewLayer: previewLayer)
+        guard session.canAddConnection(connection) else { return }
+
+        // A configuration transaction on a running session. It adds a *preview*
+        // connection only — no output, no writer — so it cannot change what the capture
+        // pipeline delivers to `RecordingService`. Still wrapped, because AVFoundation
+        // re-resolves the session around an unwrapped change and Task 044 established
+        // that as a way to silently lose the frame duration.
+        session.beginConfiguration()
+        session.addConnection(connection)
+        session.commitConfiguration()
     }
 
     private func setUp() {

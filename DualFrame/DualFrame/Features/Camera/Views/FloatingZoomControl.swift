@@ -12,10 +12,11 @@ import SwiftUI
 /// lens count — the one place the UI should not vary by hardware is the space it
 /// occupies.
 ///
-/// Collapsed it is a single dot showing the current factor. Tapping expands the options
-/// vertically; picking one collapses it again. Vertical rather than radial because the
-/// column stays inside a thumb's arc on the right edge, which a ring does not — and
-/// because the order (0.5 → 10) reads as a scale, which a circle destroys.
+/// Collapsed it is a single dot showing the current factor. Tapping expands the stops
+/// **horizontally**, the way the system Camera does — Task 076 P0-3 corrected this from
+/// the vertical column shipped first. Horizontal is the better read: the stops are a
+/// scale, and a left-to-right row is how a scale is expected to run, so 0.5 → 10 is
+/// legible at a glance instead of needing to be traced downward.
 ///
 /// Pinch-to-zoom on the preview is untouched and remains the way to reach factors
 /// between the stops, including beyond 5× where Task 073 stopped offering buttons.
@@ -31,7 +32,7 @@ struct FloatingZoomControl: View {
     @State private var isExpanded = false
 
     var body: some View {
-        VStack(spacing: 8) {
+        HStack(spacing: 8) {
             if isExpanded {
                 ForEach(options) { option in
                     dot(
@@ -51,7 +52,8 @@ struct FloatingZoomControl: View {
                     .transition(.scale(scale: 0.6).combined(with: .opacity))
             }
         }
-        .padding(6)
+        .padding(.horizontal, isExpanded ? 10 : 6)
+        .padding(.vertical, 6)
         .background(.black.opacity(isExpanded ? 0.35 : 0), in: Capsule())
         .animation(.spring(response: 0.28, dampingFraction: 0.8), value: isExpanded)
     }
@@ -85,7 +87,7 @@ struct FloatingZoomControl: View {
             Text("\(label)×")
                 .font(.system(size: isActive ? 13 : 12, weight: isActive ? .bold : .medium))
                 .foregroundStyle(isActive ? .yellow : .white)
-                .frame(width: 40, height: 40)
+                .frame(width: 38, height: 38)
                 .background(.black.opacity(0.45), in: Circle())
                 .overlay(
                     Circle().stroke(.white.opacity(isActive ? 0.9 : 0.25), lineWidth: isActive ? 1.5 : 1)
