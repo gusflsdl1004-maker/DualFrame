@@ -70,8 +70,21 @@ final class ShortPreviewLayerView: UIView {
         Task.detached { await registeredService.unregisterSecondaryPreview(box) }
     }
 
-    #if DEBUG
+    /// Bounded, and **not** Debug-only: `checkSettledState` retries every two seconds, so
+    /// without a cap a session that will never accept this connection would retry for the
+    /// life of the app — a background wakeup every two seconds, in Release, forever.
     private var attachAttempts = 0
+    private static let maxAttachAttempts = 5
+
+    #if DEBUG
+    /// Task 080 item 6: paints the layer red instead of black. If the pane shows red the
+    /// layer is on screen, correctly sized and unobscured, and the problem is upstream —
+    /// no video is arriving. If it stays black the layer itself is not being drawn, and
+    /// the connection is beside the point. One observation splits the search in half.
+    private var showsDiagnosticProbe = false
+    /// What `attach` was last handed, so the log can assert layer and caller agree on the
+    /// session object rather than just reporting that some session is bound.
+    private weak var expectedSession: AVCaptureSession?
     #endif
 
     override init(frame: CGRect) {
@@ -117,43 +130,127 @@ final class ShortPreviewLayerView: UIView {
     /// out exactly as in ②, but gets no capture connection, so it renders black on
     /// purpose. That is what isolates the connection's cost from the layer's.
     func attach(session: AVCaptureSession, cameraService: CameraService, connected: Bool) {
+        #if DEBUG
+        expectedSession = session
+        #endif
         if previewLayer.session !== session {
             previewLayer.setSessionWithNoConnection(session)
         }
-        guard connected else { return }
+        guard connected else {
+            #if DEBUG
+            logDiagnostics(stage: "disconnected-by-mode", result: nil)
+            #endif
+            return
+        }
         guard previewLayer.connection == nil, registeredService == nil else { return }
+        guard attachAttempts < Self.maxAttachAttempts else { return }
 
         registeredService = cameraService
-        #if DEBUG
         attachAttempts += 1
-        let attempt = attachAttempts
-        #endif
         let box = box
-        Task { @MainActor in
+        // `weak self` so the two-second wait below cannot hold a torn-down pane alive past
+        // its `deinit` — which is what hands the connection back.
+        // Never unwrapped into a strong `self`: the two-second wait below would then hold a
+        // torn-down pane alive past its `deinit`, which is what hands the connection back.
+        Task { @MainActor [weak self] in
             let result = await cameraService.registerSecondaryPreview(box)
             #if DEBUG
-            let connection = box.layer.connection
-            let line = "[Task079-Preview]"
-                + " attachAttempt=\(attempt)"
-                + " result=\(result.rawValue)"
-                + " isActive=\(connection.map { String(describing: $0.isActive) } ?? "n/a")"
-                + " isEnabled=\(connection.map { String(describing: $0.isEnabled) } ?? "n/a")"
-            Task.detached(priority: .utility) { print(line) }
+            self?.logDiagnostics(stage: "attach", result: result)
             #endif
             // A pending result is not a failure — `CameraService` still holds the request
             // and will connect it. Anything else means the request is no longer
             // outstanding, so a later `updateUIView` is free to ask again.
             if !result.isHeldByCameraService, result != .connected, result != .alreadyConnected {
-                self.registeredService = nil
+                self?.registeredService = nil
             }
+            // Task 080: **the reporting gap that hid this.** `.queuedUntilConfigured` was
+            // logged and then nothing ever spoke again — `CameraService` connects the
+            // queued box inside `configure()`, and if that add was refused the view was
+            // left holding `registeredService` forever, never retrying and never saying
+            // so. The settled state is what matters, so it is read back once the session
+            // has had time to finish configuring.
+            try? await Task.sleep(for: .seconds(2))
+            self?.checkSettledState(session: session, cameraService: cameraService)
         }
     }
+
+    /// Re-reads everything after the session has settled, and retries if the connection
+    /// still is not there.
+    ///
+    /// Not Debug-only, because the retry is a real fix rather than instrumentation: a
+    /// request that `CameraService` queued and then could not add left this side holding
+    /// `registeredService` forever, so `updateUIView` never asked again and the pane was
+    /// black for the rest of the launch. Only the log inside it is Debug-only.
+    @MainActor
+    private func checkSettledState(session: AVCaptureSession, cameraService: CameraService) {
+        #if DEBUG
+        logDiagnostics(stage: "settled", result: nil)
+        #endif
+        guard previewLayer.connection == nil else { return }
+        registeredService = nil
+        attach(session: session, cameraService: cameraService, connected: true)
+    }
+
+    #if DEBUG
+
+    /// Task 080 items 1-5, on **one line** — Xcode's console filter matches per line, so a
+    /// multi-line dump loses everything below the tagged row (the Task 077 mistake).
+    ///
+    /// Split into three groups, because they answer three different questions:
+    /// - `conn*` — is a connection there and is it live? (items 1, 4)
+    /// - `sameSession` — is it the session the long pane is showing? (item 2)
+    /// - `view*`/`layer*`/`window`/`hidden`/`alpha` — is the layer on screen at a real
+    ///   size and unobscured? (items 3, 5)
+    @MainActor
+    private func logDiagnostics(stage: String, result: SecondaryPreviewAttachResult?) {
+        let connection = previewLayer.connection
+        let boundSession = previewLayer.session
+        let rotation = connection.map { String(format: "%.0f", $0.videoRotationAngle) } ?? "n/a"
+        let bg = previewLayer.backgroundColor.map { String(describing: $0) } ?? "nil"
+
+        let line = "[Task080-Preview]"
+            + " stage=\(stage)"
+            + " attempt=\(attachAttempts)"
+            + " result=\(result?.rawValue ?? "-")"
+            + " probe=\(showsDiagnosticProbe)"
+            // item 1 + 4
+            + " hasConnection=\(connection != nil)"
+            + " connActive=\(connection.map { String(describing: $0.isActive) } ?? "n/a")"
+            + " connEnabled=\(connection.map { String(describing: $0.isEnabled) } ?? "n/a")"
+            + " connRotation=\(rotation)"
+            // item 2 — identity, not equality: the long pane and this one must be showing
+            // the same object, and `CameraService` owns exactly one.
+            + " sameSession=\(boundSession != nil && boundSession === expectedSession)"
+            + " sessionRunning=\(boundSession?.isRunning.description ?? "nil")"
+            // item 3 + 5
+            + " viewBounds=\(Int(bounds.width))x\(Int(bounds.height))"
+            + " layerFrame=\(Int(previewLayer.frame.width))x\(Int(previewLayer.frame.height))"
+            + " window=\(window != nil)"
+            + " hidden=\(isHidden)/\(previewLayer.isHidden)"
+            + " alpha=\(alpha)/\(previewLayer.opacity)"
+            + " gravity=\(previewLayer.videoGravity.rawValue)"
+            + " layerBG=\(bg)"
+        Task.detached(priority: .utility) { print(line) }
+    }
+    #endif
 
     private func setUp() {
         previewLayer.videoGravity = .resizeAspectFill
         backgroundColor = .black
         layer.masksToBounds = true
         layer.addSublayer(previewLayer)
+
+        #if DEBUG
+        // Task 080 item 6. Read here rather than threaded through three view layers —
+        // it is a UserDefaults read once per view creation, in Debug only.
+        showsDiagnosticProbe = SecondPreviewSettingsService().load().showsDiagnosticProbe
+        if showsDiagnosticProbe {
+            // The *layer's* background, not the view's: a red view behind a correctly
+            // drawn but empty preview layer would look identical to a red preview layer,
+            // and only the latter proves the layer itself is on screen.
+            previewLayer.backgroundColor = UIColor.systemRed.cgColor
+        }
+        #endif
     }
 }
 

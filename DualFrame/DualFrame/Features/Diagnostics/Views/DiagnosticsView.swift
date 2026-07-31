@@ -35,6 +35,8 @@ struct DiagnosticsView: View {
     private let generationQualityService = ShortGenerationQualitySettingsService()
     /// Task 077: the preview A/B.
     @State private var previewMode = SecondPreviewSettingsService().load().resolvedMode
+    /// Task 080 item 6.
+    @State private var previewProbe = SecondPreviewSettingsService().load().showsDiagnosticProbe
     private let secondPreviewService = SecondPreviewSettingsService()
 
     var body: some View {
@@ -140,6 +142,11 @@ struct DiagnosticsView: View {
                 Text(previewMode.detail)
                     .font(.caption)
                     .foregroundStyle(.secondary)
+
+                Toggle("상단 프리뷰 레이어 빨강 표시", isOn: $previewProbe)
+                Text("상단 Short 프리뷰의 레이어 배경을 빨강으로 칠합니다. 빨강이 보이면 레이어는 화면에 정상 크기로 그려지고 있고 영상만 안 오는 것이며, 그대로 검으면 레이어 자체가 그려지지 않는 것입니다. 원인이 완전히 다르므로 먼저 이것부터 확인하세요. 변경 후 앱을 다시 실행해야 적용됩니다.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             } header: {
                 Text("프리뷰 실험 (Task 077)")
             } footer: {
@@ -189,7 +196,18 @@ struct DiagnosticsView: View {
             planSettingsService.save(newValue)
         }
         .onChange(of: previewMode) { _, newValue in
-            secondPreviewService.save(SecondPreviewSettings(isEnabled: newValue != .single, mode: newValue))
+            secondPreviewService.save(SecondPreviewSettings(
+                isEnabled: newValue != .single,
+                mode: newValue,
+                diagnosticProbe: previewProbe
+            ))
+        }
+        .onChange(of: previewProbe) { _, newValue in
+            secondPreviewService.save(SecondPreviewSettings(
+                isEnabled: previewMode != .single,
+                mode: previewMode,
+                diagnosticProbe: newValue
+            ))
         }
         .onChange(of: generationQuality) { _, newValue in
             generationQualityService.save(ShortGenerationQualitySettings(quality: newValue))

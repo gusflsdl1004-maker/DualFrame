@@ -67,10 +67,18 @@ nonisolated struct SecondPreviewSettings: Codable, Equatable, Sendable {
     /// Kept so records and settings written by the first version still decode.
     var isEnabled: Bool
     var mode: PreviewExperimentMode?
+    /// Task 080 item 6: paint the short pane's preview layer red instead of black.
+    ///
+    /// This is the one observation that splits "the layer is not being drawn" from "the
+    /// layer is drawn but empty", and those two have nothing in common as bugs. Optional
+    /// so settings written before Task 080 still decode.
+    var diagnosticProbe: Bool?
 
     var resolvedMode: PreviewExperimentMode {
         mode ?? (isEnabled ? .stacked : .single)
     }
+
+    var showsDiagnosticProbe: Bool { diagnosticProbe ?? false }
 
     /// Defaults to the shipped structure — turning it off by default would silently
     /// change what the user sees before the measurement says it should.
