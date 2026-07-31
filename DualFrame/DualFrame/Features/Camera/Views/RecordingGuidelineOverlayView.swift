@@ -67,11 +67,18 @@ struct RecordingGuidelineOverlayView: View {
             let edges = ClippedEdges(crop: crop, screen: screen)
 
             ZStack {
-                // ① The 9:16 frame. Each side is drawn separately because the sides do not
-                // all mean the same thing: a side that is the real crop boundary is solid,
-                // and one that only exists because the screen ran out is dashed. Without
-                // that distinction, moving the line to the screen edge would be telling
-                // the user the short form stops there when it does not.
+                // ① The 9:16 frame — **solid, and only where the boundary is real.**
+                //
+                // Task 087: the dashed sides are gone. You were right that they were hard
+                // to read, and there is a better reason to drop them: a clipped side is by
+                // definition sitting on the screen edge, hard against the bezel, where no
+                // line says much whatever its style. Not drawing it is clearer than
+                // drawing it faintly, and it removes the risk of a line at the edge being
+                // read as "the short form stops here" when it does not.
+                //
+                // So every line on screen is a real crop boundary. The brackets below mark
+                // the visible framing box, and the absence of a side is what tells the
+                // user the short form continues past that edge.
                 Path { path in
                     if !edges.leftClipped { path.addLines([CGPoint(x: frame.minX, y: frame.minY), CGPoint(x: frame.minX, y: frame.maxY)]) }
                     if !edges.rightClipped { path.addLines([CGPoint(x: frame.maxX, y: frame.minY), CGPoint(x: frame.maxX, y: frame.maxY)]) }
@@ -79,14 +86,6 @@ struct RecordingGuidelineOverlayView: View {
                     if !edges.bottomClipped { path.addLines([CGPoint(x: frame.minX, y: frame.maxY), CGPoint(x: frame.maxX, y: frame.maxY)]) }
                 }
                 .stroke(Color.white.opacity(0.7), lineWidth: 1)
-
-                Path { path in
-                    if edges.leftClipped { path.addLines([CGPoint(x: frame.minX, y: frame.minY), CGPoint(x: frame.minX, y: frame.maxY)]) }
-                    if edges.rightClipped { path.addLines([CGPoint(x: frame.maxX, y: frame.minY), CGPoint(x: frame.maxX, y: frame.maxY)]) }
-                    if edges.topClipped { path.addLines([CGPoint(x: frame.minX, y: frame.minY), CGPoint(x: frame.maxX, y: frame.minY)]) }
-                    if edges.bottomClipped { path.addLines([CGPoint(x: frame.minX, y: frame.maxY), CGPoint(x: frame.maxX, y: frame.maxY)]) }
-                }
-                .stroke(Color.white.opacity(0.5), style: StrokeStyle(lineWidth: 1, dash: [5, 4]))
 
                 // ② Centre vertical line, ③ centre horizontal line.
                 //
