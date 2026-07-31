@@ -214,48 +214,52 @@ actor CameraService {
     /// is configured the request is queued; afterwards it is applied immediately. Returns
     /// what happened so the caller can log it — never throws, because a preview that fails
     /// to connect must never affect recording.
+    /// Task 081 P0: **this never touches a running session, and never awaits
+    /// `RecordingService`.**
+    ///
+    /// Task 079's version did both, and recording froze on the record button. Two things
+    /// it introduced sat directly on the path `startRecording()` uses:
+    ///
+    /// - `await recordingService.state` — a `CameraService` → `RecordingService` hop that
+    ///   did not exist before, in a method the UI calls at arbitrary times, including
+    ///   while `refreshRecordingFormat()` is in flight from `startRecording()`.
+    /// - `beginConfiguration()`/`commitConfiguration()` on a **running** session, repeated
+    ///   by a two-second retry loop in the view. Reconfiguring a live capture session is a
+    ///   heavyweight blocking operation that can stop and restart it, and it was running
+    ///   in the background while the record button needed this same actor.
+    ///
+    /// Reading the code did not prove which of the two wedged it, so neither is kept.
+    /// A preview is not worth any of this (CLAUDE.md rules 1-3, 44).
+    ///
+    /// What remains: the box is queued, and `configure()` connects it inside the
+    /// transaction it already opens — once, before `startRunning()`. Nothing here is
+    /// async, nothing blocks, and the session is never reconfigured after startup.
+    ///
+    /// The cost is honest and bounded: a layer that registers *after* `configure()` has
+    /// finished does not get a connection for this launch, because there is no safe moment
+    /// left to add one. It returns `.tooLateThisLaunch` so the caller can say so rather
+    /// than retry into a session that must not be touched.
     @discardableResult
-    func registerSecondaryPreview(_ box: PreviewLayerBox) async -> SecondaryPreviewAttachResult {
+    func registerSecondaryPreview(_ box: PreviewLayerBox) -> SecondaryPreviewAttachResult {
         guard box.layer.connection == nil else { return .alreadyConnected }
-
-        guard isConfigured else {
-            if !pendingPreviewLayers.contains(where: { $0 === box }) {
-                pendingPreviewLayers.append(box)
-            }
-            return .queuedUntilConfigured
+        guard !isConfigured else { return .tooLateThisLaunch }
+        if !pendingPreviewLayers.contains(where: { $0 === box }) {
+            pendingPreviewLayers.append(box)
         }
-
-        // CLAUDE.md rules 1/44: a preview is never worth touching a live recording's
-        // session for. Reconfiguring mid-recording is exactly the kind of change that can
-        // cost frames or drop the file, so the request waits — the pane stays black until
-        // the recording ends, which is a cosmetic cost against a recording-integrity one.
-        // Not queued: `pendingPreviewLayers` is drained only by `configure()`, which never
-        // runs again, so a queued entry here would never resolve. The caller retries
-        // instead — a recording ending produces plenty of SwiftUI updates.
-        guard await recordingService.state != .recording else {
-            return .deferredWhileRecording
-        }
-
-        // Configured already (the layer appeared after the camera was set up — e.g. the
-        // user switched output mode). One transaction, opened on this actor, so it can
-        // never interleave with `refreshRecordingFormat()`.
-        session.beginConfiguration()
-        defer { session.commitConfiguration() }
-        return connectSecondaryPreview(box)
+        return .queuedUntilConfigured
     }
 
-    /// Removes a previously added preview connection. Called when the hosting view goes
-    /// away — without it every view recreation would leave another live connection on the
-    /// session, which *is* a real capture-side cost.
-    func unregisterSecondaryPreview(_ box: PreviewLayerBox) async {
+    /// Drops the request. Only removes a live connection when the session is **not**
+    /// running — a preview teardown must never reconfigure a running session, which is
+    /// exactly the hazard Task 079 shipped.
+    ///
+    /// Nothing accumulates as a result: a connection can now only ever be added inside
+    /// `configure()`, which runs once per launch, so at most one exists to begin with.
+    func unregisterSecondaryPreview(_ box: PreviewLayerBox) {
         pendingPreviewLayers.removeAll { $0 === box }
-        guard let connection = box.layer.connection,
+        guard !session.isRunning,
+              let connection = box.layer.connection,
               session.connections.contains(connection) else { return }
-        // Same rule as registering. A stale preview connection left in place for the rest
-        // of a recording costs nothing that matters; reconfiguring the session under a
-        // running writer could cost the recording. This path is reachable in practice —
-        // rotating to landscape tears the stacked panes down mid-recording.
-        guard await recordingService.state != .recording else { return }
         session.beginConfiguration()
         session.removeConnection(connection)
         session.commitConfiguration()

@@ -11,15 +11,14 @@ import SwiftUI
 nonisolated enum SecondaryPreviewAttachResult: String, Sendable {
     case alreadyConnected
     case queuedUntilConfigured
-    case deferredWhileRecording
+    /// The session was already configured when this layer asked, so there is no safe
+    /// moment left to add a connection this launch. Terminal, and deliberately not
+    /// retried: retrying meant reconfiguring a running session, which is what froze
+    /// recording in Task 079.
+    case tooLateThisLaunch
     case noVideoPort
     case rejected
     case connected
-
-    /// Whether `CameraService` still holds the request and will act on it. `false` means
-    /// the view may ask again on a later update — including `.deferredWhileRecording`,
-    /// which is explicitly a "ask me again once the recording is over".
-    var isHeldByCameraService: Bool { self == .queuedUntilConfigured }
 }
 
 /// Task 079: carries an `AVCaptureVideoPreviewLayer` to `CameraService`.
@@ -69,14 +68,13 @@ final class ShortPreviewLayerView: UIView {
         let box = box
         Task.detached { await registeredService.unregisterSecondaryPreview(box) }
     }
-
-    /// Bounded, and **not** Debug-only: `checkSettledState` retries every two seconds, so
-    /// without a cap a session that will never accept this connection would retry for the
-    /// life of the app — a background wakeup every two seconds, in Release, forever.
-    private var attachAttempts = 0
-    private static let maxAttachAttempts = 5
+    // `unregisterSecondaryPreview` no longer touches a running session (Task 081), so this
+    // cannot reconfigure the camera out from under a recording on rotation.
 
     #if DEBUG
+    /// Kept for the log only. There is no retry any more — `registeredService` being set
+    /// is what makes repeat calls no-ops.
+    private var attachAttempts = 0
     /// Task 080 item 6: paints the layer red instead of black. If the pane shows red the
     /// layer is on screen, correctly sized and unobscured, and the problem is upstream —
     /// no video is arriving. If it stays black the layer itself is not being drawn, and
@@ -143,55 +141,32 @@ final class ShortPreviewLayerView: UIView {
             return
         }
         guard previewLayer.connection == nil, registeredService == nil else { return }
-        guard attachAttempts < Self.maxAttachAttempts else { return }
 
         registeredService = cameraService
+        #if DEBUG
         attachAttempts += 1
+        #endif
         let box = box
-        // `weak self` so the two-second wait below cannot hold a torn-down pane alive past
-        // its `deinit` — which is what hands the connection back.
-        // Never unwrapped into a strong `self`: the two-second wait below would then hold a
-        // torn-down pane alive past its `deinit`, which is what hands the connection back.
+        // Task 081 P0: **registers exactly once, and never retries.**
+        //
+        // Task 079/080 retried every two seconds, and each retry asked `CameraService` to
+        // reconfigure a *running* session — a heavyweight blocking operation, happening in
+        // the background, on the same actor the record button needs. The request is now a
+        // single non-blocking enqueue that `configure()` drains inside the transaction it
+        // already opens. `weak self` throughout, so the delayed read-back below cannot hold
+        // a torn-down pane alive past its `deinit`.
         Task { @MainActor [weak self] in
             let result = await cameraService.registerSecondaryPreview(box)
             #if DEBUG
             self?.logDiagnostics(stage: "attach", result: result)
-            #endif
-            // A pending result is not a failure — `CameraService` still holds the request
-            // and will connect it. Anything else means the request is no longer
-            // outstanding, so a later `updateUIView` is free to ask again.
-            if !result.isHeldByCameraService, result != .connected, result != .alreadyConnected {
-                self?.registeredService = nil
-            }
-            // Task 080: **the reporting gap that hid this.** `.queuedUntilConfigured` was
-            // logged and then nothing ever spoke again — `CameraService` connects the
-            // queued box inside `configure()`, and if that add was refused the view was
-            // left holding `registeredService` forever, never retrying and never saying
-            // so. The settled state is what matters, so it is read back once the session
-            // has had time to finish configuring.
+            // Read back once, purely to report — no retry, nothing touched. By now
+            // `configure()` has bound the device, so the census reflects what the port
+            // pick actually saw.
             try? await Task.sleep(for: .seconds(2))
-            self?.checkSettledState(session: session, cameraService: cameraService)
+            self?.logDiagnostics(stage: "settled", result: nil)
+            self?.logPortCensus(session: session)
+            #endif
         }
-    }
-
-    /// Re-reads everything after the session has settled, and retries if the connection
-    /// still is not there.
-    ///
-    /// Not Debug-only, because the retry is a real fix rather than instrumentation: a
-    /// request that `CameraService` queued and then could not add left this side holding
-    /// `registeredService` forever, so `updateUIView` never asked again and the pane was
-    /// black for the rest of the launch. Only the log inside it is Debug-only.
-    @MainActor
-    private func checkSettledState(session: AVCaptureSession, cameraService: CameraService) {
-        #if DEBUG
-        logDiagnostics(stage: "settled", result: nil)
-        // Printed at the settled point rather than at attach: by now `configure()` has
-        // bound the device, so the census reflects what the port pick actually saw.
-        logPortCensus(session: session)
-        #endif
-        guard previewLayer.connection == nil else { return }
-        registeredService = nil
-        attach(session: session, cameraService: cameraService, connected: true)
     }
 
     #if DEBUG
