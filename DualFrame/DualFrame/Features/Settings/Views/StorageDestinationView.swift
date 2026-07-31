@@ -21,13 +21,15 @@ import SwiftUI
 /// destination and its options stay but sit below recording, and the remaining
 /// drill-downs (외장 저장소, 녹화 품질, 복구, 진단) are collected under 고급 where they no
 /// longer compete with the common case.
+/// Task 090 P0: **every settings view model is handed in, not created here.**
+///
+/// These were `@StateObject`s owned by this screen. Each one was therefore a *second*
+/// instance over the same `UserDefaults` key, and the camera screen's copy — loaded once
+/// in its `init` — never learned that this one had saved. The guide toggle did nothing
+/// visible, and quality/FPS only appeared to take effect when the next recording re-read
+/// the store directly. One instance per setting, owned by `CameraPreviewView`, fixes both.
 struct StorageDestinationView: View {
-    @StateObject private var viewModel = StorageSettingsViewModel()
     @StateObject private var recoveryViewModel = RecoveryViewModel(checkpointStore: RecordingCheckpointStore())
-    @StateObject private var guidelineViewModel = RecordingGuidelineViewModel()
-    @StateObject private var qualityViewModel = RecordingQualityViewModel()
-    @StateObject private var fpsViewModel = RecordingFPSViewModel()
-    @StateObject private var outputModeViewModel = RecordingOutputModeViewModel()
     /// Task 087: the codec is a recording setting, so it belongs with the others. Local
     /// `@State` written straight back to the store, matching how 진단 held it —
     /// `RecordingService` re-reads the store when it builds each writer, so a change here
@@ -35,6 +37,11 @@ struct StorageDestinationView: View {
     @State private var encoderSettings = VideoEncoderSettingsService().load()
     private let encoderSettingsService = VideoEncoderSettingsService()
     @ObservedObject var externalStorageViewModel: ExternalStorageViewModel
+    @ObservedObject var storageSettingsViewModel: StorageSettingsViewModel
+    @ObservedObject var guidelineViewModel: RecordingGuidelineViewModel
+    @ObservedObject var qualityViewModel: RecordingQualityViewModel
+    @ObservedObject var fpsViewModel: RecordingFPSViewModel
+    @ObservedObject var outputModeViewModel: RecordingOutputModeViewModel
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
@@ -83,13 +90,13 @@ struct StorageDestinationView: View {
                 } header: {
                     Text("녹화")
                 } footer: {
-                    Text("설정은 다음 녹화부터 적용됩니다. 기기가 고른 조합을 지원하지 않으면 가장 가까운 설정으로 자동 조정되며, 촬영 화면에 실제 적용된 값이 표시됩니다.")
+                    Text("화질과 프레임은 촬영 화면에 즉시 적용됩니다(녹화 중에는 다음 녹화부터). 기기가 고른 조합을 지원하지 않으면 가장 가까운 설정으로 자동 조정되며, 촬영 화면에 실제 적용된 값이 표시됩니다. 코덱은 다음 녹화부터 적용됩니다.")
                 }
 
                 Section {
                     Toggle("구도 가이드 표시", isOn: $guidelineViewModel.settings.isEnabled)
                 } footer: {
-                    Text("촬영 화면을 세로선 두 개로 3등분해 좌·중앙·우 구도를 잡기 쉽게 합니다. 저장되는 영상에는 나타나지 않습니다.")
+                    Text("촬영 화면을 가로선 두 개로 3등분해 수평선·눈높이를 잡기 쉽게 합니다. 저장되는 영상에는 나타나지 않습니다.")
                 }
 
                 Section("기본 저장 위치") {
@@ -99,8 +106,8 @@ struct StorageDestinationView: View {
                 }
 
                 Section {
-                    Toggle("매번 물어보기", isOn: $viewModel.settings.askEveryTime)
-                    Toggle("내부 보관함에도 보관", isOn: $viewModel.settings.keepInternalCopy)
+                    Toggle("매번 물어보기", isOn: $storageSettingsViewModel.settings.askEveryTime)
+                    Toggle("내부 보관함에도 보관", isOn: $storageSettingsViewModel.settings.keepInternalCopy)
                 }
 
                 Section("고급") {
@@ -180,7 +187,7 @@ struct StorageDestinationView: View {
     private func destinationRow(_ destination: StorageDestination) -> some View {
         let available = isAvailable(destination)
         return Button {
-            viewModel.settings.defaultDestination = destination
+            storageSettingsViewModel.settings.defaultDestination = destination
         } label: {
             HStack {
                 Text(destination.title)
@@ -191,7 +198,7 @@ struct StorageDestinationView: View {
                         .foregroundStyle(.secondary)
                 }
                 Spacer()
-                if viewModel.settings.defaultDestination == destination {
+                if storageSettingsViewModel.settings.defaultDestination == destination {
                     Image(systemName: "checkmark")
                         .foregroundStyle(.tint)
                 }
@@ -209,5 +216,12 @@ struct StorageDestinationView: View {
 }
 
 #Preview {
-    StorageDestinationView(externalStorageViewModel: ExternalStorageViewModel())
+    StorageDestinationView(
+        externalStorageViewModel: ExternalStorageViewModel(),
+        storageSettingsViewModel: StorageSettingsViewModel(),
+        guidelineViewModel: RecordingGuidelineViewModel(),
+        qualityViewModel: RecordingQualityViewModel(),
+        fpsViewModel: RecordingFPSViewModel(),
+        outputModeViewModel: RecordingOutputModeViewModel()
+    )
 }

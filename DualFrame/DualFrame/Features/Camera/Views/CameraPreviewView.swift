@@ -28,6 +28,19 @@ struct CameraPreviewView: View {
     @StateObject private var capacityViewModel = RecordingCapacityViewModel()
     /// Task 050: the quality preset shown in the HUD.
     @StateObject private var bitratePresetViewModel = BitratePresetViewModel()
+    /// Task 090 P0: **owned here and handed to the settings sheet, not created twice.**
+    ///
+    /// This is the ON/OFF bug and the "settings only apply after you start recording" bug,
+    /// and they are the same bug. `StorageDestinationView` was creating its own
+    /// `@StateObject` for each of these. Two instances of an `ObservableObject` over one
+    /// `UserDefaults` key: the sheet's copy saved, and this screen's copy — loaded once in
+    /// its `init` and never reloaded — went on publishing the old value. The camera screen
+    /// was reading a stale object, not a stale default.
+    ///
+    /// Passing these down means there is one instance per setting for the whole screen, so
+    /// a change in the sheet republishes to the live view immediately.
+    @StateObject private var qualityViewModel = RecordingQualityViewModel()
+    @StateObject private var fpsViewModel = RecordingFPSViewModel()
     @State private var cameraService: CameraService
     @State private var libraryService: InternalVideoLibraryService
     @State private var dualRecordingCoordinator: DualRecordingCoordinator
@@ -289,7 +302,31 @@ struct CameraPreviewView: View {
             )
         }
         .sheet(isPresented: $isSettingsPresented) {
-            StorageDestinationView(externalStorageViewModel: externalStorageViewModel)
+            StorageDestinationView(
+                externalStorageViewModel: externalStorageViewModel,
+                storageSettingsViewModel: storageSettingsViewModel,
+                guidelineViewModel: guidelineViewModel,
+                qualityViewModel: qualityViewModel,
+                fpsViewModel: fpsViewModel,
+                outputModeViewModel: outputModeViewModel
+            )
+        }
+        // Task 090 P0-2: apply a quality/FPS change to the *running* session as soon as it
+        // is made, rather than leaving it for the next `startRecording()`.
+        //
+        // `refreshRecordingFormat()` is not a new code path — it is the same call
+        // `startRecording()` already makes before every recording, against a session that
+        // is already running. This only moves when it happens.
+        //
+        // Guarded on `!isRecording`: reconfiguring the session under a live writer is
+        // exactly the hazard Tasks 079/081 shipped, and no settings convenience is worth
+        // it (CLAUDE.md rules 1-3). A change made mid-recording still persists and still
+        // applies to the next recording, which is the behaviour that existed before.
+        .onChange(of: qualityViewModel.settings.selectedQuality) { _, _ in
+            Task { await applyFormatChangeIfIdle() }
+        }
+        .onChange(of: fpsViewModel.settings.selectedFPS) { _, _ in
+            Task { await applyFormatChangeIfIdle() }
         }
         .sheet(isPresented: $isSettingsSummaryPresented) {
             RecordingSettingsSummaryView(
@@ -424,6 +461,26 @@ struct CameraPreviewView: View {
 
     private var isMicrophoneGranted: Bool {
         permissionViewModel.microphoneStatus == .granted
+    }
+
+    /// Task 090 P0-2: pushes a quality/FPS change to the live session and re-reads what
+    /// the device actually resolved it to, so the HUD shows the real value rather than
+    /// the request. Refuses while recording — see the call site.
+    private func applyFormatChangeIfIdle() async {
+        guard !recordingViewModel.isRecording else { return }
+        await cameraService.refreshRecordingFormat()
+        activeQuality = await cameraService.activeQuality
+        qualityFallbackOccurred = await cameraService.qualityFallbackOccurred
+        activeFPS = await cameraService.activeFPS
+        fpsFallbackOccurred = await cameraService.fpsFallbackOccurred
+        // A format change can rebind the device (Task 047), and a different device has a
+        // different lens set — so the zoom ladder is re-read for the same reason
+        // `toggleCameraPosition()` re-reads it.
+        zoomOptions = await cameraService.zoomOptions
+        minZoomFactor = await cameraService.minZoomFactor
+        maxZoomFactor = await cameraService.maxZoomFactor
+        baseZoomFactor = await cameraService.baseZoomFactor
+        currentZoomFactor = await cameraService.currentZoomFactor
     }
 
 
