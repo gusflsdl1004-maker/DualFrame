@@ -21,6 +21,11 @@ struct DiagnosticsDetailView: View {
                 if let handling = diagnostics.lateFrameHandling {
                     LabeledContent("늦은 프레임 처리", value: handling.title)
                 }
+                // Task 077: the A/B condition. Read this before the drop counts below —
+                // they mean different things on either side.
+                if let secondPreview = diagnostics.secondPreviewEnabled {
+                    LabeledContent("Short 프리뷰", value: secondPreview ? "켬 (프리뷰 2개)" : "끔 (프리뷰 1개)")
+                }
             }
 
             // Task 064: what the encoder was asked for, and what it actually produced.
@@ -320,6 +325,7 @@ struct DiagnosticsDetailView: View {
             dropSamples: ["[Task067-Drop] reason=FrameWasLate pts=12.3456s uptime=8421.117 thermal=fair backlog=1 attachments: DroppedFrameReason=FrameWasLate"],
             dropAttachmentKeys: ["DroppedFrameReason"],
             cropBackend: .videoToolbox,
+            secondPreviewEnabled: true,
             shortGeneration: ShortGenerationMetrics(
                 backend: .videoToolbox,
                 frameCount: 7_500,

@@ -33,6 +33,9 @@ struct DiagnosticsView: View {
     /// only type that reads the plan, and generation behaves identically for everyone.
     @State private var generationQuality = ShortGenerationQualitySettingsService().load().quality
     private let generationQualityService = ShortGenerationQualitySettingsService()
+    /// Task 077: the preview A/B.
+    @State private var secondPreviewEnabled = SecondPreviewSettingsService().load().isEnabled
+    private let secondPreviewService = SecondPreviewSettingsService()
 
     var body: some View {
         List {
@@ -126,6 +129,14 @@ struct DiagnosticsView: View {
                 Text("무료 플랜은 카메라롤 저장 전에 리워드 광고를 봅니다. '도중 닫기'와 '로드 실패'는 저장을 거부하는 경로로, 반드시 두 경우 모두 앱 내 영상이 그대로 남는지 확인하세요. 녹화와 쇼츠 생성은 플랜과 무관하게 동작합니다.")
             }
 
+            Section {
+                Toggle("Short 프리뷰 (상단 세로 화면)", isOn: $secondPreviewEnabled)
+            } header: {
+                Text("프리뷰 실험 (Task 077)")
+            } footer: {
+                Text("두 번째 프리뷰는 캡처 세션에 자체 연결을 추가합니다 — 레이어를 그리는 것과 달리 캡처 파이프라인의 실제 소비자입니다. 끈 상태와 켠 상태로 각각 4K60을 30초씩 녹화한 뒤, 진단에서 measuredArrivalFPS·FrameWasLate·OutOfBuffers·저장 FPS를 대조하세요. 어떤 상태였는지는 각 기록에 함께 저장됩니다. 앱을 다시 실행해야 적용됩니다.")
+            }
+
             // Task 062: the two conditions side by side, which is what the comparison
             // actually needs — scrolling between two detail screens loses the diff.
             Section {
@@ -167,6 +178,9 @@ struct DiagnosticsView: View {
         }
         .onChange(of: planSettings) { _, newValue in
             planSettingsService.save(newValue)
+        }
+        .onChange(of: secondPreviewEnabled) { _, newValue in
+            secondPreviewService.save(SecondPreviewSettings(isEnabled: newValue))
         }
         .onChange(of: generationQuality) { _, newValue in
             generationQualityService.save(ShortGenerationQualitySettings(quality: newValue))

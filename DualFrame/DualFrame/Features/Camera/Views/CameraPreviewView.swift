@@ -34,6 +34,11 @@ struct CameraPreviewView: View {
     @State private var isLibraryPresented = false
     /// Task 072 P0-5: guards the generation-cancel button behind a confirmation.
     @State private var isConfirmingGenerationCancel = false
+    /// Task 077: the A/B under test — whether the short-form preview's capture
+    /// connection is what raised FrameWasLate and OutOfBuffers. Read once per appearance
+    /// rather than observed, so it cannot change mid-recording and make a run
+    /// unattributable.
+    @State private var isSecondPreviewEnabled = SecondPreviewSettingsService().load().isEnabled
     @State private var isSettingsPresented = false
     @State private var isSettingsSummaryPresented = false
     @State private var activeQuality: RecordingQuality?
@@ -128,7 +133,9 @@ struct CameraPreviewView: View {
                         // second result to show, so both fall back to the full-screen
                         // preview this app has always had.
                         Group {
-                            if !isLandscape, outputModeViewModel.settings.outputMode == .both {
+                            if !isLandscape,
+                               outputModeViewModel.settings.outputMode == .both,
+                               isSecondPreviewEnabled {
                                 DualPreviewStack(
                                     session: cameraService.session,
                                     showsShortPane: true

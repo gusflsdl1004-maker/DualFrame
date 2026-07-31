@@ -330,6 +330,7 @@ final class ShortGenerationCoordinator: NSObject, ObservableObject {
             dropSamples: base.dropSamples,
             dropAttachmentKeys: base.dropAttachmentKeys,
             cropBackend: base.cropBackend,
+            secondPreviewEnabled: base.secondPreviewEnabled,
             shortGeneration: metrics
         )
         await diagnosticsService.save(updated)

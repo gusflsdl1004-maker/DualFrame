@@ -106,6 +106,11 @@ nonisolated struct RecordingDiagnostics: Codable, Equatable, Identifiable {
     /// `nil` for a Long-only recording (nothing cropped) and for records written before
     /// Task 068.
     let cropBackend: CropBackend?
+    /// Task 077: whether the short-form preview layer — and therefore its capture
+    /// connection — was attached during this recording. Optional so older records
+    /// decode. Without it a run cannot be attributed to either side of the A/B, which
+    /// is exactly how Task 055's measurements became unusable.
+    let secondPreviewEnabled: Bool?
     /// Task 069: what post-processing short-form generation cost, if it ran. `nil` for a
     /// Long-only recording and for every record written before Task 069.
     ///
