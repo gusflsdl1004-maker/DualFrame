@@ -154,24 +154,16 @@ struct CameraPreviewView: View {
                                 setZoom(zoomFactorAtPinchStart * newScale)
                             }
 
-                        // Task 040 / 082: purely visual, drawn above the live preview and
-                        // below the controls so it never obscures them. Camera output is
-                        // untouched — this only draws, never captures, and never intercepts
-                        // touches.
+                        // Task 088 P1: a rule-of-thirds composition guide. Purely visual,
+                        // drawn above the live preview and below the controls. Camera
+                        // output is untouched — it only draws, never captures, and never
+                        // intercepts touches.
                         //
-                        // Shown whenever a short-form file is actually going to be produced.
-                        // On Long-only there is no crop to preview, so drawing one would be
-                        // describing a file that never arrives. Same in both orientations
-                        // now: `CropCalculator`'s centre-crop math is symmetric, so the same
-                        // overlay is correct portrait and landscape.
-                        if guidelineViewModel.settings.isEnabled,
-                           outputModeViewModel.settings.outputMode == .both {
-                            // The *recording* resolution's aspect, not the screen's — the
-                            // guide maps the crop from video space onto the preview, so it
-                            // needs to know what the preview is showing. Falls back to 16:9,
-                            // which every `RecordingQuality` currently is, so the guide is
-                            // still correct before `activeQuality` has been read back.
-                            RecordingGuidelineOverlayView(sourceAspect: recordingSourceAspect)
+                        // No longer gated on the output mode: it is not describing the
+                        // short-form crop any more, so it is just as useful for framing a
+                        // Long-only shot.
+                        if guidelineViewModel.settings.isEnabled {
+                            RecordingGuidelineOverlayView()
                                 .ignoresSafeArea()
                         }
 
@@ -434,15 +426,6 @@ struct CameraPreviewView: View {
         permissionViewModel.microphoneStatus == .granted
     }
 
-    /// Task 085: the stored aspect of whatever the camera is actually recording, read
-    /// back from `CameraService` rather than assumed — a quality fallback (Task 013/047)
-    /// can change it without the UI being told. Read-only; nothing here configures it.
-    private var recordingSourceAspect: CGFloat {
-        guard let activeQuality else { return 16.0 / 9.0 }
-        let dimensions = activeQuality.dimensions
-        guard dimensions.height > 0 else { return 16.0 / 9.0 }
-        return CGFloat(dimensions.width) / CGFloat(dimensions.height)
-    }
 
     /// Task 027 requirement 3: a no-op while recording (the button is also disabled,
     /// this is the view-layer half of the defense-in-depth — `CameraService` itself

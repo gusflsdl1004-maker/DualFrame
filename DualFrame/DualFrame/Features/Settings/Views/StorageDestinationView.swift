@@ -87,9 +87,9 @@ struct StorageDestinationView: View {
                 }
 
                 Section {
-                    Toggle("9:16 가이드 표시", isOn: $guidelineViewModel.settings.isEnabled)
+                    Toggle("구도 가이드 표시", isOn: $guidelineViewModel.settings.isEnabled)
                 } footer: {
-                    Text("촬영 화면에 쇼츠로 저장되는 영역을 선으로 표시합니다. 'Long + Short 저장'일 때만 나타납니다.")
+                    Text("촬영 화면을 세로선 두 개로 3등분해 좌·중앙·우 구도를 잡기 쉽게 합니다. 저장되는 영상에는 나타나지 않습니다.")
                 }
 
                 Section("기본 저장 위치") {

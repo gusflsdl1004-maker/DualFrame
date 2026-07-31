@@ -250,6 +250,90 @@ actor RecordingService {
         var actorWait = StageStat()
     }
 
+    // MARK: - Task 088 P0: who is holding the actor, and was it held at all
+
+    /// `actorWait max=746ms` says a buffer queued for three quarters of a second before
+    /// its append began. It does **not** say why, and the two possible reasons need
+    /// opposite fixes:
+    ///
+    /// - **Contention** — something else was executing on this actor and the buffer had to
+    ///   wait behind it. Then the question is which operation, and how long it holds.
+    /// - **Starvation** — the actor was *idle* and the continuation simply was not
+    ///   scheduled, because Swift's cooperative pool had no thread free. Then no amount of
+    ///   making actor operations faster helps; the problem is elsewhere entirely.
+    ///
+    /// `lastOperationEnded` is what separates them. On a long wait, if the previous
+    /// operation finished immediately before entry, this was contention. If it finished
+    /// long before, the actor was sitting idle and this was starvation. Everything else
+    /// here — hold time attributed by operation name — answers the contention branch.
+    ///
+    /// Measurement only: no operation's behaviour changes, and the recording path is
+    /// identical with these lines removed.
+    private var actorHoldByName: [String: StageStat] = [:]
+    private var lastOperationName = "(none)"
+    private var lastOperationEnded = Date.distantPast
+    private var lastOperationDuration: TimeInterval = 0
+    /// Bounded, for the same reason Task 067 bounded the drop dump: a stall that repeats
+    /// every frame would otherwise fill the console and become its own bottleneck.
+    private var longWaitsLogged = 0
+    private static let longWaitThreshold: TimeInterval = 0.05
+    private static let longWaitLogBudget = 20
+
+    /// Wraps one actor-isolated operation. Records how long it occupied the actor and
+    /// leaves a breadcrumb for whoever waits next.
+    ///
+    /// Wall time, not contiguous hold: an operation that suspends releases the actor in
+    /// between, so a long figure here means "this call spanned a long time", which is why
+    /// the paired `lastOperationEnded` gap matters for reading it.
+    private func recordActorOp(_ name: String, from start: Date) {
+        let ended = Date()
+        actorHoldByName[name, default: StageStat()].record(ended.timeIntervalSince(start))
+        lastOperationName = name
+        lastOperationEnded = ended
+        lastOperationDuration = ended.timeIntervalSince(start)
+    }
+
+    /// Called on actor entry for a video buffer, before anything else runs.
+    private func reportLongActorWait(waited: TimeInterval, entryTime: Date) {
+        guard waited >= Self.longWaitThreshold, longWaitsLogged < Self.longWaitLogBudget else { return }
+        longWaitsLogged += 1
+
+        // The discriminator. `idleGap` is how long the actor sat with nothing running
+        // before this buffer got in.
+        let idleGap = entryTime.timeIntervalSince(lastOperationEnded)
+        let verdict: String
+        if lastOperationEnded == .distantPast {
+            verdict = "UNKNOWN (no prior operation)"
+        } else if idleGap >= waited * 0.5 {
+            verdict = "STARVATION (actor was idle — continuation not scheduled)"
+        } else {
+            verdict = "CONTENTION (queued behind \(lastOperationName))"
+        }
+
+        let line = "[Task088-Actor]"
+            + " LONG-WAIT #\(longWaitsLogged)"
+            + String(format: " waited=%.1fms", waited * 1000)
+            + " previousOp=\(lastOperationName)"
+            + String(format: " previousOpMs=%.1f", lastOperationDuration * 1000)
+            + String(format: " actorIdleBeforeEntryMs=%.1f", idleGap * 1000)
+            + " verdict=\(verdict)"
+        debugLog(line)
+    }
+
+    /// Hold time by operation, worst first — the contention branch's answer.
+    private func logActorOccupancy(label: String) {
+        let ranked = actorHoldByName
+            .sorted { $0.value.max > $1.value.max }
+            .prefix(6)
+        for (name, stat) in ranked {
+            debugLog(String(
+                format: "[Task088-Actor] %@ %-22@ avg=%7.3fms max=%8.3fms n=%5d",
+                label, name as NSString, stat.averageMs, stat.maxMs, stat.count
+            ))
+        }
+        debugLog("[Task088-Actor] \(label) longWaits(>=\(Int(Self.longWaitThreshold * 1000))ms)=\(longWaitsLogged)\(longWaitsLogged >= Self.longWaitLogBudget ? "+ (log budget reached)" : "")")
+    }
+
     private var debugStages = StageBreakdown()
     private var debugVideoFramesTimed = 0
     private var debugTimings: [OutputProfile: ProfileTimingStats] = [:]
@@ -438,7 +522,10 @@ actor RecordingService {
         #if DEBUG
         let entryTime = Date()
         if let enqueuedAt {
-            debugStages.actorWait.record(entryTime.timeIntervalSince(enqueuedAt))
+            let waited = entryTime.timeIntervalSince(enqueuedAt)
+            debugStages.actorWait.record(waited)
+            // Task 088: read the breadcrumb *before* this call overwrites it.
+            reportLongActorWait(waited: waited, entryTime: entryTime)
         }
         let debugStart = Date()
         logVideoSampleBufferStage(sampleBuffer)
@@ -451,15 +538,26 @@ actor RecordingService {
         // Item 1: the whole call, so the per-stage figures below can be checked against
         // it — anything unaccounted for is time this instrumentation does not yet see.
         debugStages.appendTotal.record(Date().timeIntervalSince(entryTime))
+        recordActorOp("append(video)", from: entryTime)
         debugVideoFramesTimed += 1
         if debugVideoFramesTimed % 120 == 0 {
             logStageBreakdown(label: "@\(debugVideoFramesTimed)")
+            logActorOccupancy(label: "@\(debugVideoFramesTimed)")
         }
         #endif
     }
 
     func appendAudioSampleBuffer(_ sampleBuffer: CMSampleBuffer) async {
+        #if DEBUG
+        let entryTime = Date()
+        #endif
         await append(sampleBuffer, isVideo: false)
+        #if DEBUG
+        // Task 088: audio shares this actor with video. At 48kHz there are roughly 47 of
+        // these a second competing with 60 video frames, so if audio is what video queues
+        // behind, it will show up here and nowhere else.
+        recordActorOp("append(audio)", from: entryTime)
+        #endif
     }
 
     #if DEBUG
@@ -1526,6 +1624,10 @@ actor RecordingService {
     /// Fires and does not block the caller — the checkpoint store does its own I/O
     /// on its own actor, so this never holds up sample buffer appends (requirement 6).
     private func saveCheckpoint() async {
+        #if DEBUG
+        let entryTime = Date()
+        defer { recordActorOp("saveCheckpoint", from: entryTime) }
+        #endif
         guard let checkpoint = currentCheckpoint() else { return }
         await checkpointStore.save(checkpoint)
         checkpointSaveCount += 1
