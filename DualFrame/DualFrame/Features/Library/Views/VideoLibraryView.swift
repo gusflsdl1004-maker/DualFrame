@@ -19,6 +19,8 @@ struct VideoLibraryView: View {
     @StateObject private var viewModel: VideoLibraryViewModel
     /// Task 090 P1-1: the delete-everything confirmation.
     @State private var isConfirmingDeleteAll = false
+    /// Task 091 P1-4: the still currently open full-screen.
+    @State private var previewingPhoto: PhotoRecord?
 
     /// Task 070 requirement 5/6: nil in previews and any caller that does not have the
     /// app-root coordinator; the badge simply does not appear then.
@@ -55,10 +57,29 @@ struct VideoLibraryView: View {
                     }
                 }
                 .onDelete(perform: deleteGroups)
+
+                // Task 091 P1-3: stills, in their own section rather than interleaved.
+                // Recordings carry group state, generation progress and export state that
+                // a still has none of, so a single mixed list would have had two kinds of
+                // row pretending to be one kind. A section keeps both honest and still
+                // reads as one library.
+                if !viewModel.photos.isEmpty {
+                    Section("사진") {
+                        ForEach(viewModel.photos) { photo in
+                            Button {
+                                previewingPhoto = photo
+                            } label: {
+                                PhotoRow(photo: photo)
+                            }
+                            .buttonStyle(.plain)
+                        }
+                        .onDelete(perform: deletePhotos)
+                    }
+                }
             }
             .overlay {
-                if viewModel.groups.isEmpty {
-                    ContentUnavailableView("녹화된 영상이 없습니다", systemImage: "film")
+                if viewModel.groups.isEmpty && viewModel.photos.isEmpty {
+                    ContentUnavailableView("보관함이 비어 있습니다", systemImage: "photo.on.rectangle")
                 }
             }
             .navigationTitle("보관함")
@@ -66,7 +87,7 @@ struct VideoLibraryView: View {
                 // Task 090 P1-1. Hidden when there is nothing to delete, so the most
                 // destructive control in the app is not sitting there permanently
                 // one tap from an empty confirmation.
-                if !viewModel.groups.isEmpty {
+                if !viewModel.groups.isEmpty || !viewModel.photos.isEmpty {
                     ToolbarItem(placement: .topBarTrailing) {
                         Button("전체 삭제", role: .destructive) {
                             isConfirmingDeleteAll = true
@@ -78,6 +99,9 @@ struct VideoLibraryView: View {
         }
         .task {
             await viewModel.refresh()
+        }
+        .fullScreenCover(item: $previewingPhoto) { photo in
+            PhotoViewerView(record: photo)
         }
         .alert("앱 내 보관함을 모두 삭제할까요?", isPresented: $isConfirmingDeleteAll) {
             Button("취소", role: .cancel) {}
@@ -143,6 +167,16 @@ struct VideoLibraryView: View {
                 }
             }
         )
+    }
+
+    /// Task 091 P1-3: swipe-to-delete for stills, matching recordings.
+    private func deletePhotos(at offsets: IndexSet) {
+        let photosToDelete = offsets.map { viewModel.photos[$0] }
+        Task {
+            for photo in photosToDelete {
+                await viewModel.delete(photo)
+            }
+        }
     }
 
     /// Requirement 7: group-level deletion — removes every output in the group plus

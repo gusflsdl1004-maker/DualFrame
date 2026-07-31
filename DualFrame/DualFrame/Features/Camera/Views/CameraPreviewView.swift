@@ -41,6 +41,11 @@ struct CameraPreviewView: View {
     /// a change in the sheet republishes to the live view immediately.
     @StateObject private var qualityViewModel = RecordingQualityViewModel()
     @StateObject private var fpsViewModel = RecordingFPSViewModel()
+    /// Task 091: photo mode. Not persisted — the app opens in video mode every launch;
+    /// this is a video camera that also takes stills, not the other way round.
+    @State private var captureMode: CaptureMode = .video
+    @StateObject private var photoCaptureViewModel: PhotoCaptureViewModel
+    @State private var photoLibraryService: InternalPhotoLibraryService
     @State private var cameraService: CameraService
     @State private var libraryService: InternalVideoLibraryService
     @State private var dualRecordingCoordinator: DualRecordingCoordinator
@@ -114,6 +119,16 @@ struct CameraPreviewView: View {
         _libraryService = State(wrappedValue: libraryService)
         _dualRecordingCoordinator = State(wrappedValue: coordinator)
         _orientationManager = StateObject(wrappedValue: orientationManager)
+
+        // Task 091: photo capture shares the camera and nothing else. It is given the
+        // same `CameraService` and its own library service, so a still that fails to save
+        // cannot reach any recording state.
+        let photoLibraryService = InternalPhotoLibraryService()
+        _photoLibraryService = State(wrappedValue: photoLibraryService)
+        _photoCaptureViewModel = StateObject(wrappedValue: PhotoCaptureViewModel(
+            cameraService: cameraService,
+            photoLibraryService: photoLibraryService
+        ))
     }
 
     var body: some View {
@@ -190,6 +205,16 @@ struct CameraPreviewView: View {
                             landscapeOverlay
                         } else {
                             portraitOverlay
+                        }
+
+                        // Task 091 P2-3: the shutter flash. Above the controls so it
+                        // covers the whole frame, and non-interactive so it cannot eat
+                        // the tap that triggered it.
+                        if photoCaptureViewModel.isFlashingShutter {
+                            Color.white
+                                .ignoresSafeArea()
+                                .transition(.opacity)
+                                .allowsHitTesting(false)
                         }
                     }
                 }
@@ -912,6 +937,27 @@ struct CameraPreviewView: View {
             }
             #endif
 
+            // Task 091: what happened to the last still. An error takes precedence over a
+            // success message — a photo that failed to save is the thing the user needs to
+            // know about, and it must not be replaced by "저장되었습니다" from before it.
+            if let message = photoCaptureViewModel.errorMessage ?? photoCaptureViewModel.statusMessage {
+                Text(message)
+                    .font(.caption)
+                    .foregroundStyle(photoCaptureViewModel.errorMessage != nil ? .red : .white)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 5)
+                    .background(.black.opacity(0.5), in: Capsule())
+                    .transition(.opacity)
+            }
+
+            // Task 091 P2-1/P2-2: photo-only controls, above the mode indicator.
+            if captureMode == .photo {
+                photoControlsRow
+            }
+
+            // Task 091 P0-2: which mode the shutter is in, immediately above it.
+            captureModeIndicator
+
             // Task 043 requirement 6 / 047: directly above the record button in both
             // orientations — the control itself adapts its own width.
             zoomControl(isLandscape: isLandscape)
@@ -931,51 +977,35 @@ struct CameraPreviewView: View {
             // where the system Camera puts it. `overlay` rather than an `HStack`, so the
             // flip button cannot shift the shutter off centre — the primary control has to
             // be in the same place every time the thumb reaches for it.
-            Button {
-                recordingViewModel.toggleRecording(expectsAudioTrack: isMicrophoneGranted)
-            } label: {
-                ZStack {
-                    Circle()
-                        .stroke(.white, lineWidth: 4)
-                        .frame(width: 76, height: 76)
-
-                    if recordingViewModel.isRecording {
-                        RoundedRectangle(cornerRadius: 7)
-                            .fill(Color.red)
-                            .frame(width: 32, height: 32)
-                    } else {
-                        Circle()
-                            .fill(Color.red)
-                            .frame(width: 62, height: 62)
+            // Task 091 P0-1: mode · shutter · flip. The shutter keeps its `overlay`
+            // placement rather than becoming an HStack element, so the primary control
+            // stays dead centre no matter what sits beside it — the thumb reaches for the
+            // same spot every time.
+            shutterButton
+                .overlay(alignment: .leading) {
+                    modeToggleButton
+                        .offset(x: isLandscape ? 0 : -96)
+                        .opacity(isLandscape ? 0 : 1)
+                }
+                .overlay(alignment: .trailing) {
+                    // Task 027 requirement 3: disabled while recording — switching camera
+                    // mid-recording is never allowed, both here and defensively inside
+                    // `CameraService.switchCamera(to:)` itself.
+                    Button {
+                        Task { await toggleCameraPosition() }
+                    } label: {
+                        Image(systemName: "arrow.triangle.2.circlepath.camera")
+                            .font(.system(size: 17))
+                            .padding(13)
+                            .background(.black.opacity(0.45), in: Circle())
+                            .foregroundStyle(.white)
                     }
+                    .disabled(recordingViewModel.isRecording)
+                    .opacity(recordingViewModel.isRecording ? 0.35 : 1)
+                    .accessibilityLabel("카메라 전환")
+                    .offset(x: isLandscape ? 0 : 96)
+                    .opacity(isLandscape ? 0 : 1)
                 }
-                .animation(.spring(response: 0.24, dampingFraction: 0.7), value: recordingViewModel.isRecording)
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel(
-                recordingViewModel.isRecording
-                    ? AppStrings.Camera.stopRecording
-                    : AppStrings.Camera.startRecording
-            )
-            .overlay(alignment: .trailing) {
-                // Task 027 requirement 3: disabled while recording — switching camera
-                // mid-recording is never allowed, both here and defensively inside
-                // `CameraService.switchCamera(to:)` itself.
-                Button {
-                    Task { await toggleCameraPosition() }
-                } label: {
-                    Image(systemName: "arrow.triangle.2.circlepath.camera")
-                        .font(.system(size: 17))
-                        .padding(13)
-                        .background(.black.opacity(0.45), in: Circle())
-                        .foregroundStyle(.white)
-                }
-                .disabled(recordingViewModel.isRecording)
-                .opacity(recordingViewModel.isRecording ? 0.35 : 1)
-                .accessibilityLabel("카메라 전환")
-                .offset(x: isLandscape ? 0 : 96)
-                .opacity(isLandscape ? 0 : 1)
-            }
         }
         // Requirement 3: Safe Area respected in both orientations — the trailing
         // column clears the home indicator/notch side, the bottom stack clears the
@@ -986,6 +1016,137 @@ struct CameraPreviewView: View {
         .padding(isLandscape ? .trailing : .bottom, isLandscape ? 20 : 28)
         .padding(isLandscape ? .vertical : .horizontal, 12)
         .frame(maxWidth: isLandscape ? 260 : .infinity)
+    }
+
+    /// Task 091 P0-1: one shutter, two meanings. The shape carries which — a red circle
+    /// that becomes a rounded square while recording, or a white ring for a still, the
+    /// way the system Camera distinguishes them. No text, so nothing to localise and
+    /// nothing that changes width between states.
+    private var shutterButton: some View {
+        Button {
+            switch captureMode {
+            case .video:
+                recordingViewModel.toggleRecording(expectsAudioTrack: isMicrophoneGranted)
+            case .photo:
+                // Tapping during a countdown cancels it rather than queueing a second
+                // photo — the same tap that started it should be able to stop it.
+                if photoCaptureViewModel.countdown != nil {
+                    photoCaptureViewModel.cancelTimer()
+                } else {
+                    photoCaptureViewModel.capture()
+                }
+            }
+        } label: {
+            ZStack {
+                Circle()
+                    .stroke(.white, lineWidth: 4)
+                    .frame(width: 76, height: 76)
+
+                switch captureMode {
+                case .video:
+                    if recordingViewModel.isRecording {
+                        RoundedRectangle(cornerRadius: 7)
+                            .fill(Color.red)
+                            .frame(width: 32, height: 32)
+                    } else {
+                        Circle().fill(Color.red).frame(width: 62, height: 62)
+                    }
+                case .photo:
+                    Circle().fill(Color.white).frame(width: 62, height: 62)
+                }
+
+                if let countdown = photoCaptureViewModel.countdown {
+                    Text("\(countdown)")
+                        .font(.system(size: 30, weight: .semibold, design: .rounded))
+                        .foregroundStyle(.black)
+                }
+            }
+            .animation(.spring(response: 0.24, dampingFraction: 0.7), value: recordingViewModel.isRecording)
+            .animation(.spring(response: 0.24, dampingFraction: 0.7), value: captureMode)
+            .scaleEffect(photoCaptureViewModel.isCapturing ? 0.9 : 1)
+            .animation(.spring(response: 0.18, dampingFraction: 0.6), value: photoCaptureViewModel.isCapturing)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(shutterAccessibilityLabel)
+    }
+
+    private var shutterAccessibilityLabel: String {
+        switch captureMode {
+        case .video:
+            recordingViewModel.isRecording
+                ? AppStrings.Camera.stopRecording
+                : AppStrings.Camera.startRecording
+        case .photo:
+            photoCaptureViewModel.countdown != nil ? "타이머 취소" : "사진 촬영"
+        }
+    }
+
+    /// Video ↔ Photo. Disabled while recording: the shutter must not change meaning
+    /// underneath a recording in progress.
+    private var modeToggleButton: some View {
+        Button {
+            photoCaptureViewModel.cancelTimer()
+            captureMode = captureMode.toggled
+            UIImpactFeedbackGenerator(style: .light).impactOccurred()
+        } label: {
+            Image(systemName: captureMode.toggled.symbolName)
+                .font(.system(size: 17))
+                .padding(13)
+                .background(.black.opacity(0.45), in: Circle())
+                .foregroundStyle(.white)
+        }
+        .disabled(recordingViewModel.isRecording)
+        .opacity(recordingViewModel.isRecording ? 0.35 : 1)
+        .accessibilityLabel(captureMode == .video ? "사진 모드로 전환" : "동영상 모드로 전환")
+    }
+
+    /// Task 091 P0-2: which mode the shutter is in, right above it where the thumb is
+    /// already looking. The selected side is opaque and the other is dimmed, so it reads
+    /// without needing a legend.
+    private var captureModeIndicator: some View {
+        HStack(spacing: 14) {
+            ForEach(CaptureMode.allCases) { mode in
+                Text(mode.title)
+                    .font(.caption.weight(mode == captureMode ? .bold : .regular))
+                    .foregroundStyle(mode == captureMode ? Color.yellow : Color.white.opacity(0.55))
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 5)
+        .background(.black.opacity(0.35), in: Capsule())
+        .animation(.easeInOut(duration: 0.15), value: captureMode)
+    }
+
+    /// Task 091 P2-1/P2-2: flash and self-timer, shown only in photo mode because neither
+    /// applies to this app's video path.
+    private var photoControlsRow: some View {
+        HStack(spacing: 10) {
+            Button {
+                photoCaptureViewModel.flashMode = photoCaptureViewModel.flashMode.next
+            } label: {
+                Image(systemName: photoCaptureViewModel.flashMode.symbolName)
+                    .font(.system(size: 14))
+                    .frame(width: 34, height: 30)
+                    .background(.black.opacity(0.45), in: Capsule())
+                    .foregroundStyle(photoCaptureViewModel.flashMode == .off ? .white.opacity(0.6) : .yellow)
+            }
+            .accessibilityLabel("플래시 \(photoCaptureViewModel.flashMode.rawValue)")
+
+            Button {
+                photoCaptureViewModel.timerDuration = photoCaptureViewModel.timerDuration.next
+            } label: {
+                HStack(spacing: 3) {
+                    Image(systemName: "timer").font(.system(size: 13))
+                    Text(photoCaptureViewModel.timerDuration.label).font(.caption2.bold())
+                }
+                .padding(.horizontal, 9)
+                .frame(height: 30)
+                .background(.black.opacity(0.45), in: Capsule())
+                .foregroundStyle(photoCaptureViewModel.timerDuration == .off ? .white.opacity(0.6) : .yellow)
+            }
+            .accessibilityLabel("타이머 \(photoCaptureViewModel.timerDuration.label)")
+        }
+        .buttonStyle(.plain)
     }
 }
 

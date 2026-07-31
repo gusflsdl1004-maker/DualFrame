@@ -15,6 +15,15 @@ import Foundation
 @MainActor
 final class VideoLibraryViewModel: ObservableObject {
     @Published private(set) var groups: [ResolvedRecordingGroup] = []
+    /// Task 091 P1-3: stills, listed alongside recordings but stored separately.
+    ///
+    /// A second array rather than a merged one. `ResolvedRecordingGroup` carries
+    /// long/short membership, generation state and export state that mean nothing for a
+    /// still, and forcing photos through it would have meant either widening that type or
+    /// filling it with placeholder cases — both of which put photo concerns inside the
+    /// recording model (CLAUDE.md rule 58). The two are joined in the view, which is the
+    /// only place they actually need to look like one library.
+    @Published private(set) var photos: [PhotoRecord] = []
     @Published private(set) var errorMessage: String?
     @Published private(set) var exportStates: [String: ExportState] = [:]
 
@@ -32,6 +41,7 @@ final class VideoLibraryViewModel: ObservableObject {
     var currentPlan: UserPlan { exportManager.currentPlan }
 
     private let libraryService: InternalVideoLibraryService
+    private let photoLibraryService: InternalPhotoLibraryService
     private let groupService: RecordingGroupService
     private let externalStorageViewModel: ExternalStorageViewModel
     private let exportCoordinator: ExportCoordinator
@@ -47,9 +57,11 @@ final class VideoLibraryViewModel: ObservableObject {
         externalStorageViewModel: ExternalStorageViewModel,
         groupService: RecordingGroupService = RecordingGroupService(),
         exportCoordinator: ExportCoordinator? = nil,
-        exportManager: ExportManager? = nil
+        exportManager: ExportManager? = nil,
+        photoLibraryService: InternalPhotoLibraryService = InternalPhotoLibraryService()
     ) {
         self.libraryService = libraryService
+        self.photoLibraryService = photoLibraryService
         self.externalStorageViewModel = externalStorageViewModel
         self.groupService = groupService
         let coordinator = exportCoordinator ?? ExportCoordinator(libraryService: libraryService)
@@ -162,6 +174,20 @@ final class VideoLibraryViewModel: ObservableObject {
         } catch {
             errorMessage = "Could not load the video library."
         }
+        // Loaded independently: a failure listing photos must not blank the recordings,
+        // which are the irreplaceable half of this library.
+        photos = (try? await photoLibraryService.loadAllRecords()) ?? []
+    }
+
+    /// Task 091 P1-3: deletes one still. Photos are ordinary files with no metadata
+    /// sidecar and no group membership, so there is nothing else to unwind.
+    func delete(_ photo: PhotoRecord) async {
+        do {
+            try await photoLibraryService.delete(photo)
+            await refresh()
+        } catch {
+            errorMessage = "Could not delete the photo."
+        }
     }
 
     /// Deletes one recording (requirement 7: individual deletion). Leaves the rest of
@@ -212,6 +238,12 @@ final class VideoLibraryViewModel: ObservableObject {
             for record in stragglers {
                 if (try? await libraryService.delete(record)) != nil { deleted += 1 }
             }
+        }
+
+        // Task 091: stills too — "전체 삭제" has to mean the whole library, or the storage
+        // the user is trying to reclaim stays occupied.
+        for photo in photos {
+            if (try? await photoLibraryService.delete(photo)) != nil { deleted += 1 }
         }
 
         await refresh()

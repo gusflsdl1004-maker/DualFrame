@@ -34,6 +34,35 @@ nonisolated struct PhotoLibraryExportService {
         return await PHPhotoLibrary.requestAuthorization(for: .addOnly)
     }
 
+    /// Task 091: copies the still at `fileURL` into Photos. Same contract as
+    /// `exportVideo(at:)` — the app's own copy is left untouched, so a failure here
+    /// never costs the user the capture.
+    ///
+    /// `addResource(with:fileURL:options:)` rather than
+    /// `creationRequestForAssetFromImage(atFileURL:)`: it hands Photos the original file
+    /// bytes, so the HEIC/JPEG and its EXIF land intact rather than being re-encoded.
+    func exportPhoto(at fileURL: URL) async throws {
+        let status = await requestAuthorizationIfNeeded()
+        guard status == .authorized || status == .limited else {
+            throw PhotoLibraryExportError.permissionDenied
+        }
+
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            PHPhotoLibrary.shared().performChanges {
+                let request = PHAssetCreationRequest.forAsset()
+                let options = PHAssetResourceCreationOptions()
+                options.shouldMoveFile = false
+                request.addResource(with: .photo, fileURL: fileURL, options: options)
+            } completionHandler: { success, error in
+                if success {
+                    continuation.resume()
+                } else {
+                    continuation.resume(throwing: error ?? PhotoLibraryExportError.exportFailed)
+                }
+            }
+        }
+    }
+
     /// Copies the video at `fileURL` into Photos. The original file at `fileURL` is
     /// left untouched — `PHAssetChangeRequest` only reads from it to create a copy.
     func exportVideo(at fileURL: URL) async throws {

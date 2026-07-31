@@ -14,6 +14,52 @@ enum CameraServiceError: Error {
     /// never allowed — the UI already disables the toggle button while recording, and
     /// this is the defense-in-depth check inside `CameraService` itself.
     case cannotSwitchWhileRecording
+    /// Task 091: the session refused the photo output at `configure()` time, so photo
+    /// mode is unavailable for this launch. Recording is unaffected.
+    case photoOutputUnavailable
+    /// Refused on purpose — see `capturePhoto(flashMode:)`.
+    case photoCaptureWhileRecording
+    case photoCaptureFailed
+}
+
+/// Bridges `AVCapturePhotoOutput`'s delegate callback to an `async` result.
+///
+/// A separate object per capture, retained by `CameraService` for the duration: the
+/// output holds its delegate weakly, and a deallocated delegate means the callback never
+/// arrives and the photo is silently lost.
+private final class PhotoCaptureDelegate: NSObject, AVCapturePhotoCaptureDelegate, @unchecked Sendable {
+    private let completion: (Result<(data: Data, fileExtension: String), Error>) -> Void
+    private var hasCompleted = false
+
+    init(completion: @escaping (Result<(data: Data, fileExtension: String), Error>) -> Void) {
+        self.completion = completion
+    }
+
+    func photoOutput(
+        _ output: AVCapturePhotoOutput,
+        didFinishProcessingPhoto photo: AVCapturePhoto,
+        error: Error?
+    ) {
+        // AVFoundation can deliver more than one callback for a single capture; resuming
+        // a continuation twice traps. Guarded rather than assumed.
+        guard !hasCompleted else { return }
+        hasCompleted = true
+
+        if let error {
+            completion(.failure(error))
+            return
+        }
+        // `fileDataRepresentation()` is the complete container — EXIF (capture time,
+        // dimensions, orientation, lens) is already inside it, so writing these bytes
+        // straight to disk preserves the metadata without this app assembling any of it.
+        guard let data = photo.fileDataRepresentation() else {
+            completion(.failure(CameraServiceError.photoCaptureFailed))
+            return
+        }
+        let isHEVC = photo.resolvedSettings.photoDimensions.width > 0
+            && (output.availablePhotoCodecTypes.contains(.hevc))
+        completion(.success((data, isHEVC ? "heic" : "jpg")))
+    }
 }
 
 /// Owns the capture session: camera/microphone inputs for a live preview, plus the
@@ -73,6 +119,16 @@ actor CameraService {
 
     private let videoOutput = AVCaptureVideoDataOutput()
     private let audioOutput = AVCaptureAudioDataOutput()
+    /// Task 091: added once, in `configure()`, inside the transaction that is already
+    /// open there. Never touched again — see the comment at the call site.
+    private let photoOutput = AVCapturePhotoOutput()
+    /// False when the session refused the photo output, so the UI can say photo mode is
+    /// unavailable instead of offering a shutter that does nothing.
+    private(set) var isPhotoOutputAvailable = false
+    /// Retained for the duration of a capture: `AVCapturePhotoOutput` does not keep its
+    /// delegate alive, and a deallocated delegate means the callback never arrives and
+    /// the photo is silently lost.
+    private var photoCaptureDelegates: [Int64: PhotoCaptureDelegate] = [:]
     /// Task 063 item 5 (`FrameWasLate` → delegate queue backlog): **video and audio no
     /// longer share one queue.**
     ///
@@ -186,6 +242,66 @@ actor CameraService {
     func stop() {
         guard session.isRunning else { return }
         session.stopRunning()
+    }
+
+    // MARK: - Photo capture (Task 091)
+
+    /// Takes one still.
+    ///
+    /// **Touches no session configuration.** `capturePhoto(with:delegate:)` uses the
+    /// output that `configure()` already added; there is no `beginConfiguration()` on this
+    /// path and no format change. The video pipeline is not involved: the same session
+    /// keeps delivering to `videoOutput` throughout.
+    ///
+    /// Refuses while recording. `AVCapturePhotoOutput` can technically capture during a
+    /// video recording, but it may momentarily interrupt the capture pipeline to service
+    /// the still — and a dropped or late frame in a recording is a cost this app does not
+    /// pay for a secondary feature (CLAUDE.md rules 1-3). The shutter is a still shutter
+    /// or a record button, never both at once.
+    func capturePhoto(flashMode: AVCaptureDevice.FlashMode) async throws -> (data: Data, fileExtension: String) {
+        guard isPhotoOutputAvailable else { throw CameraServiceError.photoOutputUnavailable }
+        guard session.isRunning else { throw CameraServiceError.photoCaptureFailed }
+        guard await recordingService.state != .recording else {
+            throw CameraServiceError.photoCaptureWhileRecording
+        }
+
+        // HEVC when the device offers it, JPEG otherwise. Requested per capture rather
+        // than stored, because `availablePhotoCodecTypes` depends on the active format
+        // and the active format changes with the recording quality setting.
+        let settings: AVCapturePhotoSettings
+        if photoOutput.availablePhotoCodecTypes.contains(.hevc) {
+            settings = AVCapturePhotoSettings(format: [AVVideoCodecKey: AVVideoCodecType.hevc])
+        } else {
+            settings = AVCapturePhotoSettings()
+        }
+
+        // Only ask for flash the device actually supports in this configuration, so an
+        // unsupported mode cannot make the whole capture fail.
+        if photoOutput.supportedFlashModes.contains(flashMode) {
+            settings.flashMode = flashMode
+        }
+        // The largest still the *current* video format supports. Deliberately not a
+        // format change: raising `maxPhotoDimensions` beyond what the active format
+        // offers would re-resolve the session, which is what must never happen for a
+        // photo (see `configure()`).
+        if let maxDimensions = videoDevice?.activeFormat.supportedMaxPhotoDimensions.last {
+            settings.maxPhotoDimensions = maxDimensions
+        }
+
+        let uniqueID = settings.uniqueID
+        return try await withCheckedThrowingContinuation { continuation in
+            let delegate = PhotoCaptureDelegate { [weak self] result in
+                // Resume first, release second: the delegate must outlive the callback.
+                continuation.resume(with: result)
+                Task { await self?.releasePhotoDelegate(uniqueID) }
+            }
+            photoCaptureDelegates[uniqueID] = delegate
+            photoOutput.capturePhoto(with: settings, delegate: delegate)
+        }
+    }
+
+    private func releasePhotoDelegate(_ uniqueID: Int64) {
+        photoCaptureDelegates[uniqueID] = nil
     }
 
     /// Reads the current recording orientation from `OrientationManager` for whichever
@@ -337,6 +453,25 @@ actor CameraService {
         audioOutput.setSampleBufferDelegate(outputForwarder, queue: audioSampleBufferQueue)
         if session.canAddOutput(audioOutput) {
             session.addOutput(audioOutput)
+        }
+
+        // Task 091 P0-3: **the photo output is added here and nowhere else.**
+        //
+        // Inside this method's still-open transaction, before `start()` calls
+        // `startRunning()`. It is never added, removed or reconfigured afterwards — no
+        // `beginConfiguration()` on a live session for photos, ever. That rule exists
+        // because Tasks 079 and 081 both shipped exactly that mistake for a *preview*
+        // layer and both times it cost recording: a black camera and a dead record
+        // button, then a freeze on the record button.
+        //
+        // Best-effort, like the audio input above: if the session refuses it, video
+        // recording is completely unaffected and photo mode simply reports being
+        // unavailable rather than the camera failing to start.
+        if session.canAddOutput(photoOutput) {
+            session.addOutput(photoOutput)
+            isPhotoOutputAvailable = true
+        } else {
+            logStartupEvent("Photo Output Unavailable")
         }
 
         await applyDeviceSpecificSettings(device: device)
