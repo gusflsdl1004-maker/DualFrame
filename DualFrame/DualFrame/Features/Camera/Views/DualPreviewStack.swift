@@ -1,0 +1,106 @@
+//
+//  DualPreviewStack.swift
+//  DualFrame
+//
+
+import AVFoundation
+import SwiftUI
+
+/// Task 075 (UI 개편) P0-1: both results, as real previews rather than a guide.
+///
+/// The vertical result sits above the horizontal one, both fed by the **same**
+/// `AVCaptureSession` through separate `AVCaptureVideoPreviewLayer`s. Preview layers are
+/// display-side observers — no `AVCaptureVideoDataOutput`, no writer — so this adds no
+/// consumer to the capture pipeline. The distinction matters: Task 069 moved short-form
+/// generation out of the recording path because a second *writer* cost 8fps at 4K60, and
+/// two previews are not that.
+///
+/// Each pane is `.resizeAspectFill` inside its true output aspect, which is what makes
+/// them honest rather than illustrative. Filling 9:16 from a 16:9 source crops left and
+/// right evenly — the same centre crop `CropCalculator` computes and
+/// `ShortGenerationService` performs. So the top pane is the short-form file, not a
+/// drawing of where it would be.
+///
+/// **Why vertical on top.** The short-form output is the one being framed: it is the
+/// tighter crop, so it is the one the user has to actively compose for, and on a phone
+/// held in one hand the upper half is where the eye rests while the thumb stays on the
+/// shutter. The long-form pane below is the safety net — it shows what is being kept
+/// outside the crop, which is exactly the question the old guide lines answered badly.
+struct DualPreviewStack: View {
+    let session: AVCaptureSession
+    /// When false only the long-form pane is shown — previewing a short-form file that
+    /// will never be generated would be a lie.
+    var showsShortPane: Bool
+
+    var body: some View {
+        GeometryReader { geometry in
+            if showsShortPane {
+                VStack(spacing: 8) {
+                    pane(
+                        label: "SHORT",
+                        detail: "9:16 · 저장될 쇼츠",
+                        aspect: 9.0 / 16.0,
+                        available: geometry.size,
+                        heightFraction: 0.56,
+                        emphasized: true
+                    )
+                    pane(
+                        label: "LONG",
+                        detail: "16:9 · 원본",
+                        aspect: 16.0 / 9.0,
+                        available: geometry.size,
+                        heightFraction: 0.44,
+                        emphasized: false
+                    )
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                CameraPreviewRepresentable(session: session)
+            }
+        }
+    }
+
+    /// One preview pane, sized to fit its aspect inside the slice it is given. Height is
+    /// the constraint on a phone, so the width follows from the aspect rather than the
+    /// other way round — that keeps both panes at their true shape instead of stretching
+    /// either one to fill.
+    private func pane(
+        label: String,
+        detail: String,
+        aspect: CGFloat,
+        available: CGSize,
+        heightFraction: CGFloat,
+        emphasized: Bool
+    ) -> some View {
+        let maxHeight = available.height * heightFraction
+        let width = min(available.width, maxHeight * aspect)
+        let height = width / aspect
+
+        return ZStack(alignment: .topLeading) {
+            ShortPreviewRepresentable(session: session)
+                .frame(width: width, height: height)
+                .clipShape(RoundedRectangle(cornerRadius: 12))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 12)
+                        // The short pane is the one being composed, so it carries the
+                        // brighter edge. The long pane is context, not the subject.
+                        .stroke(.white.opacity(emphasized ? 0.9 : 0.35), lineWidth: emphasized ? 2 : 1)
+                )
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(label)
+                    .font(.caption2.bold())
+                Text(detail)
+                    .font(.system(size: 9))
+                    .foregroundStyle(.white.opacity(0.75))
+            }
+            .foregroundStyle(.white)
+            .padding(.horizontal, 7)
+            .padding(.vertical, 4)
+            .background(.black.opacity(0.45), in: RoundedRectangle(cornerRadius: 7))
+            .padding(8)
+        }
+        .frame(width: width, height: height)
+        .frame(maxWidth: .infinity)
+    }
+}

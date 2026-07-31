@@ -122,8 +122,22 @@ struct CameraPreviewView: View {
                     // instead keeps every control inside the safe area while the camera
                     // image alone still bleeds edge to edge.
                     ZStack {
-                        CameraPreviewRepresentable(session: cameraService.session)
-                            .ignoresSafeArea()
+                        // Task 075 (UI 개편) P0-1: both outputs as real previews.
+                        // Portrait + Long&Short only — in landscape the two panes would
+                        // each be a letterboxed sliver, and on Long-only there is no
+                        // second result to show, so both fall back to the full-screen
+                        // preview this app has always had.
+                        Group {
+                            if !isLandscape, outputModeViewModel.settings.outputMode == .both {
+                                DualPreviewStack(
+                                    session: cameraService.session,
+                                    showsShortPane: true
+                                )
+                            } else {
+                                CameraPreviewRepresentable(session: cameraService.session)
+                                    .ignoresSafeArea()
+                            }
+                        }
                             // Task 043 requirement 4: pinch-to-zoom directly on the
                             // preview, matching Apple Camera. `$pinchScale` reports a
                             // *relative* scale (1.0 = unchanged since the gesture
@@ -142,7 +156,12 @@ struct CameraPreviewView: View {
                         // Task 040: purely visual, drawn above the live preview and
                         // below the status bar/controls so it never obscures them.
                         // Camera output itself is untouched — this only draws lines.
-                        if guidelineViewModel.settings.isEnabled {
+                        // Superseded by `DualPreviewStack` whenever it is shown — a dim
+                        // mask over a full-screen preview answers the same question the
+                        // stacked panes now answer directly, and drawing both would be
+                        // two competing depictions of one crop.
+                        if guidelineViewModel.settings.isEnabled,
+                           isLandscape || outputModeViewModel.settings.outputMode != .both {
                             RecordingGuidelineOverlayView()
                                 .ignoresSafeArea()
                         }
@@ -155,7 +174,11 @@ struct CameraPreviewView: View {
                         // A second preview layer on the same session: display-side
                         // only, no data output and no writer, so it cannot cost capture
                         // throughput the way the second *writer* did before Task 069.
+                        // Landscape keeps the PIP: the stacked layout needs vertical
+                        // room it does not have there, but the short-form result still
+                        // has to be visible while composing.
                         if guidelineViewModel.settings.isEnabled,
+                           isLandscape,
                            outputModeViewModel.settings.outputMode == .both {
                             VStack {
                                 HStack {
@@ -165,7 +188,7 @@ struct CameraPreviewView: View {
                                 }
                                 Spacer()
                             }
-                            .padding(.top, isLandscape ? 12 : 96)
+                            .padding(.top, 12)
                         }
 
                         // Task 052 requirement 3: two genuinely different layouts, not
