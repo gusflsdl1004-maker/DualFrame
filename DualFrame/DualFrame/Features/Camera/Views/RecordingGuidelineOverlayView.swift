@@ -55,29 +55,59 @@ struct RecordingGuidelineOverlayView: View {
     var body: some View {
         GeometryReader { geometry in
             let screen = geometry.size
-            let rect = shortFormRectOnScreen(in: screen)
+            // The real crop, unchanged — this is still `CropCalculator` mapped through
+            // the preview's own layout, and nothing below alters it.
+            let crop = shortFormRectOnScreen(in: screen)
+            // Task 086: what to *draw*. The crop can extend past the visible window, and
+            // when it does the brackets and edges used to be off-screen — technically
+            // right, useless to look at. The drawn box is the crop intersected with the
+            // screen, inset by a hair so a 1pt stroke sitting exactly on the edge is not
+            // half-clipped. Display only: the crop itself is untouched.
+            let frame = drawnFrame(crop: crop, screen: screen)
+            let edges = ClippedEdges(crop: crop, screen: screen)
 
             ZStack {
-                // ① The 9:16 frame itself.
-                Path { $0.addRect(rect) }
-                    .stroke(Color.white.opacity(0.7), lineWidth: 1)
-
-                // ② Centre vertical line, ③ centre horizontal line. Bounded to the crop
-                // rect rather than the screen, so they read as belonging to the frame.
+                // ① The 9:16 frame. Each side is drawn separately because the sides do not
+                // all mean the same thing: a side that is the real crop boundary is solid,
+                // and one that only exists because the screen ran out is dashed. Without
+                // that distinction, moving the line to the screen edge would be telling
+                // the user the short form stops there when it does not.
                 Path { path in
-                    path.move(to: CGPoint(x: rect.midX, y: rect.minY))
-                    path.addLine(to: CGPoint(x: rect.midX, y: rect.maxY))
-                    path.move(to: CGPoint(x: rect.minX, y: rect.midY))
-                    path.addLine(to: CGPoint(x: rect.maxX, y: rect.midY))
+                    if !edges.leftClipped { path.addLines([CGPoint(x: frame.minX, y: frame.minY), CGPoint(x: frame.minX, y: frame.maxY)]) }
+                    if !edges.rightClipped { path.addLines([CGPoint(x: frame.maxX, y: frame.minY), CGPoint(x: frame.maxX, y: frame.maxY)]) }
+                    if !edges.topClipped { path.addLines([CGPoint(x: frame.minX, y: frame.minY), CGPoint(x: frame.maxX, y: frame.minY)]) }
+                    if !edges.bottomClipped { path.addLines([CGPoint(x: frame.minX, y: frame.maxY), CGPoint(x: frame.maxX, y: frame.maxY)]) }
+                }
+                .stroke(Color.white.opacity(0.7), lineWidth: 1)
+
+                Path { path in
+                    if edges.leftClipped { path.addLines([CGPoint(x: frame.minX, y: frame.minY), CGPoint(x: frame.minX, y: frame.maxY)]) }
+                    if edges.rightClipped { path.addLines([CGPoint(x: frame.maxX, y: frame.minY), CGPoint(x: frame.maxX, y: frame.maxY)]) }
+                    if edges.topClipped { path.addLines([CGPoint(x: frame.minX, y: frame.minY), CGPoint(x: frame.maxX, y: frame.minY)]) }
+                    if edges.bottomClipped { path.addLines([CGPoint(x: frame.minX, y: frame.maxY), CGPoint(x: frame.maxX, y: frame.maxY)]) }
+                }
+                .stroke(Color.white.opacity(0.5), style: StrokeStyle(lineWidth: 1, dash: [5, 4]))
+
+                // ② Centre vertical line, ③ centre horizontal line.
+                //
+                // Always on screen, and not by clamping: the crop is centred in the video
+                // and `.resizeAspectFill` centres the video in the screen, so the crop's
+                // centre and the screen's centre are the same point. The cross is drawn at
+                // the real crop centre and lands in the middle of the screen on its own.
+                Path { path in
+                    path.move(to: CGPoint(x: crop.midX, y: frame.minY))
+                    path.addLine(to: CGPoint(x: crop.midX, y: frame.maxY))
+                    path.move(to: CGPoint(x: frame.minX, y: crop.midY))
+                    path.addLine(to: CGPoint(x: frame.maxX, y: crop.midY))
                 }
                 .stroke(Color.white.opacity(0.5), lineWidth: 1)
 
-                // ④ Corner brackets. Same weight as everything else — they read as corners
-                // through their shape, so they do not need extra contrast to do it.
+                // ④ Corner brackets, on the drawn frame so they are always visible. They
+                // read as corners through their shape, so they need no extra weight.
                 Path { path in
-                    let length = min(24, min(rect.width, rect.height) / 5)
-                    for (x, dx) in [(rect.minX, CGFloat(1)), (rect.maxX, CGFloat(-1))] {
-                        for (y, dy) in [(rect.minY, CGFloat(1)), (rect.maxY, CGFloat(-1))] {
+                    let length = min(24, min(frame.width, frame.height) / 5)
+                    for (x, dx) in [(frame.minX, CGFloat(1)), (frame.maxX, CGFloat(-1))] {
+                        for (y, dy) in [(frame.minY, CGFloat(1)), (frame.maxY, CGFloat(-1))] {
                             path.move(to: CGPoint(x: x + dx * length, y: y))
                             path.addLine(to: CGPoint(x: x, y: y))
                             path.addLine(to: CGPoint(x: x, y: y + dy * length))
@@ -86,14 +116,46 @@ struct RecordingGuidelineOverlayView: View {
                 }
                 .stroke(Color.white.opacity(0.7), lineWidth: 1)
             }
-            // Anything outside the preview stays outside it — the crop rect can extend
-            // past the screen, and the lines should stop at the edge rather than draw
-            // over the controls.
             .clipped()
         }
         // Guide only — never intercepts touches meant for the preview or the controls
         // layered above it.
         .allowsHitTesting(false)
+    }
+
+    /// Task 086: which sides of the drawn box are the real crop boundary and which only
+    /// exist because the visible window ran out. Purely a drawing question — it reads the
+    /// crop, never changes it.
+    private struct ClippedEdges {
+        let leftClipped: Bool
+        let rightClipped: Bool
+        let topClipped: Bool
+        let bottomClipped: Bool
+
+        init(crop: CGRect, screen: CGSize) {
+            leftClipped = crop.minX < 0
+            rightClipped = crop.maxX > screen.width
+            topClipped = crop.minY < 0
+            bottomClipped = crop.maxY > screen.height
+        }
+    }
+
+    /// The rectangle actually drawn: the crop intersected with the visible window, inset
+    /// by a hair so a 1pt stroke centred on the edge is not half-clipped.
+    ///
+    /// This is the whole of Task 086. The crop rect is unchanged and still comes from
+    /// `CropCalculator`; only what gets painted is brought inside the screen, so the
+    /// brackets and side lines are always there to look at. The dashed styling above is
+    /// what keeps that honest — a side moved in to the screen edge never claims to be the
+    /// place the short form ends.
+    private func drawnFrame(crop: CGRect, screen: CGSize) -> CGRect {
+        let inset: CGFloat = 1
+        let bounds = CGRect(origin: .zero, size: screen).insetBy(dx: inset, dy: inset)
+        let intersection = crop.intersection(bounds)
+        // `.null` when the crop is entirely off-screen — not reachable with a centred
+        // crop and a centred preview, but a zero-size frame draws nothing rather than
+        // drawing something wrong.
+        return intersection.isNull ? .zero : intersection
     }
 
     /// The short-form crop, in the container's coordinate space.
