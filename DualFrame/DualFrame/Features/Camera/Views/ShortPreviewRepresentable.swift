@@ -23,6 +23,13 @@ import SwiftUI
 /// than silently disagreeing.
 final class ShortPreviewLayerView: UIView {
     private let previewLayer = AVCaptureVideoPreviewLayer()
+    #if DEBUG
+    /// Task 077: how many times `attach` has been asked to do work. `updateUIView` calls
+    /// it on every SwiftUI update, so this counts only the attempts made *before* a
+    /// connection existed — the ones that matter for "did it ever connect, and on which
+    /// pass". Logging every call would flood the console with no-ops.
+    private var attachAttempts = 0
+    #endif
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -69,10 +76,19 @@ final class ShortPreviewLayerView: UIView {
     func attach(session: AVCaptureSession, connected: Bool) -> Bool {
         guard previewLayer.connection == nil else { return true }
 
+        #if DEBUG
+        attachAttempts += 1
+        #endif
+
         if previewLayer.session !== session {
             previewLayer.setSessionWithNoConnection(session)
         }
-        guard connected else { return false }
+        guard connected else {
+            #if DEBUG
+            log(canAdd: nil, added: false, note: "connected=false (실험 조건 ③ — 의도된 미연결)")
+            #endif
+            return false
+        }
 
         guard let videoPort = session.inputs
             .compactMap({ $0 as? AVCaptureDeviceInput })
@@ -82,11 +98,20 @@ final class ShortPreviewLayerView: UIView {
         else {
             // The session has no video input yet. Not an error — `updateUIView` calls
             // back and this succeeds on a later pass.
+            #if DEBUG
+            log(canAdd: nil, added: false, note: "no video input port yet (configure 미완료)")
+            #endif
             return false
         }
 
         let connection = AVCaptureConnection(inputPort: videoPort, videoPreviewLayer: previewLayer)
-        guard session.canAddConnection(connection) else { return false }
+        let canAdd = session.canAddConnection(connection)
+        guard canAdd else {
+            #if DEBUG
+            log(canAdd: false, added: false, note: "세션이 두 번째 프리뷰 연결을 거부함")
+            #endif
+            return false
+        }
 
         // A configuration transaction on a running session. It adds a *preview*
         // connection only — no output, no writer — so it cannot change what the capture
@@ -96,8 +121,34 @@ final class ShortPreviewLayerView: UIView {
         session.beginConfiguration()
         session.addConnection(connection)
         session.commitConfiguration()
+
+        #if DEBUG
+        // `isActive` is read after `commitConfiguration`, which is when the session has
+        // actually resolved the connection — reading it before the commit would report
+        // the pre-resolution value and be misleading.
+        log(canAdd: true, added: true, note: nil, connection: connection)
+        #endif
         return true
     }
+
+    #if DEBUG
+    private func log(canAdd: Bool?, added: Bool, note: String?, connection: AVCaptureConnection? = nil) {
+        let target = connection ?? previewLayer.connection
+        var line = """
+        [Task077-Preview]
+        attachAttempt=\(attachAttempts)
+        canAddConnection=\(canAdd.map(String.init(describing:)) ?? "n/a")
+        connectionAdded=\(added)
+        isActive=\(target.map { String(describing: $0.isActive) } ?? "n/a")
+        isEnabled=\(target.map { String(describing: $0.isEnabled) } ?? "n/a")
+        """
+        if let note { line += "\nnote=\(note)" }
+        // Handed off, matching every other diagnostic in this project — a synchronous
+        // print here runs during a SwiftUI update and on the same thread that just
+        // committed a session configuration.
+        Task.detached(priority: .utility) { print(line) }
+    }
+    #endif
 
     private func setUp() {
         previewLayer.videoGravity = .resizeAspectFill
