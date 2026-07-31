@@ -176,6 +176,48 @@ final class VideoLibraryViewModel: ObservableObject {
         }
     }
 
+    /// Task 090 P1-1: empties the app's own library.
+    ///
+    /// **Only the app's internal storage.** Anything already exported to Photos is a
+    /// separate copy owned by Photos and is never touched — this deletes what the app
+    /// itself is holding, which is the storage the user is trying to reclaim.
+    ///
+    /// Built entirely out of the existing per-group and per-record deletes rather than a
+    /// new bulk primitive. The single-item path already removes the file, its metadata
+    /// record and the group JSON in the right order, and it is the path that has been in
+    /// use since Task 007; a faster bulk delete would be a second implementation of the
+    /// most destructive operation in the app (CLAUDE.md rule 1).
+    ///
+    /// The second pass is not redundant. `loadRecordingGroups` surfaces unreferenced
+    /// records as their own single-item groups, so the first pass should cover
+    /// everything — but "should" is not good enough for a function whose whole purpose is
+    /// that nothing is left occupying storage. Anything the group pass missed is deleted
+    /// directly, and only then is the count reported.
+    ///
+    /// Best-effort per item: one failure never stops the rest, and a failure leaves that
+    /// file intact rather than orphaning its metadata.
+    @discardableResult
+    func deleteAll() async -> Int {
+        var deleted = 0
+        for group in groups {
+            for member in [group.long, group.short] {
+                if case .succeeded(let record) = member {
+                    if (try? await libraryService.delete(record)) != nil { deleted += 1 }
+                }
+            }
+            await groupService.delete(id: group.id)
+        }
+
+        if let stragglers = try? await libraryService.loadAllRecords() {
+            for record in stragglers {
+                if (try? await libraryService.delete(record)) != nil { deleted += 1 }
+            }
+        }
+
+        await refresh()
+        return deleted
+    }
+
     /// Deletes every recording in `group`, plus the group's own metadata (requirement 7:
     /// group-level deletion). Best-effort per member — one failing to delete doesn't
     /// stop the others.

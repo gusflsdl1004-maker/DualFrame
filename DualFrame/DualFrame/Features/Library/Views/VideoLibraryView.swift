@@ -17,6 +17,8 @@ import SwiftUI
 /// screen — exporting never removes it automatically.
 struct VideoLibraryView: View {
     @StateObject private var viewModel: VideoLibraryViewModel
+    /// Task 090 P1-1: the delete-everything confirmation.
+    @State private var isConfirmingDeleteAll = false
 
     /// Task 070 requirement 5/6: nil in previews and any caller that does not have the
     /// app-root coordinator; the badge simply does not appear then.
@@ -60,9 +62,33 @@ struct VideoLibraryView: View {
                 }
             }
             .navigationTitle("보관함")
+            .toolbar {
+                // Task 090 P1-1. Hidden when there is nothing to delete, so the most
+                // destructive control in the app is not sitting there permanently
+                // one tap from an empty confirmation.
+                if !viewModel.groups.isEmpty {
+                    ToolbarItem(placement: .topBarTrailing) {
+                        Button("전체 삭제", role: .destructive) {
+                            isConfirmingDeleteAll = true
+                        }
+                        .tint(.red)
+                    }
+                }
+            }
         }
         .task {
             await viewModel.refresh()
+        }
+        .alert("앱 내 보관함을 모두 삭제할까요?", isPresented: $isConfirmingDeleteAll) {
+            Button("취소", role: .cancel) {}
+            Button("삭제", role: .destructive) {
+                Task { await viewModel.deleteAll() }
+            }
+        } message: {
+            // Says what survives, not just what goes. The whole reason this is safe to
+            // offer is that an exported copy is a separate file owned by Photos, and the
+            // user has to know that before tapping 삭제 — afterwards is too late.
+            Text("앱 내부에 저장된 영상과 메타데이터가 모두 삭제되고 저장 공간이 확보됩니다. 되돌릴 수 없습니다.\n\n사진 앱으로 이미 내보낸 사본은 삭제되지 않습니다.")
         }
         .confirmationDialog(
             "저장 위치 선택",
