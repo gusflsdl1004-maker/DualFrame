@@ -35,25 +35,39 @@ struct DualPreviewStack: View {
     var body: some View {
         GeometryReader { geometry in
             if showsShortPane {
-                VStack(spacing: 8) {
+                // Task 077 #1: the two panes are pushed up as a group and the
+                // horizontal one shrinks, so the hierarchy reads as "vertical is the
+                // shot, horizontal is reference" rather than two equal windows.
+                //
+                // `bottomReserve` is the part that actually fixes the complaint: the
+                // stack is laid out inside the height that remains *after* the shutter
+                // area, so the panes can no longer sit under the record button no
+                // matter how tall the device is. Reserving space beats nudging offsets,
+                // which drift per screen size.
+                let bottomReserve: CGFloat = 132
+                let usableHeight = max(0, geometry.size.height - bottomReserve)
+
+                VStack(spacing: 18) {
                     pane(
                         label: "SHORT",
                         detail: "9:16 · 저장될 쇼츠",
                         aspect: 9.0 / 16.0,
-                        available: geometry.size,
-                        heightFraction: 0.56,
+                        available: CGSize(width: geometry.size.width, height: usableHeight),
+                        heightFraction: 0.66,
                         emphasized: true
                     )
                     pane(
                         label: "LONG",
-                        detail: "16:9 · 원본",
+                        detail: "16:9 · 참고",
                         aspect: 16.0 / 9.0,
-                        available: geometry.size,
-                        heightFraction: 0.44,
+                        available: CGSize(width: geometry.size.width, height: usableHeight),
+                        heightFraction: 0.30,
                         emphasized: false
                     )
                 }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .frame(maxWidth: .infinity, alignment: .top)
+                .frame(height: usableHeight, alignment: .top)
+                .padding(.top, 8)
             } else {
                 CameraPreviewRepresentable(session: session)
             }
@@ -84,8 +98,11 @@ struct DualPreviewStack: View {
                     RoundedRectangle(cornerRadius: 12)
                         // The short pane is the one being composed, so it carries the
                         // brighter edge. The long pane is context, not the subject.
-                        .stroke(.white.opacity(emphasized ? 0.9 : 0.35), lineWidth: emphasized ? 2 : 1)
+                        .stroke(.white.opacity(emphasized ? 0.9 : 0.28), lineWidth: emphasized ? 2 : 1)
                 )
+                // Only the subject pane lifts off the background. Shadowing both would
+                // flatten the distinction the border is making.
+                .shadow(color: .black.opacity(emphasized ? 0.35 : 0), radius: 10, y: 4)
 
             VStack(alignment: .leading, spacing: 2) {
                 Text(label)
@@ -99,6 +116,7 @@ struct DualPreviewStack: View {
             .padding(.vertical, 4)
             .background(.black.opacity(0.45), in: RoundedRectangle(cornerRadius: 7))
             .padding(8)
+            .opacity(emphasized ? 1 : 0.75)
         }
         .frame(width: width, height: height)
         .frame(maxWidth: .infinity)
