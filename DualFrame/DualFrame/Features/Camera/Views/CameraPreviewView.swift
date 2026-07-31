@@ -147,6 +147,27 @@ struct CameraPreviewView: View {
                                 .ignoresSafeArea()
                         }
 
+                        // Task 076 P0-1: the live short-form result, beside the
+                        // long-form one. Only shown when a short-form output is
+                        // actually going to be produced — on Long-only it would be
+                        // promising a file that never arrives.
+                        //
+                        // A second preview layer on the same session: display-side
+                        // only, no data output and no writer, so it cannot cost capture
+                        // throughput the way the second *writer* did before Task 069.
+                        if guidelineViewModel.settings.isEnabled,
+                           outputModeViewModel.settings.outputMode == .both {
+                            VStack {
+                                HStack {
+                                    Spacer()
+                                    ShortPreviewPIP(session: cameraService.session)
+                                        .padding(.trailing, 12)
+                                }
+                                Spacer()
+                            }
+                            .padding(.top, isLandscape ? 12 : 96)
+                        }
+
                         // Task 052 requirement 3: two genuinely different layouts, not
                         // one layout rotated. Portrait keeps the familiar
                         // top-bar/bottom-controls split; landscape uses dedicated

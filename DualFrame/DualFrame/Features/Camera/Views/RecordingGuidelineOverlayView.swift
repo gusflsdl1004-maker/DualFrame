@@ -85,6 +85,16 @@ struct RecordingGuidelineOverlayView: View {
                     .frame(width: longRect.width, height: longRect.height)
                     .position(x: longRect.midX, y: longRect.midY)
 
+                // P1-1: names the full-screen result, so LONG and SHORT are both
+                // labelled rather than only the PIP.
+                Text("LONG")
+                    .font(.caption2.bold())
+                    .foregroundStyle(.white.opacity(0.9))
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(.black.opacity(0.4), in: Capsule())
+                    .position(x: longRect.minX + 34, y: longRect.minY + 18)
+
                 Text("이 영역이 쇼츠로 저장됩니다")
                     .font(.caption2)
                     .foregroundStyle(.white.opacity(0.9))
