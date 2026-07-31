@@ -29,6 +29,10 @@ struct DiagnosticsView: View {
     /// affordance, not an entitlement.
     @State private var planSettings = UserPlanSettingsService().load()
     private let planSettingsService = UserPlanSettingsService()
+    /// Task 074 P2: generation quality. Not plan-gated here — `ExportManager` is the
+    /// only type that reads the plan, and generation behaves identically for everyone.
+    @State private var generationQuality = ShortGenerationQualitySettingsService().load().quality
+    private let generationQualityService = ShortGenerationQualitySettingsService()
 
     var body: some View {
         List {
@@ -105,6 +109,14 @@ struct DiagnosticsView: View {
                         Text(outcome.title).tag(outcome)
                     }
                 }
+                Picker("쇼츠 생성 화질", selection: $generationQuality) {
+                    ForEach(ShortGenerationQuality.allCases) { quality in
+                        Text(quality.title).tag(quality)
+                    }
+                }
+                Text(generationQuality.detail)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             } header: {
                 Text("플랜 / 광고 (Task 071)")
             } footer: {
@@ -152,6 +164,9 @@ struct DiagnosticsView: View {
         }
         .onChange(of: planSettings) { _, newValue in
             planSettingsService.save(newValue)
+        }
+        .onChange(of: generationQuality) { _, newValue in
+            generationQualityService.save(ShortGenerationQualitySettings(quality: newValue))
         }
         .task {
             await viewModel.refresh()

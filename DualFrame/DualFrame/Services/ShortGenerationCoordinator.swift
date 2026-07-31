@@ -26,7 +26,7 @@ import UserNotifications
 /// has already been written, validated and imported. Everything it does is derived work
 /// on a copy of that URL (CLAUDE.md rule 1).
 @MainActor
-final class ShortGenerationCoordinator: ObservableObject {
+final class ShortGenerationCoordinator: NSObject, ObservableObject {
     /// What the UI shows: the progress card on the camera screen, and the library badge.
     @Published private(set) var state: ShortGenerationState = .idle
     /// The record the in-flight (or just-finished) short-form output belongs to, so the
@@ -40,6 +40,14 @@ final class ShortGenerationCoordinator: ObservableObject {
     /// The group being filled in, by id. The library badges on this rather than on a
     /// timestamp, for the same reason the attach does.
     @Published private(set) var activeGroupID: String?
+    /// Task 074: set when the user taps the completion notification, so the UI can open
+    /// the library on the short-form output that just finished. Cleared by the view once
+    /// it has navigated, so a second tap is needed to navigate again.
+    @Published var pendingNavigationGroupID: String?
+    /// Task 074 P1: the completion banner dismisses itself after a moment. A success
+    /// message that needs acknowledging is a chore — the notification already covers the
+    /// case where the user is not looking.
+    private var autoDismissTask: Task<Void, Never>?
 
     private let generationService = ShortGenerationService()
     private let libraryService: InternalVideoLibraryService
@@ -47,6 +55,8 @@ final class ShortGenerationCoordinator: ObservableObject {
     private let diagnosticsService: RecordingDiagnosticsService
     private let cropBackendSettingsService = CropBackendSettingsService()
     private let encoderSettingsService = VideoEncoderSettingsService()
+    /// Task 074 P2: read per job, so a change applies to the next generation.
+    private let qualitySettingsService = ShortGenerationQualitySettingsService()
 
     private var currentTask: Task<Void, Never>?
     /// Task 072 P0-4: when the current job began, so the remaining time can be
@@ -87,6 +97,10 @@ final class ShortGenerationCoordinator: ObservableObject {
         self.libraryService = libraryService
         self.groupService = groupService
         self.diagnosticsService = diagnosticsService
+        super.init()
+        // Task 074: needed for the tap to reach us at all — without a delegate, tapping
+        // a delivered notification just foregrounds the app and nothing happens.
+        UNUserNotificationCenter.current().delegate = self
     }
 
     /// True while a job for `sessionID` is running — drives the library's "생성 중" badge.
@@ -150,10 +164,14 @@ final class ShortGenerationCoordinator: ObservableObject {
         let targetSize = CGSize(width: profile.resolution.width, height: profile.resolution.height)
         let configuration = CropConfiguration(targetSize: targetSize, strategy: .center)
         let backend = cropBackendSettingsService.load().backend
+        // Task 074 P2: `.fast` halves the frames the encoder has to produce, which is
+        // the single largest lever available on generation time short of changing the
+        // architecture again.
+        let outputFPS = qualitySettingsService.load().quality.outputFPS(sourceFPS: request.fps)
         let codec = encoderSettingsService.load().codec.resolvedCodec(
             width: profile.resolution.width,
             height: profile.resolution.height,
-            fps: request.fps.rawValue
+            fps: outputFPS.rawValue
         )
         let outputURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("short-\(UUID().uuidString).mov")
@@ -170,7 +188,7 @@ final class ShortGenerationCoordinator: ObservableObject {
                 from: request.sourceURL,
                 to: outputURL,
                 configuration: configuration,
-                fps: request.fps,
+                fps: outputFPS,
                 codec: codec,
                 backend: backend,
                 onProgress: { [weak self] progress in
@@ -232,7 +250,12 @@ final class ShortGenerationCoordinator: ObservableObject {
             await attachShortToGroup(request: request, shortRecordID: record.id)
             await saveDiagnostics(request: request, metrics: metrics)
             state = .finished
-            await notify(title: "쇼츠 영상 생성이 완료되었습니다", body: "라이브러리에서 확인할 수 있습니다.")
+            scheduleAutoDismiss()
+            await notify(
+                title: "쇼츠 영상 생성이 완료되었습니다",
+                body: "라이브러리에서 확인할 수 있습니다.",
+                groupID: request.groupID
+            )
         } catch {
             try? FileManager.default.removeItem(at: outputURL)
             state = .failed(reason: "라이브러리 저장 실패")
@@ -331,7 +354,23 @@ final class ShortGenerationCoordinator: ObservableObject {
 
     /// Fire-and-forget. Permission is requested on first use rather than at launch —
     /// asking before the user has ever recorded anything has no context.
-    private func notify(title: String, body: String) async {
+    /// Task 074 P1: clears a success banner on its own. Only success — a failure or a
+    /// cancellation stays until acknowledged, because both offer a 다시 생성 action the
+    /// user would otherwise never see.
+    private func scheduleAutoDismiss() {
+        autoDismissTask?.cancel()
+        autoDismissTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(2))
+            guard !Task.isCancelled else { return }
+            guard let self, self.state == .finished else { return }
+            self.state = .idle
+            self.activeSessionID = nil
+            self.activeRecordingStartTime = nil
+            self.activeGroupID = nil
+        }
+    }
+
+    private func notify(title: String, body: String, groupID: String? = nil) async {
         let center = UNUserNotificationCenter.current()
         let granted = (try? await center.requestAuthorization(options: [.alert, .sound])) ?? false
         guard granted else { return }
@@ -340,8 +379,35 @@ final class ShortGenerationCoordinator: ObservableObject {
         content.title = title
         content.body = body
         content.sound = .default
+        // Carried so the tap knows which recording to open. By id, not by timestamp —
+        // the same rule the Task 072 fix established.
+        if let groupID { content.userInfo = ["groupID": groupID] }
         try? await center.add(
             UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil)
         )
+    }
+}
+
+
+// MARK: - Notification tap (Task 074)
+
+extension ShortGenerationCoordinator: UNUserNotificationCenterDelegate {
+    /// Shows the banner even when the app is already frontmost. Without this iOS
+    /// suppresses it, and a user watching the screen would get no confirmation at all
+    /// on the one path where the in-app banner has already auto-dismissed.
+    nonisolated func userNotificationCenter(
+        _ center: UNUserNotificationCenter,
+        willPresent notification: UNNotification
+    ) async -> UNNotificationPresentationOptions {
+        [.banner, .sound]
+    }
+
+    /// The tap. Publishes the group id; the camera screen opens the library on it.
+    nonisolated func userNotificationCenter(
+        _ center: UNUserNotificationCenter,
+        didReceive response: UNNotificationResponse
+    ) async {
+        let groupID = response.notification.request.content.userInfo["groupID"] as? String
+        await MainActor.run { self.pendingNavigationGroupID = groupID }
     }
 }

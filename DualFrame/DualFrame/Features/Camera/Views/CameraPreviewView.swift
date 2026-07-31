@@ -247,11 +247,18 @@ struct CameraPreviewView: View {
                 onDismiss: { shortGenerationCoordinator.dismissResult() }
             )
         }
+        // Task 074: tapping the completion notification opens the library. The
+        // coordinator only publishes the id; navigation stays a view concern.
+        .onChange(of: shortGenerationCoordinator.pendingNavigationGroupID) { _, groupID in
+            guard groupID != nil else { return }
+            isLibraryPresented = true
+            shortGenerationCoordinator.pendingNavigationGroupID = nil
+        }
         .alert("쇼츠 생성을 취소하시겠습니까?", isPresented: $isConfirmingGenerationCancel) {
             Button("계속 생성", role: .cancel) {}
-            Button("취소", role: .destructive) { shortGenerationCoordinator.cancel() }
+            Button("취소하기", role: .destructive) { shortGenerationCoordinator.cancel() }
         } message: {
-            Text("현재 생성 중인 숏폼은 삭제됩니다. 원본 영상은 그대로 유지됩니다.")
+            Text("지금까지 생성된 내용은 삭제됩니다. 원본 Long 영상은 삭제되지 않습니다.")
         }
         .sheet(isPresented: $isLibraryPresented) {
             VideoLibraryView(
