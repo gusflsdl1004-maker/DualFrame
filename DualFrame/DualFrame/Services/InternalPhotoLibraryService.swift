@@ -43,7 +43,8 @@ actor InternalPhotoLibraryService {
         data: Data,
         capturedAt: Date,
         cameraPosition: CameraPosition?,
-        fileExtension: String
+        fileExtension: String,
+        quality: PhotoQuality
     ) throws -> PhotoRecord {
         let directory = try photosDirectory()
         let filename = uniqueFilename(for: capturedAt, in: directory, fileExtension: fileExtension)
@@ -58,7 +59,14 @@ actor InternalPhotoLibraryService {
             throw InternalPhotoLibraryError.writeFailed
         }
 
-        return makeRecord(from: finalURL, cameraPosition: cameraPosition)
+        // Task 094: written after the image is safely in place, and best-effort — a
+        // sidecar that fails to write costs a debug row, never the photo.
+        writeMetadata(
+            PhotoCaptureMetadata(quality: quality, cameraPosition: cameraPosition, savedToPhotos: false),
+            for: finalURL
+        )
+
+        return makeRecord(from: finalURL)
             ?? PhotoRecord(
                 id: filename,
                 filename: filename,
@@ -66,8 +74,19 @@ actor InternalPhotoLibraryService {
                 resolution: .zero,
                 fileSize: Int64(data.count),
                 localURL: finalURL,
-                cameraPosition: cameraPosition
+                cameraPosition: cameraPosition,
+                captureQuality: quality,
+                savedToPhotos: false,
+                exifResolution: nil
             )
+    }
+
+    /// Task 094: records that a copy reached Photos. Called after a successful export so
+    /// the debug panel can state where this photo actually lives.
+    func markSavedToPhotos(_ record: PhotoRecord) {
+        guard var metadata = readMetadata(for: record.localURL) else { return }
+        metadata.savedToPhotos = true
+        writeMetadata(metadata, for: record.localURL)
     }
 
     /// Newest first, matching the gallery's ordering.
@@ -81,7 +100,7 @@ actor InternalPhotoLibraryService {
 
         return urls
             .filter { Self.supportedExtensions.contains($0.pathExtension.lowercased()) }
-            .compactMap { makeRecord(from: $0, cameraPosition: nil) }
+            .compactMap { makeRecord(from: $0) }
             .sorted { $0.createdAt > $1.createdAt }
     }
 
@@ -90,6 +109,25 @@ actor InternalPhotoLibraryService {
             throw InternalPhotoLibraryError.recordNotFound
         }
         try fileManager.removeItem(at: record.localURL)
+        // The sidecar goes with the image. Leaving it would accumulate orphans that
+        // nothing ever lists and nothing ever cleans up.
+        try? fileManager.removeItem(at: metadataURL(for: record.localURL))
+    }
+
+    // MARK: - Capture metadata sidecar (Task 094)
+
+    private func metadataURL(for imageURL: URL) -> URL {
+        imageURL.appendingPathExtension("meta.json")
+    }
+
+    private func writeMetadata(_ metadata: PhotoCaptureMetadata, for imageURL: URL) {
+        guard let data = try? JSONEncoder().encode(metadata) else { return }
+        try? data.write(to: metadataURL(for: imageURL), options: .atomic)
+    }
+
+    private func readMetadata(for imageURL: URL) -> PhotoCaptureMetadata? {
+        guard let data = try? Data(contentsOf: metadataURL(for: imageURL)) else { return nil }
+        return try? JSONDecoder().decode(PhotoCaptureMetadata.self, from: data)
     }
 
     // MARK: - Private
@@ -139,19 +177,32 @@ actor InternalPhotoLibraryService {
     /// Dimensions come from the image header via `CGImageSource`, which reads only the
     /// metadata block rather than decoding the pixels — listing a library of 4000 photos
     /// must not decode 4000 images.
-    private func makeRecord(from url: URL, cameraPosition: CameraPosition?) -> PhotoRecord? {
+    private func makeRecord(from url: URL) -> PhotoRecord? {
         guard let attributes = try? fileManager.attributesOfItem(atPath: url.path) else { return nil }
         let fileSize = attributes[.size] as? Int64 ?? 0
         let createdAt = attributes[.creationDate] as? Date ?? Date()
 
         var resolution = CGSize.zero
+        var exifResolution: CGSize?
         if let source = CGImageSourceCreateWithURL(url as CFURL, nil),
            let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any] {
             let width = (properties[kCGImagePropertyPixelWidth] as? NSNumber)?.doubleValue ?? 0
             let height = (properties[kCGImagePropertyPixelHeight] as? NSNumber)?.doubleValue ?? 0
             resolution = CGSize(width: width, height: height)
+
+            // Task 094: EXIF carries its own dimensions, and they can disagree with the
+            // container's — that disagreement is exactly the kind of thing this panel
+            // exists to surface, so both are reported rather than one being trusted.
+            if let exif = properties[kCGImagePropertyExifDictionary] as? [CFString: Any] {
+                let exifWidth = (exif[kCGImagePropertyExifPixelXDimension] as? NSNumber)?.doubleValue ?? 0
+                let exifHeight = (exif[kCGImagePropertyExifPixelYDimension] as? NSNumber)?.doubleValue ?? 0
+                if exifWidth > 0, exifHeight > 0 {
+                    exifResolution = CGSize(width: exifWidth, height: exifHeight)
+                }
+            }
         }
 
+        let metadata = readMetadata(for: url)
         return PhotoRecord(
             id: url.lastPathComponent,
             filename: url.lastPathComponent,
@@ -159,7 +210,10 @@ actor InternalPhotoLibraryService {
             resolution: resolution,
             fileSize: fileSize,
             localURL: url,
-            cameraPosition: cameraPosition
+            cameraPosition: metadata?.cameraPosition,
+            captureQuality: metadata?.quality,
+            savedToPhotos: metadata?.savedToPhotos,
+            exifResolution: exifResolution
         )
     }
 }

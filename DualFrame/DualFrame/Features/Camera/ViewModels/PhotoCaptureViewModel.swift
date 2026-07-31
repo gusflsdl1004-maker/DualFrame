@@ -146,13 +146,17 @@ final class PhotoCaptureViewModel: ObservableObject {
                 try? await Task.sleep(for: .milliseconds(220))
             }
 
-            let captured = try await captureWithTimeout()
+            // Task 093 P1-6 / 094: read once here, so the photo is captured, saved and
+            // labelled with the same value even if the setting changes mid-capture.
+            let quality = photoQualityService.load().quality
+            let captured = try await captureWithTimeout(quality: quality)
             let position = await cameraService.currentPosition
             let record = try await photoLibraryService.save(
                 data: captured.data,
                 capturedAt: Date(),
                 cameraPosition: position,
-                fileExtension: captured.fileExtension
+                fileExtension: captured.fileExtension,
+                quality: quality
             )
             lastCapturedRecord = record
             await exportIfSettingsAskFor(record)
@@ -177,12 +181,9 @@ final class PhotoCaptureViewModel: ObservableObject {
     ///
     /// Eight seconds is far longer than any real still (well under a second even at 4K
     /// with flash), so this can only fire on a genuine hang.
-    private func captureWithTimeout() async throws -> (data: Data, fileExtension: String) {
+    private func captureWithTimeout(quality: PhotoQuality) async throws -> (data: Data, fileExtension: String) {
         try await withThrowingTaskGroup(of: (data: Data, fileExtension: String).self) { group in
             let mode = flashMode.avFlashMode
-            // Task 093 P1-6: read fresh on every capture, so a change made in settings
-            // applies to the very next photo without an app restart.
-            let quality = photoQualityService.load().quality
             group.addTask { [cameraService] in
                 try await cameraService.capturePhoto(flashMode: mode, quality: quality)
             }
@@ -209,6 +210,8 @@ final class PhotoCaptureViewModel: ObservableObject {
 
         do {
             try await photosExportService.exportPhoto(at: record.localURL)
+            // Task 094: so the debug panel can state where this photo actually lives.
+            await photoLibraryService.markSavedToPhotos(record)
             statusMessage = "사진 앱에 저장되었습니다."
         } catch {
             statusMessage = "보관함에 저장했지만 사진 앱 저장은 실패했습니다."

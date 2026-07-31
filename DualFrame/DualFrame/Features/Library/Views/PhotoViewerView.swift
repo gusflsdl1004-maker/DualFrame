@@ -28,7 +28,16 @@ struct PhotoViewerView: View {
     @State private var isSaving = false
     @State private var toastMessage: String?
     @State private var saveErrorMessage: String?
+    /// Task 094: flipped locally after a successful save so the panel updates without a
+    /// gallery reload — the record itself is a value type and cannot change under us.
+    @State private var didSaveToPhotos = false
+    #if DEBUG
+    /// Task 094: the detail panel is Debug-only and collapsed by default. It is a QA tool,
+    /// and it covers the photo it is describing.
+    @State private var showsDebugInfo = false
+    #endif
     private let photosExportService = PhotoLibraryExportService()
+    private let photoLibraryService = InternalPhotoLibraryService()
 
     private var effectiveScale: CGFloat { scale * pinchScale }
 
@@ -100,6 +109,9 @@ struct PhotoViewerView: View {
                                 .padding(.bottom, 8)
                                 .transition(.opacity)
                         }
+                        #if DEBUG
+                        if showsDebugInfo { debugPanel }
+                        #endif
                         infoPanel
                         saveButton
                     }
@@ -113,6 +125,16 @@ struct PhotoViewerView: View {
                 ToolbarItem(placement: .confirmationAction) {
                     Button("닫기") { dismiss() }
                 }
+                #if DEBUG
+                ToolbarItem(placement: .topBarLeading) {
+                    Button {
+                        showsDebugInfo.toggle()
+                    } label: {
+                        Image(systemName: showsDebugInfo ? "ladybug.fill" : "ladybug")
+                    }
+                    .accessibilityLabel("디버그 정보")
+                }
+                #endif
             }
             .alert("사진 앱에 저장하지 못했습니다", isPresented: saveErrorBinding) {
                 Button("확인", role: .cancel) { saveErrorMessage = nil }
@@ -194,6 +216,50 @@ struct PhotoViewerView: View {
         return String(format: "%@ · %.1fMP", container, megapixels)
     }
 
+    #if DEBUG
+    /// Task 094: everything needed to judge whether a capture setting did what it claimed.
+    ///
+    /// The pairs are the point. Requested quality next to the container it produced says
+    /// whether 고화질 actually got HEIF or fell back; container resolution next to EXIF
+    /// resolution says whether the two agree, which they do not always. A single "quality"
+    /// row would hide exactly the discrepancies this panel exists to find.
+    private var debugPanel: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text("DEBUG")
+                .font(.caption2.bold())
+                .foregroundStyle(.yellow)
+            infoRow("저장 포맷", containerFormat)
+            infoRow("요청 화질", record.captureQuality?.title ?? "기록 없음")
+            infoRow("실제 해상도", formatted(record.resolution))
+            infoRow("EXIF 해상도", record.exifResolution.map(formatted) ?? "없음")
+            infoRow("파일 크기", "\(record.fileSize.formatted()) B")
+            infoRow("촬영 카메라", record.cameraPosition.map { $0 == .front ? "전면" : "후면" } ?? "기록 없음")
+            infoRow("저장 위치", storageLocation)
+            infoRow("파일명", record.filename)
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.black.opacity(0.75), in: RoundedRectangle(cornerRadius: 12))
+        .padding(.bottom, 10)
+    }
+
+    private func formatted(_ size: CGSize) -> String {
+        size.width > 0 ? "\(Int(size.width)) × \(Int(size.height))" : "없음"
+    }
+
+    /// Read from the container, not from the requested setting — a device without HEIF
+    /// support produces JPEG on 고화질, and that gap is what this row is for.
+    private var containerFormat: String {
+        record.localURL.pathExtension.lowercased() == "heic" ? "HEIF (.heic)" : "JPEG (.jpg)"
+    }
+
+    private var storageLocation: String {
+        let inPhotos = didSaveToPhotos || (record.savedToPhotos ?? false)
+        if record.savedToPhotos == nil && !didSaveToPhotos { return "앱 내부 (사진 앱 기록 없음)" }
+        return inPhotos ? "앱 내부 + 사진 앱" : "앱 내부"
+    }
+    #endif
+
     private var saveErrorBinding: Binding<Bool> {
         Binding(
             get: { saveErrorMessage != nil },
@@ -207,6 +273,8 @@ struct PhotoViewerView: View {
         defer { isSaving = false }
         do {
             try await photosExportService.exportPhoto(at: record.localURL)
+            await photoLibraryService.markSavedToPhotos(record)
+            didSaveToPhotos = true
             showToast("사진이 사진 앱에 저장되었습니다.")
         } catch PhotoLibraryExportError.permissionDenied {
             saveErrorMessage = "사진 앱 접근 권한이 없습니다. 설정에서 권한을 허용해 주세요."

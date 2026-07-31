@@ -27,6 +27,29 @@ nonisolated struct PhotoRecord: Identifiable, Equatable {
     /// Which camera took it. Recorded because it is the one piece of capture context that
     /// cannot be recovered from the file afterwards on every device.
     let cameraPosition: CameraPosition?
+    /// Task 094: what was *asked for* at capture time, as opposed to what the file turned
+    /// out to be. `nil` for anything captured before Task 094 — see `PhotoCaptureMetadata`.
+    let captureQuality: PhotoQuality?
+    /// Whether a copy was also written to Photos. `nil` when unrecorded.
+    let savedToPhotos: Bool?
+    /// Task 094: the resolution EXIF claims, which is not always the container's.
+    let exifResolution: CGSize?
+}
+
+/// Task 094: the handful of capture-time facts a photo file cannot answer for itself.
+///
+/// **Why a sidecar at all**, when Task 091 deliberately gave photos none: the debug panel
+/// has to show *requested* quality next to *actual* result, and "requested" exists only in
+/// the app. A file that came out JPEG cannot say whether that was 표준 asking for JPEG or
+/// 고화질 falling back — and telling those apart is the entire point of the panel.
+///
+/// Written next to the image and deleted with it. Absent for every photo captured before
+/// this task, and absence is handled everywhere rather than migrated (CLAUDE.md rule 58):
+/// an older photo simply reports 기록 없음 and everything else about it still works.
+nonisolated struct PhotoCaptureMetadata: Codable, Equatable, Sendable {
+    var quality: PhotoQuality
+    var cameraPosition: CameraPosition?
+    var savedToPhotos: Bool
 }
 
 /// Whether the shutter records video or takes a still.
