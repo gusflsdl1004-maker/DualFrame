@@ -33,18 +33,21 @@ final class PhotoCaptureViewModel: ObservableObject {
     private let photoLibraryService: InternalPhotoLibraryService
     private let photosExportService: PhotoLibraryExportService
     private let storageSettingsService: StorageSettingsService
+    private let photoQualityService: PhotoQualitySettingsService
     private var countdownTask: Task<Void, Never>?
 
     init(
         cameraService: CameraService,
         photoLibraryService: InternalPhotoLibraryService,
         photosExportService: PhotoLibraryExportService = PhotoLibraryExportService(),
-        storageSettingsService: StorageSettingsService = StorageSettingsService()
+        storageSettingsService: StorageSettingsService = StorageSettingsService(),
+        photoQualityService: PhotoQualitySettingsService = PhotoQualitySettingsService()
     ) {
         self.cameraService = cameraService
         self.photoLibraryService = photoLibraryService
         self.photosExportService = photosExportService
         self.storageSettingsService = storageSettingsService
+        self.photoQualityService = photoQualityService
     }
 
     /// The shutter. Runs the self-timer first when one is set.
@@ -177,8 +180,11 @@ final class PhotoCaptureViewModel: ObservableObject {
     private func captureWithTimeout() async throws -> (data: Data, fileExtension: String) {
         try await withThrowingTaskGroup(of: (data: Data, fileExtension: String).self) { group in
             let mode = flashMode.avFlashMode
+            // Task 093 P1-6: read fresh on every capture, so a change made in settings
+            // applies to the very next photo without an app restart.
+            let quality = photoQualityService.load().quality
             group.addTask { [cameraService] in
-                try await cameraService.capturePhoto(flashMode: mode)
+                try await cameraService.capturePhoto(flashMode: mode, quality: quality)
             }
             group.addTask {
                 try await Task.sleep(for: .seconds(8))

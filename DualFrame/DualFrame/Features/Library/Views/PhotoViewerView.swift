@@ -22,6 +22,14 @@ struct PhotoViewerView: View {
     @State private var offset: CGSize = .zero
     @GestureState private var dragOffset: CGSize = .zero
 
+    /// Task 093 P0-2: guards the save button against a second tap. Set synchronously in
+    /// the button action, before any await exists to suspend at — the same shape as the
+    /// shutter guard, and for the same reason.
+    @State private var isSaving = false
+    @State private var toastMessage: String?
+    @State private var saveErrorMessage: String?
+    private let photosExportService = PhotoLibraryExportService()
+
     private var effectiveScale: CGFloat { scale * pinchScale }
 
     var body: some View {
@@ -76,6 +84,27 @@ struct PhotoViewerView: View {
                     } else {
                         ContentUnavailableView("사진을 열 수 없습니다", systemImage: "photo")
                     }
+
+                    // Task 093 P2-1 and P0-1: what this photo is, and the one action for
+                    // it. Kept at the bottom over the image rather than in the toolbar, so
+                    // the image itself gets the whole screen while zooming.
+                    VStack {
+                        Spacer()
+                        if let toastMessage {
+                            Text(toastMessage)
+                                .font(.footnote)
+                                .foregroundStyle(.white)
+                                .padding(.horizontal, 14)
+                                .padding(.vertical, 8)
+                                .background(.black.opacity(0.7), in: Capsule())
+                                .padding(.bottom, 8)
+                                .transition(.opacity)
+                        }
+                        infoPanel
+                        saveButton
+                    }
+                    .padding(.bottom, 24)
+                    .padding(.horizontal, 20)
                 }
             }
             .navigationTitle(record.createdAt.formatted(date: .abbreviated, time: .shortened))
@@ -85,6 +114,112 @@ struct PhotoViewerView: View {
                     Button("닫기") { dismiss() }
                 }
             }
+            .alert("사진 앱에 저장하지 못했습니다", isPresented: saveErrorBinding) {
+                Button("확인", role: .cancel) { saveErrorMessage = nil }
+            } message: {
+                Text(saveErrorMessage ?? "")
+            }
+        }
+    }
+
+    /// Task 093 P0-1: same job and same wording as the video export button, so the two
+    /// read as one feature rather than two.
+    private var saveButton: some View {
+        Button {
+            guard !isSaving else { return }
+            isSaving = true
+            Task { await saveToPhotos() }
+        } label: {
+            HStack(spacing: 8) {
+                if isSaving {
+                    ProgressView().tint(.white)
+                } else {
+                    Image(systemName: "square.and.arrow.down")
+                }
+                Text(isSaving ? "저장 중…" : "사진 앱에 저장")
+            }
+            .font(.subheadline.weight(.semibold))
+            .foregroundStyle(.white)
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 13)
+            .background(.tint, in: RoundedRectangle(cornerRadius: 12))
+        }
+        .buttonStyle(.plain)
+        .disabled(isSaving)
+    }
+
+    /// Task 093 P2-1. Resolution, size and capture time come from `PhotoRecord`; the
+    /// quality label is read from the file rather than stored, see `qualityLabel`.
+    private var infoPanel: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            infoRow("화질", qualityLabel)
+            if record.resolution.width > 0 {
+                infoRow("해상도", "\(Int(record.resolution.width)) × \(Int(record.resolution.height))")
+            }
+            infoRow("파일 크기", ByteCountFormatter.string(fromByteCount: record.fileSize, countStyle: .file))
+            infoRow("촬영 시간", record.createdAt.formatted(date: .abbreviated, time: .standard))
+            if let position = record.cameraPosition {
+                infoRow("카메라", position == .front ? "전면" : "후면")
+            }
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.black.opacity(0.55), in: RoundedRectangle(cornerRadius: 12))
+        .padding(.bottom, 10)
+    }
+
+    private func infoRow(_ label: String, _ value: String) -> some View {
+        HStack {
+            Text(label)
+                .font(.caption)
+                .foregroundStyle(.white.opacity(0.6))
+            Spacer()
+            Text(value)
+                .font(.caption.monospacedDigit())
+                .foregroundStyle(.white)
+        }
+    }
+
+    /// Derived from the file, not stored on the record.
+    ///
+    /// The quality *setting* at capture time is not the same thing as what the file turned
+    /// out to be — a device without HEIF support produces a JPEG on 고화질, and a format
+    /// change can cap 최고화질. Reporting the container and whether the still is at the
+    /// sensor's larger size describes the photo in hand, which is what the user is looking
+    /// at. Storing the setting would have meant showing a label the file might contradict.
+    private var qualityLabel: String {
+        let container = record.localURL.pathExtension.lowercased() == "heic" ? "HEIF" : "JPEG"
+        let megapixels = record.resolution.width * record.resolution.height / 1_000_000
+        guard megapixels > 0 else { return container }
+        return String(format: "%@ · %.1fMP", container, megapixels)
+    }
+
+    private var saveErrorBinding: Binding<Bool> {
+        Binding(
+            get: { saveErrorMessage != nil },
+            set: { if !$0 { saveErrorMessage = nil } }
+        )
+    }
+
+    /// Task 093 P0-3. The app's own copy is never touched — Photos gets a separate copy,
+    /// so a failure here costs a message and nothing else.
+    private func saveToPhotos() async {
+        defer { isSaving = false }
+        do {
+            try await photosExportService.exportPhoto(at: record.localURL)
+            showToast("사진이 사진 앱에 저장되었습니다.")
+        } catch PhotoLibraryExportError.permissionDenied {
+            saveErrorMessage = "사진 앱 접근 권한이 없습니다. 설정에서 권한을 허용해 주세요."
+        } catch {
+            saveErrorMessage = "저장에 실패했습니다. 잠시 후 다시 시도해 주세요."
+        }
+    }
+
+    private func showToast(_ message: String) {
+        withAnimation { toastMessage = message }
+        Task {
+            try? await Task.sleep(for: .seconds(2))
+            withAnimation { toastMessage = nil }
         }
     }
 }

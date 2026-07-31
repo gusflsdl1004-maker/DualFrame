@@ -56,9 +56,16 @@ private final class PhotoCaptureDelegate: NSObject, AVCapturePhotoCaptureDelegat
             completion(.failure(CameraServiceError.photoCaptureFailed))
             return
         }
-        let isHEVC = photo.resolvedSettings.photoDimensions.width > 0
-            && (output.availablePhotoCodecTypes.contains(.hevc))
-        completion(.success((data, isHEVC ? "heic" : "jpg")))
+        // Task 093: the extension follows what was actually encoded, read back off the
+        // photo itself. The previous version guessed from the output's *available* codec
+        // list, which says what the device can do, not what this capture did — so a JPEG
+        // taken on an HEIF-capable device was being written as `.heic`.
+        let isHEIF = photo.fileDataRepresentation().flatMap { data -> Bool? in
+            // HEIF containers begin with an `ftyp` box; JPEG begins with 0xFFD8.
+            guard data.count >= 12 else { return nil }
+            return !(data[0] == 0xFF && data[1] == 0xD8)
+        } ?? false
+        completion(.success((data, isHEIF ? "heic" : "jpg")))
     }
 }
 
@@ -258,22 +265,34 @@ actor CameraService {
     /// the still — and a dropped or late frame in a recording is a cost this app does not
     /// pay for a secondary feature (CLAUDE.md rules 1-3). The shutter is a still shutter
     /// or a record button, never both at once.
-    func capturePhoto(flashMode: AVCaptureDevice.FlashMode) async throws -> (data: Data, fileExtension: String) {
+    func capturePhoto(
+        flashMode: AVCaptureDevice.FlashMode,
+        quality: PhotoQuality
+    ) async throws -> (data: Data, fileExtension: String) {
         guard isPhotoOutputAvailable else { throw CameraServiceError.photoOutputUnavailable }
         guard session.isRunning else { throw CameraServiceError.photoCaptureFailed }
         guard await recordingService.state != .recording else {
             throw CameraServiceError.photoCaptureWhileRecording
         }
 
-        // HEVC when the device offers it, JPEG otherwise. Requested per capture rather
-        // than stored, because `availablePhotoCodecTypes` depends on the active format
-        // and the active format changes with the recording quality setting.
-        let settings: AVCapturePhotoSettings
-        if photoOutput.availablePhotoCodecTypes.contains(.hevc) {
-            settings = AVCapturePhotoSettings(format: [AVVideoCodecKey: AVVideoCodecType.hevc])
-        } else {
-            settings = AVCapturePhotoSettings()
-        }
+        // Task 093 P1-4: HEIF when the setting asks for it and the device offers it,
+        // JPEG otherwise. Checked per capture rather than cached, because
+        // `availablePhotoCodecTypes` depends on the active format and the active format
+        // changes with the recording quality setting.
+        let usesHEIF = quality.prefersHEIF && photoOutput.availablePhotoCodecTypes.contains(.hevc)
+        let settings: AVCapturePhotoSettings = usesHEIF
+            ? AVCapturePhotoSettings(format: [AVVideoCodecKey: AVVideoCodecType.hevc])
+            : AVCapturePhotoSettings(format: [AVVideoCodecKey: AVVideoCodecType.jpeg])
+
+        // Never above the output's ceiling, which `configure()` raised to `.quality`.
+        // Clamped rather than assigned outright so this stays correct even if that ceiling
+        // is ever lowered — the throw it would otherwise cause is uncatchable.
+        // `QualityPrioritization` is an `Int` enum ordered speed < balanced < quality, but
+        // it is not `Comparable`, so the raw values are compared.
+        let ceiling = photoOutput.maxPhotoQualityPrioritization
+        settings.photoQualityPrioritization = quality.prioritization.rawValue <= ceiling.rawValue
+            ? quality.prioritization
+            : ceiling
 
         // Only ask for flash the device actually supports in this configuration, so an
         // unsupported mode cannot make the whole capture fail. The front camera has no
@@ -299,14 +318,29 @@ actor CameraService {
         // not persisted state — it is iOS replaying the app's cached launch snapshot,
         // which had been captured white.
         //
-        // Nothing sets `maxPhotoDimensions` now, at either level. The default is the
-        // active format's own photo dimensions, which is already the full still size for
-        // a 4K format, and — the part that matters — it cannot go stale. `activeFormat`
-        // changes whenever the recording quality does (`refreshRecordingFormat()`), so
-        // any value pinned at configure time would eventually disagree with the format
-        // and throw again later. The honest trade is that stills come out at the video
-        // format's photo size rather than the sensor maximum; a crash is not worth the
-        // difference.
+        // Task 093 P1-5: 최고화질 asks for the largest still available — the request Task
+        // 092 removed — but constrained so it cannot repeat that crash.
+        //
+        // The value must satisfy *both* conditions at once: supported by the current
+        // `activeFormat`, **and** no larger than `photoOutput.maxPhotoDimensions`. Task
+        // 092 checked only the first and died on the second. So the candidates are
+        // filtered by the ceiling and the largest survivor is taken; if nothing survives,
+        // nothing is set and the capture runs at the format's default.
+        //
+        // This is also why it stays correct after a format change. `activeFormat` changes
+        // whenever recording quality does (`refreshRecordingFormat()`), while the output's
+        // ceiling was fixed at configure time — so the two can disagree, and the filter is
+        // what makes that disagreement produce a smaller photo instead of an exception.
+        // The other two quality settings do not set it at all.
+        if quality.requestsMaximumDimensions, let device = videoDevice {
+            let ceiling = photoOutput.maxPhotoDimensions
+            let candidate = device.activeFormat.supportedMaxPhotoDimensions
+                .filter { $0.width <= ceiling.width && $0.height <= ceiling.height }
+                .max { ($0.width, $0.height) < ($1.width, $1.height) }
+            if let candidate {
+                settings.maxPhotoDimensions = candidate
+            }
+        }
 
         let uniqueID = settings.uniqueID
         let captured: (data: Data, fileExtension: String) = try await withCheckedThrowingContinuation { continuation in
@@ -506,6 +540,28 @@ actor CameraService {
         }
 
         await applyDeviceSpecificSettings(device: device)
+
+        // Task 093: raise the photo output's ceilings, **after** `applyDeviceSpecificSettings`
+        // has settled `activeFormat` and while this method's transaction is still open.
+        //
+        // Both of these are ceilings that per-capture settings are checked against, and
+        // exceeding either raises the same uncatchable Objective-C exception that crashed
+        // the app in Task 092:
+        //
+        //   • `maxPhotoQualityPrioritization` — a capture asking for `.quality` when the
+        //     output is left at its `.balanced` default throws. 최고화질 needs `.quality`,
+        //     so the ceiling has to be raised here or that setting cannot exist safely.
+        //   • `maxPhotoDimensions` — the ceiling Task 092's crash exceeded. Read from the
+        //     format that is now active, so the value is by construction one the format
+        //     supports.
+        //
+        // Order matters: setting these before `applyDeviceSpecificSettings` would read a
+        // format that is about to be replaced, which is a subtler version of the same bug.
+        photoOutput.maxPhotoQualityPrioritization = .quality
+        if let largest = device.activeFormat.supportedMaxPhotoDimensions.last {
+            photoOutput.maxPhotoDimensions = largest
+        }
+
         setUpZoomCapabilities(device: device)
         isConfigured = true
         logStartupEvent("Camera Configured", detail: requestedPosition.title)

@@ -36,6 +36,11 @@ struct StorageDestinationView: View {
     /// applies from the next recording.
     @State private var encoderSettings = VideoEncoderSettingsService().load()
     private let encoderSettingsService = VideoEncoderSettingsService()
+    /// Task 093 P1-1. Same pattern as the codec: local `@State` written straight back to
+    /// the store. `PhotoCaptureViewModel` re-reads the store on every capture, so a change
+    /// here applies to the very next photo without an app restart (P1-6).
+    @State private var photoQuality = PhotoQualitySettingsService().load().quality
+    private let photoQualityService = PhotoQualitySettingsService()
     @ObservedObject var externalStorageViewModel: ExternalStorageViewModel
     @ObservedObject var storageSettingsViewModel: StorageSettingsViewModel
     @ObservedObject var guidelineViewModel: RecordingGuidelineViewModel
@@ -94,6 +99,21 @@ struct StorageDestinationView: View {
                 }
 
                 Section {
+                    Picker("사진 화질", selection: $photoQuality) {
+                        ForEach(PhotoQuality.allCases) { quality in
+                            Text(quality.title).tag(quality)
+                        }
+                    }
+                    Text(photoQuality.detail)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } header: {
+                    Text("사진")
+                } footer: {
+                    Text("다음 사진부터 바로 적용됩니다. 기기가 선택한 화질을 지원하지 않으면 가능한 가장 높은 품질로 자동 조정됩니다.")
+                }
+
+                Section {
                     Toggle("구도 가이드 표시", isOn: $guidelineViewModel.settings.isEnabled)
                 } footer: {
                     Text("촬영 화면을 가로선 두 개로 3등분해 수평선·눈높이를 잡기 쉽게 합니다. 저장되는 영상에는 나타나지 않습니다.")
@@ -135,6 +155,9 @@ struct StorageDestinationView: View {
         }
         .onChange(of: encoderSettings) { _, newValue in
             encoderSettingsService.save(newValue)
+        }
+        .onChange(of: photoQuality) { _, newValue in
+            photoQualityService.save(PhotoQualitySettings(quality: newValue))
         }
         .task {
             await recoveryViewModel.checkRecoveryStatus()
